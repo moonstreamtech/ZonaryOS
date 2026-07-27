@@ -1,0 +1,56 @@
+ZonaryOS Source-Available License (DRAFT — NOT FINAL, PENDING LEGAL REVIEW)
+============================================================================
+
+*** THIS IS A PLACEHOLDER DRAFT. IT IS NOT LEGAL ADVICE AND HAS NOT BEEN
+    REVIEWED BY A LAWYER. DO NOT RELY ON THIS TEXT AS A BINDING LEGAL
+    AGREEMENT UNTIL IT HAS BEEN DRAFTED OR APPROVED BY QUALIFIED LEGAL
+    COUNSEL. See docs/OPEN_POINTS.md, item 20. ***
+
+Copyright (c) [YEAR] [ZonaryOS entity — legal name pending]
+
+1. Grant of Rights
+   Subject to the restrictions below, permission is hereby granted, free
+   of charge, to any person obtaining a copy of this software and
+   associated documentation files (the "Software"), to view, use,
+   copy, modify, merge, and contribute to the Software, for
+   non-commercial and evaluation purposes, and to submit contributions
+   back to the official ZonaryOS project.
+
+2. Restrictions
+   a. You may NOT deploy, host, or operate the Software, or any
+      modified or derivative version of it, as a product or service
+      (commercial or otherwise) that is independent of, or not
+      authorized by, ZonaryOS's own central infrastructure.
+   b. You may NOT remove, disable, or attempt to circumvent any license
+      verification, integrity check, or module-activation mechanism
+      contained in the Software.
+   c. You may NOT use the ZonaryOS name, trademarks, or branding except
+      as expressly permitted (see docs/VISION.md, "Brand / White-Label").
+   d. Commercial use of the Software outside of ZonaryOS's own
+      central service requires a separate, explicit commercial license
+      agreement with the ZonaryOS project.
+
+3. Contributions
+   By submitting a contribution (e.g. a pull request) to this
+   repository, you agree that your contribution is licensed under the
+   same terms as this license, and you grant the ZonaryOS project the
+   right to include, modify, and relicense your contribution as part
+   of the Software, including under future versions of this license.
+
+4. No Warranty
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+   EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND
+   NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+   BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM
+   THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+5. Governing Law
+   [Pending — to be determined with legal counsel.]
+
+---
+This draft borrows structurally from source-available license patterns
+(e.g. Business Source License-style models) without adopting any
+specific existing license verbatim. It must be replaced with — or
+formally reviewed and finalized by — qualified legal counsel before
+it is treated as enforceable.
