@@ -1,4 +1,4 @@
-.PHONY: build test vet run migrate web-dev web-build web-lint dev-up dev-down
+.PHONY: build test vet run migrate web-dev web-build web-lint dev-up dev-down dev-up-standalone dev-down-standalone
 
 build:
 	go build ./...
@@ -29,3 +29,12 @@ dev-up:
 
 dev-down:
 	docker compose down
+
+# Fallback for environments where Docker registries are blocked but
+# general internet access isn't (e.g. some sandboxed CI/agent
+# environments) - see docs/DEVELOPMENT.md and scripts/dev-up-standalone.sh.
+dev-up-standalone:
+	./scripts/dev-up-standalone.sh
+
+dev-down-standalone:
+	./scripts/dev-down-standalone.sh
