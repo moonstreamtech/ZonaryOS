@@ -5,5 +5,11 @@
     "statusLabel": "Sunucu durumu",
     "statusOk": "Bağlı",
     "statusError": "Ulaşılamıyor"
+  },
+  "Auth": {
+    "signIn": "Giriş yap",
+    "signOut": "Çıkış yap",
+    "signedInAs": "{name} olarak giriş yaptınız",
+    "noFirms": "Henüz herhangi bir firmaya bağlı değilsiniz."
   }
 }

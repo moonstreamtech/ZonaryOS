@@ -48,3 +48,6 @@ logs/
 coverage/
 *.cover
 *.prof
+
+# --- scripts/dev-up-standalone.sh (downloaded Keycloak distribution, logs, pid) ---
+.zonaryos/

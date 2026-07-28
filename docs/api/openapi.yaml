@@ -1,0 +1,128 @@
+openapi: 3.0.3
+info:
+  title: ZonaryOS API
+  version: "0.1.0"
+  description: >
+    ZonaryOS backend HTTP API. Versioned per CLAUDE.md Never-Violate Rule 6
+    (no breaking changes without a deprecation cycle) - this file is the
+    source of truth for the API's current shape and should be updated
+    alongside any handler change, even before automated contract-diff CI
+    exists.
+servers:
+  - url: http://localhost:8080
+security:
+  - bearerAuth: []
+paths:
+  /healthz:
+    get:
+      summary: Liveness check
+      security: []
+      responses:
+        "200":
+          description: Server is up
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /api/me:
+    get:
+      summary: Resolve the caller's identity and firm memberships
+      description: >
+        Verifies the bearer token, upserts the caller into ZonaryOS's own
+        `users` table by Keycloak subject, and lists every firm they
+        belong to. Keycloak only proves who the caller is - this endpoint
+        is where that identity is resolved against ZonaryOS's own
+        authorization data (users/firms/roles/user_firm_roles).
+      responses:
+        "200":
+          description: Identity and firm memberships
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Me"
+        "401":
+          description: Missing or invalid bearer token
+
+  /api/me/firms/{firmID}/role:
+    get:
+      summary: Resolve the caller's role within one specific firm
+      description: >
+        Opens a firm-scoped, Row-Level-Security-enforced transaction for
+        firmID. A caller with no membership in that firm gets 403 -
+        enforced by the database's RLS policy, not by an application-level
+        membership check.
+      parameters:
+        - name: firmID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The caller's role within firmID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoleInFirm"
+        "400":
+          description: firmID is not a valid UUID
+        "401":
+          description: Missing or invalid bearer token
+        "403":
+          description: Caller has no membership in firmID
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: A Keycloak-issued access token for the `zonaryos` realm.
+  schemas:
+    MeFirm:
+      type: object
+      properties:
+        firmId:
+          type: string
+          format: uuid
+        firmName:
+          type: string
+        roleId:
+          type: string
+          format: uuid
+      required: [firmId, firmName, roleId]
+    Me:
+      type: object
+      properties:
+        subject:
+          type: string
+          description: Keycloak "sub" claim.
+        email:
+          type: string
+        displayName:
+          type: string
+        firms:
+          type: array
+          items:
+            $ref: "#/components/schemas/MeFirm"
+      required: [subject, email, displayName, firms]
+    RoleInFirm:
+      type: object
+      properties:
+        firmId:
+          type: string
+          format: uuid
+        roleId:
+          type: string
+          format: uuid
+        roleKey:
+          type: string
+        roleName:
+          type: string
+      required: [firmId, roleId, roleKey, roleName]

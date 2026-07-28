@@ -1,0 +1,43 @@
+package identity
+
+import (
+	"net/http"
+	"strings"
+)
+
+// Middleware verifies the request's bearer token with verifier and, on
+// success, attaches the resulting Identity to the request context (see
+// FromContext) before calling next. A missing or invalid token is rejected
+// with 401 - it never falls through as "unauthenticated but allowed".
+func Middleware(verifier *Verifier) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			token, ok := bearerToken(r)
+			if !ok {
+				http.Error(w, "missing bearer token", http.StatusUnauthorized)
+				return
+			}
+
+			id, err := verifier.Verify(r.Context(), token)
+			if err != nil {
+				http.Error(w, "invalid token", http.StatusUnauthorized)
+				return
+			}
+
+			next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), id)))
+		})
+	}
+}
+
+func bearerToken(r *http.Request) (string, bool) {
+	const prefix = "Bearer "
+	h := r.Header.Get("Authorization")
+	if !strings.HasPrefix(h, prefix) {
+		return "", false
+	}
+	token := strings.TrimSpace(strings.TrimPrefix(h, prefix))
+	if token == "" {
+		return "", false
+	}
+	return token, true
+}

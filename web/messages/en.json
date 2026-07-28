@@ -5,5 +5,11 @@
     "statusLabel": "Backend status",
     "statusOk": "Connected",
     "statusError": "Unreachable"
+  },
+  "Auth": {
+    "signIn": "Sign in",
+    "signOut": "Sign out",
+    "signedInAs": "Signed in as {name}",
+    "noFirms": "You don't belong to any firm yet."
   }
 }
