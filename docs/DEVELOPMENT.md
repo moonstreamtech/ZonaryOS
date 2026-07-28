@@ -37,4 +37,27 @@ make dev-up      # starts Postgres (:5432) and Keycloak (:8081) via docker-compo
 make dev-down     # stops them
 ```
 
-Postgres and Keycloak wiring (migrations, RLS policies, realm configuration) land in subsequent PRs as the vertical slice is built out.
+Keycloak wiring (realm configuration, JWT validation) lands in a subsequent PR of the vertical slice.
+
+## Database schema and Row-Level Security
+
+Migrations live in `migrations/*.sql` (embedded into the binary via `migrations/embed.go`) and are applied with:
+
+```
+make migrate    # runs `cmd/migrate`, using ZONARYOS_MIGRATE_DATABASE_URL
+```
+
+`ZONARYOS_MIGRATE_DATABASE_URL` must point at a privileged/owner role (the docker-compose Postgres superuser). The migration also creates an unprivileged `zonaryos_app` login role — this is the role the *application* connects as, and the only role RLS policies actually restrict (the owner/superuser bypasses RLS by design, so migrations must never run as the same role the server uses).
+
+Every tenant-scoped table (`roles`, `role_permissions`, `user_firm_roles`) has Row-Level Security enabled, keyed off the `app.current_firm_id` Postgres session setting. Application code must only touch these tables through `internal/platform/db.WithFirmContext`, which sets that context per transaction — never via a manual `firm_id = ?` filter instead (Never-Violate Rule 3). `firms` and `users` are global (not firm-scoped) tables: a user can belong to several firms via `user_firm_roles`.
+
+### Running the RLS integration tests
+
+These require a real Postgres instance (e.g. `make dev-up`) and are skipped otherwise:
+
+```
+export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5432/zonaryos?sslmode=disable
+export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5432/zonaryos?sslmode=disable
+make migrate
+go test ./internal/platform/db/... -v
+```

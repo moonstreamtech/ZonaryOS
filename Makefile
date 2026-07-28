@@ -1,4 +1,4 @@
-.PHONY: build test vet run web-dev web-build web-lint dev-up dev-down
+.PHONY: build test vet run migrate web-dev web-build web-lint dev-up dev-down
 
 build:
 	go build ./...
@@ -11,6 +11,9 @@ test:
 
 run:
 	go run ./cmd/server
+
+migrate:
+	go run ./cmd/migrate
 
 web-dev:
 	cd web && npm run dev
