@@ -9,7 +9,22 @@
   "Auth": {
     "signIn": "Sign in",
     "signOut": "Sign out",
-    "signedInAs": "Signed in as {name}",
-    "noFirms": "You don't belong to any firm yet."
+    "signedInAs": "Signed in as {name}"
+  },
+  "Wizard": {
+    "title": "Set up your firm",
+    "doYouManufacture": "Do you manufacture products?",
+    "answerYes": "Yes",
+    "answerNo": "No",
+    "firmNameLabel": "Firm name",
+    "firmNamePlaceholder": "e.g. Acme Trading Co.",
+    "firmNameRequired": "Please enter a firm name.",
+    "submit": "Continue",
+    "back": "Back",
+    "manufacturingComingSoon": "Manufacturing support is coming soon. For now, ZonaryOS supports non-manufacturing firms only.",
+    "firmCreatedTitle": "Firm created",
+    "firmCreatedBody": "{firmName} is ready to go.",
+    "continueToApp": "Continue",
+    "errorGeneric": "Something went wrong. Please try again."
   }
 }

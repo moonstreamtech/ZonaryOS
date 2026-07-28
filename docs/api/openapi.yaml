@@ -185,6 +185,67 @@ paths:
         "403": { description: Caller lacks the transition's required permission }
         "404": { description: No such workflow instance in this firm }
 
+  /api/wizard/nodes/{nodeKey}:
+    get:
+      summary: Read one node of the firm-creation wizard's decision tree
+      description: >
+        Not scoped under /api/firms/{firmID}/... like the workflow engine's
+        routes - a newly-authenticated user with zero firm memberships has
+        no firm yet, same bootstrap category as /api/me. nodeKey "root" is
+        the wizard's entry point.
+      parameters:
+        - name: nodeKey
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The requested node
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WizardNode"
+        "401": { description: Missing or invalid bearer token }
+        "404": { description: No such wizard node }
+
+  /api/wizard/nodes/{nodeKey}/answer:
+    post:
+      summary: Submit an answer at a wizard question node
+      description: >
+        Resolves the next node reached by answering. If that node is the
+        create-default-firm action, the firm (with its default "owner"
+        role, the caller's membership in it, and a seeded Stock In -> Sale
+        workflow) is created in one atomic transaction and returned inline
+        as `result` - no separate confirmation round trip is needed.
+      parameters:
+        - name: nodeKey
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                answer:
+                  type: string
+                  description: One of the node's Answers[].value.
+                firmName:
+                  type: string
+                  description: Required only when the answer resolves to the create-default-firm action.
+              required: [answer]
+      responses:
+        "200":
+          description: The resulting node (question, placeholder, or action - with `result` populated for create-default-firm)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WizardNode"
+        "400": { description: Malformed body, unknown answer value, node is not a question, or firm creation failed (e.g. blank firm name) }
+        "401": { description: Missing or invalid bearer token }
+        "404": { description: No such wizard node }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -271,3 +332,44 @@ components:
           items:
             $ref: "#/components/schemas/AvailableAction"
       required: [instanceId, workflowDefinitionId, state, payload, availableActions]
+    WizardAnswer:
+      type: object
+      properties:
+        value:
+          type: string
+        labelKey:
+          type: string
+          description: i18n message key (under the "Wizard" namespace) for this option's label - never literal text.
+      required: [value, labelKey]
+    WizardFirmResult:
+      type: object
+      properties:
+        firmId:
+          type: string
+          format: uuid
+        firmName:
+          type: string
+      required: [firmId, firmName]
+    WizardNode:
+      type: object
+      properties:
+        key:
+          type: string
+        kind:
+          type: string
+          enum: [question, action, placeholder]
+        questionKey:
+          type: string
+          description: i18n message key for the question text. Present only when kind is "question".
+        answers:
+          type: array
+          items:
+            $ref: "#/components/schemas/WizardAnswer"
+          description: Present only when kind is "question".
+        placeholderKey:
+          type: string
+          description: i18n message key for a "not built yet" message. Present only when kind is "placeholder".
+        result:
+          $ref: "#/components/schemas/WizardFirmResult"
+          description: Present only when this node is the create-default-firm action and it just succeeded.
+      required: [key, kind]

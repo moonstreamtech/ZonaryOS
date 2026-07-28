@@ -9,7 +9,22 @@
   "Auth": {
     "signIn": "Giriş yap",
     "signOut": "Çıkış yap",
-    "signedInAs": "{name} olarak giriş yaptınız",
-    "noFirms": "Henüz herhangi bir firmaya bağlı değilsiniz."
+    "signedInAs": "{name} olarak giriş yaptınız"
+  },
+  "Wizard": {
+    "title": "Firmanızı oluşturun",
+    "doYouManufacture": "Üretim yapıyor musunuz?",
+    "answerYes": "Evet",
+    "answerNo": "Hayır",
+    "firmNameLabel": "Firma adı",
+    "firmNamePlaceholder": "örn. Acme Ticaret A.Ş.",
+    "firmNameRequired": "Lütfen bir firma adı girin.",
+    "submit": "Devam et",
+    "back": "Geri",
+    "manufacturingComingSoon": "Üretim desteği yakında geliyor. Şimdilik ZonaryOS yalnızca üretim yapmayan firmaları destekliyor.",
+    "firmCreatedTitle": "Firma oluşturuldu",
+    "firmCreatedBody": "{firmName} kullanıma hazır.",
+    "continueToApp": "Devam et",
+    "errorGeneric": "Bir şeyler ters gitti. Lütfen tekrar deneyin."
   }
 }

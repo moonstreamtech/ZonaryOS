@@ -26,59 +26,76 @@ const createInstanceAction = "create"
 // the way. This is the one Go code path both this PR's concrete
 // Stock-In-Sale workflow (see stock_to_sale.go) and any future, much
 // larger workflow definition go through - the engine itself never
-// hardcodes a specific workflow's shape.
+// hardcodes a specific workflow's shape. It is a thin WithFirmContext
+// wrapper around DefineWorkflowTx; callers that need workflow provisioning
+// to be one step inside a larger atomic operation (e.g. the firm-creation
+// wizard, which also has to insert the firm, its default role, and role
+// grants in the same transaction) should call DefineWorkflowTx directly
+// instead.
 func DefineWorkflow(ctx context.Context, pool *pgxpool.Pool, firmID uuid.UUID, spec DefinitionSpec) (uuid.UUID, error) {
-	if err := spec.Validate(); err != nil {
-		return uuid.UUID{}, err
-	}
-
 	var definitionID uuid.UUID
 	err := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
-		if err := upsertPermission(ctx, tx, spec.CreatePermission); err != nil {
-			return err
-		}
-		for _, t := range spec.Transitions {
-			if err := upsertPermission(ctx, tx, t.Permission); err != nil {
-				return err
-			}
-		}
-
-		if err := tx.QueryRow(ctx, `
-			INSERT INTO workflow_definitions (firm_id, key, name, create_permission_key)
-			VALUES ($1, $2, $3, $4)
-			RETURNING id
-		`, firmID, spec.Key, spec.Name, spec.CreatePermission.Key).Scan(&definitionID); err != nil {
-			return fmt.Errorf("insert workflow definition: %w", err)
-		}
-
-		stateIDs := make(map[string]uuid.UUID, len(spec.States))
-		for _, s := range spec.States {
-			var stateID uuid.UUID
-			if err := tx.QueryRow(ctx, `
-				INSERT INTO workflow_states (firm_id, workflow_definition_id, key, name, is_initial, is_terminal)
-				VALUES ($1, $2, $3, $4, $5, $6)
-				RETURNING id
-			`, firmID, definitionID, s.Key, s.Name, s.IsInitial, s.IsTerminal).Scan(&stateID); err != nil {
-				return fmt.Errorf("insert workflow state %q: %w", s.Key, err)
-			}
-			stateIDs[s.Key] = stateID
-		}
-
-		for _, t := range spec.Transitions {
-			if _, err := tx.Exec(ctx, `
-				INSERT INTO workflow_transitions
-					(firm_id, workflow_definition_id, from_state_id, to_state_id, action_key, name, permission_key)
-				VALUES ($1, $2, $3, $4, $5, $6, $7)
-			`, firmID, definitionID, stateIDs[t.FromStateKey], stateIDs[t.ToStateKey], t.ActionKey, t.Name, t.Permission.Key); err != nil {
-				return fmt.Errorf("insert workflow transition %q: %w", t.ActionKey, err)
-			}
-		}
-
-		return nil
+		id, err := DefineWorkflowTx(ctx, tx, firmID, spec)
+		definitionID = id
+		return err
 	})
 	if err != nil {
 		return uuid.UUID{}, err
 	}
+	return definitionID, nil
+}
+
+// DefineWorkflowTx is DefineWorkflow's core logic against an already-open
+// transaction. The caller is responsible for that transaction already
+// being scoped to firmID (typically via WithFirmContext, or - during firm
+// creation, before WithFirmContext can apply - by having just set
+// app.current_firm_id itself within the same transaction).
+func DefineWorkflowTx(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, spec DefinitionSpec) (uuid.UUID, error) {
+	if err := spec.Validate(); err != nil {
+		return uuid.UUID{}, err
+	}
+
+	if err := upsertPermission(ctx, tx, spec.CreatePermission); err != nil {
+		return uuid.UUID{}, err
+	}
+	for _, t := range spec.Transitions {
+		if err := upsertPermission(ctx, tx, t.Permission); err != nil {
+			return uuid.UUID{}, err
+		}
+	}
+
+	var definitionID uuid.UUID
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO workflow_definitions (firm_id, key, name, create_permission_key)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id
+	`, firmID, spec.Key, spec.Name, spec.CreatePermission.Key).Scan(&definitionID); err != nil {
+		return uuid.UUID{}, fmt.Errorf("insert workflow definition: %w", err)
+	}
+
+	stateIDs := make(map[string]uuid.UUID, len(spec.States))
+	for _, s := range spec.States {
+		var stateID uuid.UUID
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO workflow_states (firm_id, workflow_definition_id, key, name, is_initial, is_terminal)
+			VALUES ($1, $2, $3, $4, $5, $6)
+			RETURNING id
+		`, firmID, definitionID, s.Key, s.Name, s.IsInitial, s.IsTerminal).Scan(&stateID); err != nil {
+			return uuid.UUID{}, fmt.Errorf("insert workflow state %q: %w", s.Key, err)
+		}
+		stateIDs[s.Key] = stateID
+	}
+
+	for _, t := range spec.Transitions {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO workflow_transitions
+				(firm_id, workflow_definition_id, from_state_id, to_state_id, action_key, name, permission_key)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)
+		`, firmID, definitionID, stateIDs[t.FromStateKey], stateIDs[t.ToStateKey], t.ActionKey, t.Name, t.Permission.Key); err != nil {
+			return uuid.UUID{}, fmt.Errorf("insert workflow transition %q: %w", t.ActionKey, err)
+		}
+	}
+
 	return definitionID, nil
 }
 

@@ -10,6 +10,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/config"
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/db"
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/httpapi"
+	"github.com/moonstreamtech/ZonaryOS/internal/wizard"
 	"github.com/moonstreamtech/ZonaryOS/internal/workflow"
 )
 
@@ -35,6 +36,7 @@ func main() {
 	mux := httpapi.NewMux()
 	identity.RegisterRoutes(mux, verifier, pool)
 	workflow.RegisterRoutes(mux, verifier, pool)
+	wizard.RegisterRoutes(mux, verifier, pool)
 
 	log.Printf("ZonaryOS server listening on %s", cfg.HTTPAddr)
 	if err := http.ListenAndServe(cfg.HTTPAddr, mux); err != nil {

@@ -121,6 +121,26 @@ HTTP surface (mirrors `internal/identity`'s `/api/me/firms/{firmID}/...` path-sc
 - `GET /api/firms/{firmID}/workflow-instances/{instanceID}` — read current state and structurally available next actions (not filtered by the caller's own permissions - enforcement happens when a transition is actually executed)
 - `POST /api/firms/{firmID}/workflow-instances/{instanceID}/transitions/{actionKey}` — execute a transition ("record a sale")
 
+## Firm-creation wizard
+
+`internal/wizard` implements Vision §3's "Self-Configuring Infrastructure": a newly-authenticated Keycloak user with zero firm memberships (detected via `internal/identity.Memberships`, PR 3's firm-discovery mechanism) is routed into this wizard instead of the normal app.
+
+- **`tree.go`** models the wizard as an actual decision tree, not a hardcoded form: a `Node` is either a question (with `Answers`, each pointing at the next `Node`), a terminal action, or a terminal placeholder. This slice populates exactly one root question, `"do you manufacture?"` - `"no"` reaches the `create_default_firm` action; `"yes"` reaches a placeholder (`manufacturingComingSoon`) rather than a built-out manufacturing flow, which is explicitly out of scope here. A second question later nests into this same structure; nothing about `Lookup`/`Answer` needs to change. `Node` fields carry i18n message keys (not literal text) for anything user-facing, matching Never-Violate Rule 4.
+- **`firm.go`**'s `CreateDefaultFirm` is the wizard's one implemented action: it creates the firm, a default `owner` role, the caller's membership in it, and seeds the firm with the Stock In -> Sale workflow via `workflow.SeedStockToSaleWorkflowTx` (reused as-is, not duplicated) - all inside one hand-managed transaction. `internal/platform/db.WithFirmContext` can't be used here since it needs a `firmID` up front and the firm doesn't exist yet; this function sets `app.current_firm_id` itself, once the new firm's ID is known, before touching any RLS-protected table - the write-side counterpart to the read-side bootstrap `migrations/0002_user_scoped_discovery.up.sql` solved for firm discovery. One `audit_log` row is written for the firm's creation, same table/shape the workflow engine already writes to.
+- **Default role's permissions**: the `owner` role is granted exactly the permission keys `workflow.StockToSaleSpec.PermissionKeys()` introduces (derived programmatically, not hardcoded) - i.e. everything the wizard actually provisioned for this firm - rather than every key in the global `permissions` catalog, which is shared across all firms and can hold unrelated keys other firms' own custom workflows registered. There is nobody else yet to grant permissions to the founder, so this is deliberately "everything provisioned so far," not a restricted starter role.
+- HTTP surface (not scoped under `/api/firms/{firmID}/...` - no firm exists yet, same bootstrap category as `/api/me`): `GET /api/wizard/nodes/{nodeKey}` reads a node; `POST /api/wizard/nodes/{nodeKey}/answer` submits an answer and, if it resolves to `create_default_firm`, creates the firm inline and returns it as `result` - see `docs/api/openapi.yaml`.
+
+### Running the wizard tests
+
+`internal/wizard/tree_test.go` is a pure unit test (tree traversal/lookup, no database). `internal/wizard/firm_integration_test.go` needs a real Postgres, same convention as the workflow engine tests above:
+
+```
+export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5432/zonaryos?sslmode=disable
+export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5432/zonaryos?sslmode=disable
+make migrate
+go test ./internal/wizard/... -v
+```
+
 ### Running the workflow engine tests
 
 `internal/workflow/spec_test.go` is a pure unit test (spec validation, no database). `internal/workflow/workflow_integration_test.go` needs a real Postgres, same convention as the RLS tests above:
