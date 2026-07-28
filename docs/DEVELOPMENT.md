@@ -104,6 +104,34 @@ make migrate    # runs `cmd/migrate`, using ZONARYOS_MIGRATE_DATABASE_URL
 
 Every tenant-scoped table (`roles`, `role_permissions`, `user_firm_roles`) has Row-Level Security enabled, keyed off the `app.current_firm_id` Postgres session setting. Application code must only touch these tables through `internal/platform/db.WithFirmContext`, which sets that context per transaction — never via a manual `firm_id = ?` filter instead (Never-Violate Rule 3). `firms` and `users` are global (not firm-scoped) tables: a user can belong to several firms via `user_firm_roles`.
 
+## Workflow engine
+
+`internal/workflow` implements Vision §3's "graph-based state machine": a business process is a set of rows (`workflow_definitions`, `workflow_states`, `workflow_transitions`) rather than Go code written per workflow - a 7-step manufacturing flow is just a bigger `DefinitionSpec` value passed to `DefineWorkflow`, not a new code path.
+
+- **`DefineWorkflow`** validates a `DefinitionSpec` (exactly one initial state, no dangling state references, unique (from-state, action) pairs) and writes it as rows in one `WithFirmContext` transaction, upserting any permission keys it references into the global `permissions` catalog from `migrations/0001_core_schema.up.sql` along the way - reusing that catalog is the Never-Violate Rule 7 "permission tag" mechanism, not a new one.
+- **`internal/permission.Has`** is the one place a permission check happens: does the caller hold `permissionKey` through any role assigned to them in this firm. Any future module gating an action behind a permission should use this, not a bespoke check.
+- **`CreateInstance`** starts a new instance in a definition's initial state, gated by the definition's `create_permission_key`. This is "add stock" in this PR's concrete workflow - modeled as instance creation, not a transition (creation has no from-state), but enforced and audited identically to one.
+- **`ExecuteTransition`** moves an instance along an edge in the graph (e.g. "record a sale"), gated by that transition's own `permission_key`, all inside one `WithFirmContext` transaction so the permission check and the state mutation can't race.
+- Every `CreateInstance`/`ExecuteTransition` call writes exactly one row to `audit_log` - a general-purpose, not workflow-specific, data-change audit trail (Vision §3; view/read-level logging is future work). The workflow engine is this table's first writer; later modules (inventory, sales, ...) are expected to write to the same table, not invent their own.
+- **`stock_to_sale.go`** is the concrete first instance: `in_stock` (initial) → `sold` (terminal) via the one transition `record_sale`. `SeedStockToSaleWorkflow(ctx, pool, firmID)` instantiates it for a firm - a fixture/provisioning-level stand-in until the wizard (a later PR) can define workflows like this interactively. There is no HTTP endpoint or automatic hook that calls this yet; it's called directly by tests and would be called by firm-provisioning code once that exists.
+
+HTTP surface (mirrors `internal/identity`'s `/api/me/firms/{firmID}/...` path-scoping - see `docs/api/openapi.yaml` for full request/response shapes):
+
+- `POST /api/firms/{firmID}/workflow-definitions/{definitionID}/instances` — start an instance ("add stock")
+- `GET /api/firms/{firmID}/workflow-instances/{instanceID}` — read current state and structurally available next actions (not filtered by the caller's own permissions - enforcement happens when a transition is actually executed)
+- `POST /api/firms/{firmID}/workflow-instances/{instanceID}/transitions/{actionKey}` — execute a transition ("record a sale")
+
+### Running the workflow engine tests
+
+`internal/workflow/spec_test.go` is a pure unit test (spec validation, no database). `internal/workflow/workflow_integration_test.go` needs a real Postgres, same convention as the RLS tests above:
+
+```
+export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5432/zonaryos?sslmode=disable
+export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5432/zonaryos?sslmode=disable
+make migrate
+go test ./internal/workflow/... -v
+```
+
 ### Running the RLS integration tests
 
 These require a real Postgres instance (e.g. `make dev-up`) and are skipped otherwise:
@@ -114,3 +142,9 @@ export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@local
 make migrate
 go test ./internal/platform/db/... -v
 ```
+
+### Why `make test` passes `-p 1`
+
+Several packages' integration tests (`internal/platform/db`, `internal/identity`, `internal/workflow`, ...) share the same real Postgres database and each `TRUNCATE`s the tables it needs a clean slate for at the start of every test. `go test ./...` runs different packages' test binaries concurrently by default - fine for packages that don't share state, but two packages truncating the same tables (`firms`, `users`, `roles`, ...) at the same moment can wipe out data a sibling package's test just relied on, causing spurious failures that have nothing to do with the code under test. `go test -p 1 ./...` (what `make test` runs) forces one package at a time, which is what actually matters here - not test speed.
+
+If you ever see a failure in one integration test package only when running the full suite, and it passes cleanly in isolation (`go test ./internal/xyz/... -v`), this is almost certainly why - not a real regression.
