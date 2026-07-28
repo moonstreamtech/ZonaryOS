@@ -77,6 +77,114 @@ paths:
         "403":
           description: Caller has no membership in firmID
 
+  /api/firms/{firmID}/workflow-definitions/{definitionID}/instances:
+    post:
+      summary: Start a new instance of a workflow definition ("add stock")
+      description: >
+        Creates a new workflow_instances row in the definition's initial
+        state. Not modeled as a transition (creation has no from-state),
+        but enforced and audited identically: gated by the definition's
+        create_permission_key, and recorded in audit_log.
+      parameters:
+        - name: firmID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: definitionID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                payload:
+                  type: object
+                  additionalProperties: true
+      responses:
+        "201":
+          description: The new instance's state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InstanceState"
+        "400": { description: Invalid firmID/definitionID, or malformed body }
+        "401": { description: Missing or invalid bearer token }
+        "403": { description: Caller lacks the definition's create permission }
+        "404": { description: No such workflow definition in this firm }
+
+  /api/firms/{firmID}/workflow-instances/{instanceID}:
+    get:
+      summary: Read a workflow instance's current state
+      description: >
+        Available actions are listed regardless of the caller's own
+        permissions - enforcement happens when a transition is actually
+        executed, not here.
+      parameters:
+        - name: firmID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: instanceID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The instance's current state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InstanceState"
+        "400": { description: Invalid firmID/instanceID }
+        "401": { description: Missing or invalid bearer token }
+        "404": { description: No such workflow instance in this firm }
+
+  /api/firms/{firmID}/workflow-instances/{instanceID}/transitions/{actionKey}:
+    post:
+      summary: Execute a transition on a workflow instance ("record a sale")
+      description: >
+        Moves the instance from its current state via the transition
+        matching actionKey, gated by that transition's permission_key, all
+        inside one firm-scoped transaction. Fails with 400 if no such
+        transition exists from the instance's current state (e.g. already
+        in a terminal state).
+      parameters:
+        - name: firmID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: instanceID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: actionKey
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                payload:
+                  type: object
+                  additionalProperties: true
+      responses:
+        "200":
+          description: The instance's state after the transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InstanceState"
+        "400": { description: Invalid IDs, malformed body, or no such transition from the current state }
+        "401": { description: Missing or invalid bearer token }
+        "403": { description: Caller lacks the transition's required permission }
+        "404": { description: No such workflow instance in this firm }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -126,3 +234,40 @@ components:
         roleName:
           type: string
       required: [firmId, roleId, roleKey, roleName]
+    StateInfo:
+      type: object
+      properties:
+        key:
+          type: string
+        name:
+          type: string
+      required: [key, name]
+    AvailableAction:
+      type: object
+      properties:
+        actionKey:
+          type: string
+        name:
+          type: string
+        toState:
+          $ref: "#/components/schemas/StateInfo"
+      required: [actionKey, name, toState]
+    InstanceState:
+      type: object
+      properties:
+        instanceId:
+          type: string
+          format: uuid
+        workflowDefinitionId:
+          type: string
+          format: uuid
+        state:
+          $ref: "#/components/schemas/StateInfo"
+        payload:
+          type: object
+          additionalProperties: true
+        availableActions:
+          type: array
+          items:
+            $ref: "#/components/schemas/AvailableAction"
+      required: [instanceId, workflowDefinitionId, state, payload, availableActions]
