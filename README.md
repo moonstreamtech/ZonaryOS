@@ -6,13 +6,14 @@ ZonaryOS is designed so that any business — regardless of industry or scale, f
 
 ## Status
 
-🚧 **Design/planning phase.** No production code yet. See [`docs/VISION.md`](docs/VISION.md) for the full product vision and architecture decisions.
+🚧 **Early development.** Building a first, narrow, end-to-end vertical slice (single firm, simple inventory + sale flow). See [`docs/VISION.md`](docs/VISION.md) for the full product vision and architecture decisions.
 
 ## Documentation
 
 - [`docs/VISION.md`](docs/VISION.md) — product scope, architecture, license, and pricing decisions.
 - [`docs/OPEN_POINTS.md`](docs/OPEN_POINTS.md) — tracked list of unresolved design questions.
 - [`docs/RULES.md`](docs/RULES.md) — how project decisions get documented (process notes).
+- [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) — local development setup (backend, frontend, infrastructure).
 - [`CLAUDE.md`](CLAUDE.md) — entry point / working rules for AI coding agents contributing to this repo.
 
 ## License
