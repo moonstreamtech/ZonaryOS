@@ -1,0 +1,50 @@
+# --- Go ---
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+bin/
+dist/
+vendor/
+go.work
+go.work.sum
+
+# --- Node.js / Next.js ---
+node_modules/
+.next/
+out/
+build/
+.turbo/
+.vercel/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+
+# --- Env files ---
+.env
+.env.local
+.env.*.local
+.env.development
+.env.test
+.env.production
+
+# --- Editor / OS ---
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- Logs ---
+*.log
+logs/
+
+# --- Coverage / test artifacts ---
+coverage/
+*.cover
+*.prof
