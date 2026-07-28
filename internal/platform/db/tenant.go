@@ -17,19 +17,34 @@ import (
 // database engine enforcing the policy against this setting, never from an
 // application-level "WHERE firm_id = ?" that could be forgotten in some
 // code path (Never-Violate Rule 3).
-//
-// set_config(..., true) is used instead of string-interpolating a `SET
-// LOCAL` statement so the firm ID is always passed as a bound parameter,
-// with no SQL injection surface.
 func WithFirmContext(ctx context.Context, pool *pgxpool.Pool, firmID uuid.UUID, fn func(ctx context.Context, tx pgx.Tx) error) error {
+	return withSessionContext(ctx, pool, "app.current_firm_id", firmID, fn)
+}
+
+// WithUserContext runs fn inside a transaction scoped to userID via the
+// `app.current_user_id` session setting. It exists for exactly one purpose:
+// letting a freshly-authenticated user discover which firm(s) they belong
+// to (see migrations/0002_user_scoped_discovery.up.sql) before any firm
+// context can be established. Every other tenant-scoped operation should
+// use WithFirmContext, not this.
+func WithUserContext(ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID, fn func(ctx context.Context, tx pgx.Tx) error) error {
+	return withSessionContext(ctx, pool, "app.current_user_id", userID, fn)
+}
+
+// withSessionContext sets the given Postgres session setting to id.String()
+// for the lifetime of one transaction, then runs fn. set_config(..., true)
+// (equivalent to `SET LOCAL`) is used instead of string-interpolating a SQL
+// statement so the value is always passed as a bound parameter, with no SQL
+// injection surface.
+func withSessionContext(ctx context.Context, pool *pgxpool.Pool, setting string, id uuid.UUID, fn func(ctx context.Context, tx pgx.Tx) error) error {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
-	if _, err := tx.Exec(ctx, "SELECT set_config('app.current_firm_id', $1, true)", firmID.String()); err != nil {
-		return fmt.Errorf("set firm context: %w", err)
+	if _, err := tx.Exec(ctx, "SELECT set_config($1, $2, true)", setting, id.String()); err != nil {
+		return fmt.Errorf("set %s: %w", setting, err)
 	}
 
 	if err := fn(ctx, tx); err != nil {
