@@ -1,0 +1,9 @@
+{
+  "Home": {
+    "title": "ZonaryOS",
+    "subtitle": "Sektörden bağımsız, evrensel ERP/WMS/MES sistem çekirdeği.",
+    "statusLabel": "Sunucu durumu",
+    "statusOk": "Bağlı",
+    "statusError": "Ulaşılamıyor"
+  }
+}

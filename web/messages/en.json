@@ -1,0 +1,9 @@
+{
+  "Home": {
+    "title": "ZonaryOS",
+    "subtitle": "Universal, sector-agnostic ERP/WMS/MES system kernel.",
+    "statusLabel": "Backend status",
+    "statusOk": "Connected",
+    "statusError": "Unreachable"
+  }
+}
