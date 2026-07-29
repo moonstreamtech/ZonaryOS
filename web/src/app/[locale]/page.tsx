@@ -1,4 +1,5 @@
 import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import { fetchMe } from "@/lib/me";
 
@@ -26,6 +27,13 @@ export default async function Home({ params }: PageProps) {
   const sessionToken = (await cookies()).get("zonaryos_session")?.value;
   const me = sessionToken ? await fetchMe(sessionToken) : null;
 
+  // Vision §3's wizard trigger: a signed-in user with zero firm
+  // memberships is routed into the wizard instead of the (currently
+  // still placeholder) main app below.
+  if (me && me.firms.length === 0) {
+    redirect(`/${locale}/wizard`);
+  }
+
   return (
     <main className="flex flex-1 flex-col items-center justify-center gap-6 bg-zinc-50 px-6 py-24 text-center dark:bg-black">
       <h1 className="text-3xl font-semibold tracking-tight text-black dark:text-zinc-50">
@@ -44,15 +52,13 @@ export default async function Home({ params }: PageProps) {
       {me ? (
         <div className="flex flex-col items-center gap-2 text-sm text-zinc-600 dark:text-zinc-400">
           <p>{tAuth("signedInAs", { name: me.displayName || me.email })}</p>
-          {me.firms.length > 0 ? (
-            <ul>
-              {me.firms.map((firm) => (
-                <li key={firm.firmId}>{firm.firmName}</li>
-              ))}
-            </ul>
-          ) : (
-            <p>{tAuth("noFirms")}</p>
-          )}
+          {/* me.firms is always non-empty here: the zero-firm case
+              redirected into the wizard above before this renders. */}
+          <ul>
+            {me.firms.map((firm) => (
+              <li key={firm.firmId}>{firm.firmName}</li>
+            ))}
+          </ul>
           {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- /api/auth/logout is a route handler, not a page: it must be a real navigation, not client-side routing */}
           <a
             href="/api/auth/logout"

@@ -108,3 +108,18 @@ func (d DefinitionSpec) Validate() error {
 
 	return nil
 }
+
+// PermissionKeys lists every permission key this spec references (its
+// create permission plus every transition's permission), in declaration
+// order. Used by callers that need to grant a role every capability a
+// given workflow definition introduces - e.g. the firm-creation wizard
+// granting its default role exactly what SeedStockToSaleWorkflow just
+// provisioned, without hardcoding those keys a second time.
+func (d DefinitionSpec) PermissionKeys() []string {
+	keys := make([]string, 0, 1+len(d.Transitions))
+	keys = append(keys, d.CreatePermission.Key)
+	for _, t := range d.Transitions {
+		keys = append(keys, t.Permission.Key)
+	}
+	return keys
+}
