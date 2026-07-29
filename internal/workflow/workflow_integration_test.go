@@ -454,6 +454,64 @@ func TestExecuteTransition_SucceedsAndAudits(t *testing.T) {
 	}
 }
 
+// TestExecuteTransition_NilPayloadDoesNotCorruptStoredPayload is a
+// regression test for a real bug the CI pipeline's E2E smoke test (CI
+// Checklist item 12, scripts/e2e_smoke_test.sh) caught: a nil payload map
+// marshals to the JSON literal `null`, and `payload || $2::jsonb`'s
+// merge treats a jsonb null operand as a scalar to concatenate rather
+// than a no-op - Postgres turns `{"item":"widget"} || null` into
+// `[{"item":"widget"}, null]`, an array, silently corrupting the stored
+// payload and breaking every later read of it (CurrentState's
+// json.Unmarshal into map[string]any fails outright once that happens).
+// A nil payload is exactly what happens whenever a caller's request body
+// omits the "payload" field entirely - decodeJSONBody's own doc comment
+// promises "a missing/empty body is treated as no payload given," so this
+// must be safe, not just the common case where a caller happens to send
+// an explicit `{}`.
+func TestExecuteTransition_NilPayloadDoesNotCorruptStoredPayload(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	var firmID uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm A') RETURNING id`).Scan(&firmID); err != nil {
+		t.Fatalf("seed firm: %v", err)
+	}
+	definitionID, err := workflow.SeedStockToSaleWorkflow(ctx, appPool, firmID)
+	if err != nil {
+		t.Fatalf("seed workflow: %v", err)
+	}
+	userID, _ := seedUserInFirm(ctx, t, adminPool, appPool, firmID, "sub-nil-payload", workflow.AddStockPermission, workflow.RecordSalePermission)
+
+	// CreateInstance with a nil payload (the "add stock" API's own
+	// decodeJSONBody produces exactly this for an omitted "payload" field).
+	instanceID, err := workflow.CreateInstance(ctx, appPool, firmID, userID, definitionID, nil)
+	if err != nil {
+		t.Fatalf("CreateInstance with nil payload: %v", err)
+	}
+
+	// ExecuteTransition with a nil payload too - this is the exact call
+	// shape that corrupted the stored payload before the fix.
+	if err := workflow.ExecuteTransition(ctx, appPool, firmID, userID, instanceID, "record_sale", nil); err != nil {
+		t.Fatalf("ExecuteTransition with nil payload: %v", err)
+	}
+
+	state, err := workflow.CurrentState(ctx, appPool, firmID, userID, instanceID)
+	if err != nil {
+		t.Fatalf("CurrentState: %v (a corrupted payload makes even reading the instance fail)", err)
+	}
+	if state.State.Key != "sold" {
+		t.Errorf("expected instance to be in 'sold', got %q", state.State.Key)
+	}
+
+	var rawPayload string
+	if err := adminPool.QueryRow(ctx, `SELECT payload::text FROM workflow_instances WHERE id = $1`, instanceID).Scan(&rawPayload); err != nil {
+		t.Fatalf("read raw payload: %v", err)
+	}
+	if rawPayload != "{}" {
+		t.Errorf("expected the stored payload to remain a JSON object (\"{}\"), got %q - the payload was corrupted into something else", rawPayload)
+	}
+}
+
 func TestRLS_InstanceIsNotVisibleFromAnotherFirm(t *testing.T) {
 	adminPool, appPool := setupTest(t)
 	ctx := context.Background()

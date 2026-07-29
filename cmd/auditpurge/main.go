@@ -51,5 +51,5 @@ func main() {
 	if err != nil {
 		log.Fatalf("purge audit log: %v", err)
 	}
-	log.Printf("deleted %d audit_log rows older than %s", deleted, cutoff.Format(time.RFC3339))
+	log.Printf("deleted %d audit_log rows older than %s", deleted, cutoff.Format(time.RFC3339)) // #nosec G706 -- deleted/cutoff are a DB row count and a computed timestamp, not attacker-controlled input; this is an operator-invoked CLI, not a network-facing log sink
 }

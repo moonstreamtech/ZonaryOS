@@ -181,6 +181,20 @@ func upsertPermission(ctx context.Context, tx pgx.Tx, firmID, granteeRoleID uuid
 // Checking membership first closes that too and keeps every function in
 // this file that touches a firm-scoped table doing so in the same order.
 func CreateInstance(ctx context.Context, pool *pgxpool.Pool, firmID, userID, definitionID uuid.UUID, payload map[string]any) (uuid.UUID, error) {
+	if payload == nil {
+		// A nil map marshals to the JSON literal `null`, not `{}` - fine
+		// for the plain assignment below, but ExecuteTransition's `payload
+		// || $2::jsonb` merge treats a jsonb null operand as a scalar to
+		// append rather than a no-op (Postgres: `'{"a":1}'::jsonb ||
+		// 'null'::jsonb` = `[{"a":1}, null]`, corrupting the stored
+		// payload) - found by the E2E smoke test's "add stock" step
+		// omitting payload entirely, exactly like decodeJSONBody's own
+		// documented "missing/empty body is treated as no payload given"
+		// contract promises should be safe. Normalizing here (and in
+		// ExecuteTransition below) keeps both call sites' contract intact
+		// for every caller, not just ones that happen to send `{}`.
+		payload = map[string]any{}
+	}
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
 		return uuid.UUID{}, fmt.Errorf("marshal payload: %w", err)
@@ -262,6 +276,13 @@ func CreateInstance(ctx context.Context, pool *pgxpool.Pool, firmID, userID, def
 // firmID/instanceID pair could read the instance's current state and
 // which transitions structurally exist from it before being denied.
 func ExecuteTransition(ctx context.Context, pool *pgxpool.Pool, firmID, userID, instanceID uuid.UUID, actionKey string, payload map[string]any) error {
+	if payload == nil {
+		// See CreateInstance's identical guard above for why: a nil map
+		// marshals to JSON `null`, and `payload || $2::jsonb` below treats
+		// a jsonb null operand as a scalar to append (corrupting the
+		// stored payload into an array) rather than a safe no-op merge.
+		payload = map[string]any{}
+	}
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal payload: %w", err)

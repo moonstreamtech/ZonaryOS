@@ -2,9 +2,11 @@
 # Verify a Change") from manual PR-by-PR discipline into automated,
 # enforced checks. Each job below maps to one CI Checklist item - see
 # docs/DEVELOPMENT.md's "Continuous Integration" section for what each one
-# actually does and why, and the PR that introduced this file for which
-# items are intentionally still "Not Set Up" (Migration Safety, Dependency
-# Vulnerability Scan, SAST, E2E Smoke, Canary/Rollback).
+# actually does and why. Canary/Rollback Trigger remains intentionally
+# "Not Set Up": there is no ZonaryOS deployment target/infrastructure
+# decided yet (see docs/OPEN_POINTS.md) for a rollback trigger to hook
+# into - see the PR that added items 9-12 below for why that one is
+# deliberately not attempted here either.
 name: CI
 
 on:
@@ -179,3 +181,131 @@ jobs:
         with:
           fetch-depth: 0
       - run: python3 scripts/check_api_contract.py "origin/${{ github.base_ref }}"
+
+  # --- Migration Safety Check (CI Checklist item 9) -----------------------
+  # Pull-request-only, same diff-against-base reasoning as Doc Sync Check
+  # and API Contract Diff above.
+
+  migration-safety-check:
+    name: Migration Safety Check
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: python3 scripts/check_migration_safety.py "origin/${{ github.base_ref }}" "${{ github.event.pull_request.head.sha }}"
+
+  # --- Dependency Vulnerability Scan (CI Checklist item 10) ---------------
+
+  dependency-scan-backend:
+    name: Dependency Vulnerability Scan (Go)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "${{ env.GO_VERSION }}" }
+      - run: python3 scripts/check_govulncheck.py
+
+  dependency-scan-frontend:
+    name: Dependency Vulnerability Scan (npm)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "${{ env.NODE_VERSION }}" }
+      - run: npm ci
+      - run: npm run check:audit
+
+  # --- SAST Security Scan (CI Checklist item 11) --------------------------
+  # gosec (Go static analysis) and gitleaks (secret scanning) - both pure
+  # local static analysis, no external service/login/API token required.
+
+  sast-scan:
+    name: SAST Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # gitleaks scans git history, not just the working tree
+      - uses: actions/setup-go@v5
+        with: { go-version: "${{ env.GO_VERSION }}" }
+      - name: gosec
+        run: python3 scripts/check_gosec.py
+      - name: install gitleaks
+        run: go install github.com/zricethezav/gitleaks/v8@latest
+      - name: gitleaks
+        run: |
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          ./scripts/check_gitleaks.sh
+
+  # --- E2E Smoke Test (CI Checklist item 12) ------------------------------
+  # Real Postgres + real Keycloak + real backend + real frontend, brought
+  # up the same way prior PRs' own manual E2E verification did (`make
+  # dev-up-standalone` - native Postgres, standalone-JVM Keycloak, no
+  # Docker service-container command-override complications) - not a new
+  # bring-up sequence invented for CI. See scripts/e2e_smoke_test.sh's own
+  # header comment for the one disclosed scope boundary: this does not
+  # drive a headless browser through Keycloak's interactive login form.
+
+  e2e-smoke-test:
+    name: E2E Smoke Test
+    runs-on: ubuntu-latest
+    env:
+      ZONARYOS_MIGRATE_DATABASE_URL: postgres://zonaryos:zonaryos@localhost:5432/zonaryos?sslmode=disable
+      ZONARYOS_DATABASE_URL: postgres://zonaryos_app:zonaryos_app@localhost:5432/zonaryos?sslmode=disable
+      ZONARYOS_OIDC_ISSUER_URL: http://localhost:8081/realms/zonaryos
+      ZONARYOS_OIDC_CLIENT_ID: zonaryos-web
+      ZONARYOS_KEYCLOAK_ISSUER_URL: http://localhost:8081/realms/zonaryos
+      ZONARYOS_KEYCLOAK_CLIENT_ID: zonaryos-web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "${{ env.GO_VERSION }}" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "${{ env.NODE_VERSION }}" }
+      - run: cd web && npm ci
+
+      - name: bring up Postgres + Keycloak (standalone, same as manual E2E verification)
+        run: make dev-up-standalone
+
+      - run: make migrate
+
+      - name: start backend
+        run: |
+          nohup go run ./cmd/server > server.log 2>&1 &
+          echo $! > server.pid
+          for _ in $(seq 1 30); do
+            curl -sS -f http://localhost:8080/healthz && exit 0
+            sleep 1
+          done
+          echo "backend did not become healthy in time" >&2
+          cat server.log >&2
+          exit 1
+
+      - name: build and start frontend
+        working-directory: web
+        run: |
+          npm run build
+          nohup npm run start > frontend.log 2>&1 &
+          echo $! > frontend.pid
+          for _ in $(seq 1 30); do
+            curl -sS -o /dev/null http://localhost:3000/ && exit 0
+            sleep 1
+          done
+          echo "frontend did not become ready in time" >&2
+          cat frontend.log >&2
+          exit 1
+
+      - name: run E2E smoke test
+        run: ./scripts/e2e_smoke_test.sh
+
+      - name: dump service logs on failure
+        if: failure()
+        run: |
+          echo "--- backend log ---"; cat server.log || true
+          echo "--- frontend log ---"; cat web/frontend.log || true
+          echo "--- keycloak log ---"; cat .zonaryos/keycloak-standalone/keycloak.log || true

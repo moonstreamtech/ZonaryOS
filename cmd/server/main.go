@@ -10,6 +10,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
 	"github.com/moonstreamtech/ZonaryOS/internal/identity"
@@ -49,8 +50,21 @@ func main() {
 	permission.RegisterRoutes(mux, verifier, pool, broadcaster)
 	auditlog.RegisterRoutes(mux, verifier, pool)
 
+	// An explicit http.Server (not the bare http.ListenAndServe function)
+	// so ReadHeaderTimeout can be set - a slowloris mitigation (CI
+	// Checklist item 11's SAST scan, gosec G114, flags the bare function
+	// for exactly this reason). WriteTimeout/ReadTimeout are deliberately
+	// left unset: internal/permission's SSE endpoint
+	// (GET .../permission-events) intentionally keeps its response stream
+	// open indefinitely, and a blanket WriteTimeout would force-close it.
+	srv := &http.Server{
+		Addr:              cfg.HTTPAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
 	log.Printf("ZonaryOS server listening on %s", cfg.HTTPAddr)
-	if err := http.ListenAndServe(cfg.HTTPAddr, mux); err != nil {
+	if err := srv.ListenAndServe(); err != nil {
 		log.Fatalf("server: %v", err)
 	}
 }

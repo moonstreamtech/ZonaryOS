@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
-    "check:i18n": "node scripts/check-i18n-strings.mjs"
+    "check:i18n": "node scripts/check-i18n-strings.mjs",
+    "check:audit": "node scripts/check-npm-audit.mjs"
   },
   "dependencies": {
     "next": "16.2.12",
