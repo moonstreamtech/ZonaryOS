@@ -268,7 +268,7 @@ func TestCreateInstance_SucceedsAndAudits(t *testing.T) {
 		t.Fatalf("CreateInstance: %v", err)
 	}
 
-	state, err := workflow.CurrentState(ctx, appPool, firmID, instanceID)
+	state, err := workflow.CurrentState(ctx, appPool, firmID, userID, instanceID)
 	if err != nil {
 		t.Fatalf("CurrentState: %v", err)
 	}
@@ -342,7 +342,7 @@ func TestExecuteTransition_RequiresPermission(t *testing.T) {
 
 	// The instance must not have moved - a denied permission check must
 	// not leave a partial mutation.
-	state, err := workflow.CurrentState(ctx, appPool, firmID, instanceID)
+	state, err := workflow.CurrentState(ctx, appPool, firmID, userID, instanceID)
 	if err != nil {
 		t.Fatalf("CurrentState: %v", err)
 	}
@@ -374,7 +374,7 @@ func TestExecuteTransition_SucceedsAndAudits(t *testing.T) {
 		t.Fatalf("ExecuteTransition: %v", err)
 	}
 
-	state, err := workflow.CurrentState(ctx, appPool, firmID, instanceID)
+	state, err := workflow.CurrentState(ctx, appPool, firmID, userID, instanceID)
 	if err != nil {
 		t.Fatalf("CurrentState: %v", err)
 	}
@@ -436,12 +436,23 @@ func TestRLS_InstanceIsNotVisibleFromAnotherFirm(t *testing.T) {
 	}
 	// Firm B never touches firmA's instance - it doesn't even need its own
 	// workflow defined to prove the isolation.
+	userB, _ := seedUserInFirm(ctx, t, adminPool, appPool, firmB, "sub-firm-b", workflow.AddStockPermission, workflow.RecordSalePermission)
 
-	if _, err := workflow.CurrentState(ctx, appPool, firmB, instanceID); !errors.Is(err, workflow.ErrInstanceNotFound) {
+	if _, err := workflow.CurrentState(ctx, appPool, firmB, userB, instanceID); !errors.Is(err, workflow.ErrInstanceNotFound) {
 		t.Fatalf("expected ErrInstanceNotFound reading Firm A's instance under Firm B's context, got: %v", err)
 	}
 
-	userB, _ := seedUserInFirm(ctx, t, adminPool, appPool, firmB, "sub-firm-b", workflow.AddStockPermission, workflow.RecordSalePermission)
+	// The other half of the same isolation guarantee, from the opposite
+	// direction: userB (a real member of firmB, nothing to do with firmA)
+	// must not be able to read firmA's own instance just by passing
+	// firmA's real ID as the firmID argument. Before permission.IsMember
+	// was added to CurrentState, WithFirmContext's RLS scoping alone was
+	// satisfied by firmA's ID being genuine, regardless of whether the
+	// caller belonged to it - this is the regression test for that.
+	if _, err := workflow.CurrentState(ctx, appPool, firmA, userB, instanceID); !errors.Is(err, workflow.ErrInstanceNotFound) {
+		t.Fatalf("expected ErrInstanceNotFound when a non-member of firm A reads firm A's own instance by ID, got: %v", err)
+	}
+
 	err = workflow.ExecuteTransition(ctx, appPool, firmB, userB, instanceID, "record_sale", map[string]any{})
 	if !errors.Is(err, workflow.ErrInstanceNotFound) {
 		t.Fatalf("expected ErrInstanceNotFound executing a transition on Firm A's instance under Firm B's context, got: %v", err)
@@ -461,5 +472,236 @@ func TestCreateInstance_UnknownDefinition(t *testing.T) {
 	_, err := workflow.CreateInstance(ctx, appPool, firmID, userID, uuid.New(), map[string]any{})
 	if !errors.Is(err, workflow.ErrDefinitionNotFound) {
 		t.Fatalf("expected ErrDefinitionNotFound, got: %v", err)
+	}
+}
+
+func TestLookupDefinitionByKey_ResolvesToTheSeededDefinition(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	var firmID uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm A') RETURNING id`).Scan(&firmID); err != nil {
+		t.Fatalf("seed firm: %v", err)
+	}
+	definitionID, err := workflow.SeedStockToSaleWorkflow(ctx, appPool, firmID)
+	if err != nil {
+		t.Fatalf("seed workflow: %v", err)
+	}
+	userID, _ := seedUserInFirm(ctx, t, adminPool, appPool, firmID, "sub-lookup")
+
+	info, err := workflow.LookupDefinitionByKey(ctx, appPool, firmID, userID, workflow.StockToSaleKey)
+	if err != nil {
+		t.Fatalf("LookupDefinitionByKey: %v", err)
+	}
+	if info.ID != definitionID {
+		t.Errorf("expected definition ID %v, got %v", definitionID, info.ID)
+	}
+	if info.Key != workflow.StockToSaleKey {
+		t.Errorf("expected key %q, got %q", workflow.StockToSaleKey, info.Key)
+	}
+}
+
+func TestLookupDefinitionByKey_UnknownKey(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	var firmID uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm A') RETURNING id`).Scan(&firmID); err != nil {
+		t.Fatalf("seed firm: %v", err)
+	}
+	userID, _ := seedUserInFirm(ctx, t, adminPool, appPool, firmID, "sub-unknown-key")
+
+	if _, err := workflow.LookupDefinitionByKey(ctx, appPool, firmID, userID, "no_such_workflow"); !errors.Is(err, workflow.ErrDefinitionNotFound) {
+		t.Fatalf("expected ErrDefinitionNotFound, got: %v", err)
+	}
+}
+
+// TestLookupDefinitionByKey_RLS covers the same key existing for two
+// different firms (each firm gets its own workflow_definitions row per
+// migrations/0003_workflow_engine.up.sql's UNIQUE (firm_id, key)) -
+// firm B's lookup must resolve to its own definition, never firm A's -
+// and, separately, that a user who isn't a member of firm A at all can't
+// resolve firm A's definition just by supplying firm A's real ID (the
+// membership-bypass this function's permission.IsMember check exists to
+// close; see CurrentState's doc comment and
+// TestRLS_InstanceIsNotVisibleFromAnotherFirm for the same regression
+// covered on the instance-reading side).
+func TestLookupDefinitionByKey_RLS(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	var firmA uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm A') RETURNING id`).Scan(&firmA); err != nil {
+		t.Fatalf("seed firm A: %v", err)
+	}
+	definitionA, err := workflow.SeedStockToSaleWorkflow(ctx, appPool, firmA)
+	if err != nil {
+		t.Fatalf("seed workflow A: %v", err)
+	}
+
+	var firmB uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm B') RETURNING id`).Scan(&firmB); err != nil {
+		t.Fatalf("seed firm B: %v", err)
+	}
+	definitionB, err := workflow.SeedStockToSaleWorkflow(ctx, appPool, firmB)
+	if err != nil {
+		t.Fatalf("seed workflow B: %v", err)
+	}
+	if definitionA == definitionB {
+		t.Fatal("expected each firm to get its own workflow_definitions row")
+	}
+	userB, _ := seedUserInFirm(ctx, t, adminPool, appPool, firmB, "sub-lookup-b")
+
+	infoB, err := workflow.LookupDefinitionByKey(ctx, appPool, firmB, userB, workflow.StockToSaleKey)
+	if err != nil {
+		t.Fatalf("LookupDefinitionByKey under firm B: %v", err)
+	}
+	if infoB.ID != definitionB {
+		t.Errorf("expected firm B's lookup to resolve to firm B's definition %v, got %v", definitionB, infoB.ID)
+	}
+
+	if _, err := workflow.LookupDefinitionByKey(ctx, appPool, firmA, userB, workflow.StockToSaleKey); !errors.Is(err, workflow.ErrDefinitionNotFound) {
+		t.Fatalf("expected ErrDefinitionNotFound when a non-member of firm A looks it up by firm A's real ID, got: %v", err)
+	}
+}
+
+func TestListInstances_ReturnsEachInstanceWithItsStateAndActions(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	var firmID uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm A') RETURNING id`).Scan(&firmID); err != nil {
+		t.Fatalf("seed firm: %v", err)
+	}
+	definitionID, err := workflow.SeedStockToSaleWorkflow(ctx, appPool, firmID)
+	if err != nil {
+		t.Fatalf("seed workflow: %v", err)
+	}
+	userID, _ := seedUserInFirm(ctx, t, adminPool, appPool, firmID, "sub-list", workflow.AddStockPermission, workflow.RecordSalePermission)
+
+	inStockID, err := workflow.CreateInstance(ctx, appPool, firmID, userID, definitionID, map[string]any{"item": "widget", "quantity": float64(5)})
+	if err != nil {
+		t.Fatalf("CreateInstance (in stock): %v", err)
+	}
+	soldID, err := workflow.CreateInstance(ctx, appPool, firmID, userID, definitionID, map[string]any{"item": "gadget", "quantity": float64(2)})
+	if err != nil {
+		t.Fatalf("CreateInstance (to be sold): %v", err)
+	}
+	if err := workflow.ExecuteTransition(ctx, appPool, firmID, userID, soldID, "record_sale", map[string]any{}); err != nil {
+		t.Fatalf("ExecuteTransition: %v", err)
+	}
+
+	instances, err := workflow.ListInstances(ctx, appPool, firmID, userID, definitionID)
+	if err != nil {
+		t.Fatalf("ListInstances: %v", err)
+	}
+	if len(instances) != 2 {
+		t.Fatalf("expected 2 instances, got %d", len(instances))
+	}
+
+	byID := make(map[uuid.UUID]workflow.InstanceState, len(instances))
+	for _, inst := range instances {
+		byID[inst.InstanceID] = inst
+	}
+
+	inStock, ok := byID[inStockID]
+	if !ok {
+		t.Fatal("expected the in-stock instance to be listed")
+	}
+	if inStock.State.Key != "in_stock" {
+		t.Errorf("expected in-stock instance to be in state 'in_stock', got %q", inStock.State.Key)
+	}
+	if inStock.Payload["item"] != "widget" || inStock.Payload["quantity"] != float64(5) {
+		t.Errorf("expected in-stock instance payload to round-trip item/quantity, got %v", inStock.Payload)
+	}
+	if len(inStock.AvailableActions) != 1 || inStock.AvailableActions[0].ActionKey != "record_sale" {
+		t.Errorf("expected the in-stock instance to offer exactly 'record_sale', got %+v", inStock.AvailableActions)
+	}
+	if inStock.AvailableActions[0].PermissionKey != workflow.RecordSalePermission {
+		t.Errorf("expected the available action's permission key to be %q, got %q", workflow.RecordSalePermission, inStock.AvailableActions[0].PermissionKey)
+	}
+
+	sold, ok := byID[soldID]
+	if !ok {
+		t.Fatal("expected the sold instance to be listed")
+	}
+	if sold.State.Key != "sold" {
+		t.Errorf("expected sold instance to be in state 'sold', got %q", sold.State.Key)
+	}
+	if len(sold.AvailableActions) != 0 {
+		t.Errorf("expected no available actions from the terminal 'sold' state, got %+v", sold.AvailableActions)
+	}
+}
+
+// TestListInstances_RLS covers item 1's requirement directly: a second
+// firm's stock must never be visible through ListInstances, the function
+// the stock list page's backend endpoint calls.
+func TestListInstances_RLS(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	var firmA uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm A') RETURNING id`).Scan(&firmA); err != nil {
+		t.Fatalf("seed firm A: %v", err)
+	}
+	definitionA, err := workflow.SeedStockToSaleWorkflow(ctx, appPool, firmA)
+	if err != nil {
+		t.Fatalf("seed workflow A: %v", err)
+	}
+	userA, _ := seedUserInFirm(ctx, t, adminPool, appPool, firmA, "sub-firm-a-stock", workflow.AddStockPermission)
+	if _, err := workflow.CreateInstance(ctx, appPool, firmA, userA, definitionA, map[string]any{"item": "firm-a-widget"}); err != nil {
+		t.Fatalf("CreateInstance for firm A: %v", err)
+	}
+
+	var firmB uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm B') RETURNING id`).Scan(&firmB); err != nil {
+		t.Fatalf("seed firm B: %v", err)
+	}
+	definitionB, err := workflow.SeedStockToSaleWorkflow(ctx, appPool, firmB)
+	if err != nil {
+		t.Fatalf("seed workflow B: %v", err)
+	}
+	userB, _ := seedUserInFirm(ctx, t, adminPool, appPool, firmB, "sub-firm-b-stock", workflow.AddStockPermission)
+
+	// Firm B has its own (empty) workflow definition but never touches
+	// firm A's stock - listing under firm B's context must come back
+	// empty, not leak firm A's instance.
+	instancesB, err := workflow.ListInstances(ctx, appPool, firmB, userB, definitionB)
+	if err != nil {
+		t.Fatalf("ListInstances under firm B: %v", err)
+	}
+	if len(instancesB) != 0 {
+		t.Errorf("expected firm B to see no instances, got %d", len(instancesB))
+	}
+
+	// Listing firm A's own definition ID under firm B's firm context
+	// (RLS scoping, not the definition ID) must also come back empty -
+	// the definition row itself isn't visible under the wrong firm
+	// context, so its instances aren't either.
+	instancesCrossFirm, err := workflow.ListInstances(ctx, appPool, firmB, userB, definitionA)
+	if err != nil {
+		t.Fatalf("ListInstances with firm A's definition under firm B's context: %v", err)
+	}
+	if len(instancesCrossFirm) != 0 {
+		t.Errorf("expected no instances when listing firm A's definition under firm B's firm context, got %d", len(instancesCrossFirm))
+	}
+
+	// The membership-bypass regression: userB is not a member of firm A
+	// at all, but supplies firm A's real ID (and firm A's real
+	// definition ID) directly - this must fail outright, not succeed
+	// (even with an empty result) just because both IDs happen to be
+	// genuine. Before permission.IsMember was added to ListInstances,
+	// this would have returned firm A's actual stock.
+	if _, err := workflow.ListInstances(ctx, appPool, firmA, userB, definitionA); !errors.Is(err, workflow.ErrDefinitionNotFound) {
+		t.Fatalf("expected ErrDefinitionNotFound when a non-member of firm A lists its instances by real ID, got: %v", err)
+	}
+
+	// Listing under the correct firm context still finds it.
+	instancesA, err := workflow.ListInstances(ctx, appPool, firmA, userA, definitionA)
+	if err != nil {
+		t.Fatalf("ListInstances under firm A: %v", err)
+	}
+	if len(instancesA) != 1 {
+		t.Errorf("expected firm A to see exactly its 1 instance, got %d", len(instancesA))
 	}
 }

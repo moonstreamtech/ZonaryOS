@@ -4,7 +4,8 @@
     "subtitle": "Sektörden bağımsız, evrensel ERP/WMS/MES sistem çekirdeği.",
     "statusLabel": "Sunucu durumu",
     "statusOk": "Bağlı",
-    "statusError": "Ulaşılamıyor"
+    "statusError": "Ulaşılamıyor",
+    "goToStock": "Stoğa git"
   },
   "Auth": {
     "signIn": "Giriş yap",
@@ -26,5 +27,18 @@
     "firmCreatedBody": "{firmName} kullanıma hazır.",
     "continueToApp": "Devam et",
     "errorGeneric": "Bir şeyler ters gitti. Lütfen tekrar deneyin."
+  },
+  "Stock": {
+    "title": "Stok",
+    "empty": "Henüz stok kalemi yok.",
+    "definitionMissing": "Bu firma için Stok Girişi -> Satış iş akışı henüz kurulmamış.",
+    "columnItem": "Ürün",
+    "columnQuantity": "Miktar",
+    "columnStatus": "Durum",
+    "columnAction": "İşlem",
+    "unknownItem": "(isimsiz ürün)",
+    "sellButton": "Sat",
+    "sellError": "Satış kaydedilemedi. Lütfen tekrar deneyin.",
+    "sellPermissionDenied": "Satış kaydetme izniniz yok."
   }
 }
