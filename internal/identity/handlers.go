@@ -81,6 +81,7 @@ type roleInFirmResponse struct {
 	RoleID   string `json:"roleId"`
 	RoleKey  string `json:"roleKey"`
 	RoleName string `json:"roleName"`
+	IsOwner  bool   `json:"isOwner"`
 }
 
 // handleRoleInFirm opens a firm-scoped, RLS-enforced transaction (via
@@ -119,6 +120,7 @@ func handleRoleInFirm(pool *pgxpool.Pool) http.HandlerFunc {
 			RoleID:   detail.RoleID.String(),
 			RoleKey:  detail.RoleKey,
 			RoleName: detail.RoleName,
+			IsOwner:  detail.IsOwner,
 		})
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/moonstreamtech/ZonaryOS/internal/identity"
+	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/config"
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/db"
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/httpapi"
@@ -33,10 +34,13 @@ func main() {
 		log.Fatalf("init oidc verifier: %v", err)
 	}
 
+	broadcaster := permission.NewBroadcaster()
+
 	mux := httpapi.NewMux()
 	identity.RegisterRoutes(mux, verifier, pool)
 	workflow.RegisterRoutes(mux, verifier, pool)
 	wizard.RegisterRoutes(mux, verifier, pool)
+	permission.RegisterRoutes(mux, verifier, pool, broadcaster)
 
 	log.Printf("ZonaryOS server listening on %s", cfg.HTTPAddr)
 	if err := http.ListenAndServe(cfg.HTTPAddr, mux); err != nil {

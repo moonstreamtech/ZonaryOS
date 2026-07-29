@@ -65,6 +65,15 @@ type RoleDetail struct {
 	RoleID   uuid.UUID
 	RoleKey  string
 	RoleName string
+	// IsOwner mirrors roles.is_owner (migrations/0004_role_owner_flag.up.sql)
+	// for this specific role - a cosmetic flag, not a permission bypass
+	// (see that migration's comment). The frontend uses this to decide
+	// whether to show the Permission Audit Mode toggle at all: per Vision
+	// §3, only "an authorized user" can turn it on, and this codebase's
+	// working assumption (documented in docs/DEVELOPMENT.md) is that
+	// "authorized" means holding an owner-flagged role, since no separate
+	// "manage_permissions" permission key exists yet.
+	IsOwner bool
 }
 
 // RoleInFirm resolves userID's role within firmID by opening a normal,
@@ -77,11 +86,11 @@ func RoleInFirm(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.UUI
 
 	err := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
 		return tx.QueryRow(ctx, `
-			SELECT r.id, r.key, r.name
+			SELECT r.id, r.key, r.name, r.is_owner
 			FROM user_firm_roles ufr
 			JOIN roles r ON r.id = ufr.role_id
 			WHERE ufr.user_id = $1 AND ufr.firm_id = $2
-		`, userID, firmID).Scan(&detail.RoleID, &detail.RoleKey, &detail.RoleName)
+		`, userID, firmID).Scan(&detail.RoleID, &detail.RoleKey, &detail.RoleName, &detail.IsOwner)
 	})
 	if err != nil {
 		return RoleDetail{}, fmt.Errorf("resolve role in firm: %w", err)
