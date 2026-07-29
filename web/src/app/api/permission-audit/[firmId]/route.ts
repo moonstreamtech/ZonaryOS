@@ -1,0 +1,22 @@
+import { NextRequest, NextResponse } from "next/server";
+import { fetchFirmPermissionAudit } from "@/lib/permissionAudit";
+
+// Proxies the Go backend's GET /api/firms/{firmId}/permission-audit -
+// same cookie-to-Bearer-token pattern as every other proxy route.
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ firmId: string }> },
+) {
+  const token = request.cookies.get("zonaryos_session")?.value;
+  if (!token) {
+    return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
+  }
+
+  const { firmId } = await params;
+  const audit = await fetchFirmPermissionAudit(token, firmId);
+  if (!audit) {
+    return NextResponse.json({ error: "not available" }, { status: 403 });
+  }
+
+  return NextResponse.json(audit);
+}

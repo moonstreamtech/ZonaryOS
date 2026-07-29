@@ -13,6 +13,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
 )
 
 // IsMember reports whether userID belongs to firmID at all, through any
@@ -34,6 +37,23 @@ func IsMember(ctx context.Context, tx pgx.Tx, firmID, userID uuid.UUID) (bool, e
 	`, userID, firmID).Scan(&member)
 	if err != nil {
 		return false, fmt.Errorf("check membership: %w", err)
+	}
+	return member, nil
+}
+
+// CheckMembership is IsMember's pool-based counterpart, for callers that
+// don't already have an open, firm-scoped transaction - e.g. an SSE
+// handler that needs to check membership once before holding a
+// long-lived connection open (see internal/permission.handleEvents).
+func CheckMembership(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.UUID) (bool, error) {
+	var member bool
+	err := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		m, err := IsMember(ctx, tx, firmID, userID)
+		member = m
+		return err
+	})
+	if err != nil {
+		return false, err
 	}
 	return member, nil
 }

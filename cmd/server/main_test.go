@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/moonstreamtech/ZonaryOS/internal/identity"
+	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/httpapi"
 	"github.com/moonstreamtech/ZonaryOS/internal/wizard"
 	"github.com/moonstreamtech/ZonaryOS/internal/workflow"
@@ -29,4 +30,5 @@ func TestRegisterRoutes_DoesNotPanic(t *testing.T) {
 	identity.RegisterRoutes(mux, verifier, nil)
 	workflow.RegisterRoutes(mux, verifier, nil)
 	wizard.RegisterRoutes(mux, verifier, nil)
+	permission.RegisterRoutes(mux, verifier, nil, permission.NewBroadcaster())
 }

@@ -60,8 +60,12 @@ export default async function Home({ params }: PageProps) {
               <li key={firm.firmId}>{firm.firmName}</li>
             ))}
           </ul>
+          {/* data-permission-public: plain navigation, not a firm
+              permission-gated action - see docs/DEVELOPMENT.md's
+              Permission Audit Mode section. */}
           <Link
             href="/stock"
+            data-permission-public="true"
             className="font-medium text-zinc-950 underline dark:text-zinc-50"
           >
             {t("goToStock")}
@@ -69,6 +73,7 @@ export default async function Home({ params }: PageProps) {
           {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- /api/auth/logout is a route handler, not a page: it must be a real navigation, not client-side routing */}
           <a
             href="/api/auth/logout"
+            data-permission-public="true"
             className="font-medium text-zinc-950 underline dark:text-zinc-50"
           >
             {tAuth("signOut")}
@@ -78,6 +83,7 @@ export default async function Home({ params }: PageProps) {
         // eslint-disable-next-line @next/next/no-html-link-for-pages -- /api/auth/login is a route handler, not a page
         <a
           href="/api/auth/login"
+          data-permission-public="true"
           className="rounded-full bg-foreground px-5 py-2 text-sm font-medium text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc]"
         >
           {tAuth("signIn")}

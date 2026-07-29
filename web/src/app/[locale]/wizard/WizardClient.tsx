@@ -135,6 +135,7 @@ export default function WizardClient({ locale }: Props) {
               <button
                 key={answer.value}
                 type="button"
+                data-permission-public="true"
                 disabled={state.submitting}
                 onClick={() => submitAnswer(state.node.key, answer.value)}
                 className="rounded-full bg-foreground px-5 py-2 text-sm font-medium text-background transition-colors hover:bg-[#383838] disabled:opacity-50 dark:hover:bg-[#ccc]"
@@ -162,6 +163,7 @@ export default function WizardClient({ locale }: Props) {
           </p>
           <a
             href={`/${locale}`}
+            data-permission-public="true"
             className="rounded-full bg-foreground px-5 py-2 text-sm font-medium text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc]"
           >
             {t("continueToApp")}

@@ -318,6 +318,117 @@ paths:
         "401": { description: Missing or invalid bearer token }
         "404": { description: No such wizard node }
 
+  /api/firms/{firmID}/permission-audit:
+    get:
+      summary: Permission Audit Mode's role-permission matrix (Vision §3)
+      description: >
+        Owner-only (see internal/permission's IsOwner - the working
+        assumption for "an authorized user" in Vision §3, no separate
+        manage_permissions key exists yet). Returns the caller's own
+        permission keys (across every role they hold, so their own Audit
+        Mode badges are accurate) plus every non-owner role's grants -
+        owner-flagged roles never appear in `roles`, matching "roles at
+        the highest permission tier ... don't appear in these lists."
+      parameters:
+        - name: firmID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The firm's permission audit matrix
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FirmPermissionAudit"
+        "400": { description: Invalid firmID }
+        "401": { description: Missing or invalid bearer token }
+        "403": { description: Caller is a member of firmID but not an owner }
+        "404": { description: Caller is not a member of firmID at all }
+
+  /api/firms/{firmID}/roles/{roleID}/permissions/{key}:
+    put:
+      summary: Grant a permission key to a role (Permission Audit Mode's "add")
+      description: >
+        Owner-only, idempotent, saved immediately (Vision §3: "the change
+        is saved immediately"). Rejects owner-flagged role targets
+        server-side regardless of what the frontend offers - never trust
+        the client for that. Writes one audit_log row
+        (entity_type "role_permission").
+      parameters:
+        - name: firmID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: roleID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: key
+          in: path
+          required: true
+          schema: { type: string }
+          description: The permission key to grant (must already exist in the global permissions catalog).
+      responses:
+        "204": { description: Granted (or already held) }
+        "400": { description: Invalid IDs, the role is owner-flagged, or the permission key doesn't exist in the catalog }
+        "401": { description: Missing or invalid bearer token }
+        "403": { description: Caller is a member of firmID but not an owner }
+        "404": { description: Caller isn't a member of firmID, or roleID doesn't exist in it }
+    delete:
+      summary: Revoke a permission key from a role (Permission Audit Mode's "remove")
+      description: >
+        Owner-only, idempotent (revoking a permission a role never held is
+        not an error). Same owner-role rejection and audit_log write as
+        the grant side.
+      parameters:
+        - name: firmID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: roleID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: key
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "204": { description: Revoked (or already absent) }
+        "400": { description: Invalid IDs, or the role is owner-flagged }
+        "401": { description: Missing or invalid bearer token }
+        "403": { description: Caller is a member of firmID but not an owner }
+        "404": { description: Caller isn't a member of firmID, or roleID doesn't exist in it }
+
+  /api/firms/{firmID}/permission-events:
+    get:
+      summary: Server-Sent Events stream of "this firm's permissions changed" notifications
+      description: >
+        Open to any firm member (not owner-only like the endpoints above -
+        Vision §3's "active sessions for the affected role are
+        reconnected" means the affected role's own sessions, not just an
+        owner watching Audit Mode). One `event: permissions-changed` per
+        grant/revoke anywhere in the firm; clients re-fetch whatever
+        state they care about on receipt rather than trying to apply a
+        diff. In-process only (internal/permission.Broadcaster) - see
+        docs/DEVELOPMENT.md for why, and its single-process caveat.
+      parameters:
+        - name: firmID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: text/event-stream of permissions-changed events, held open until the client disconnects
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "400": { description: Invalid firmID }
+        "401": { description: Missing or invalid bearer token }
+        "404": { description: Caller isn't a member of firmID }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -366,7 +477,10 @@ components:
           type: string
         roleName:
           type: string
-      required: [firmId, roleId, roleKey, roleName]
+        isOwner:
+          type: boolean
+          description: Mirrors roles.is_owner - cosmetic only, never a permission bypass. The frontend uses this to decide whether to show the Permission Audit Mode toggle.
+      required: [firmId, roleId, roleKey, roleName, isOwner]
     StateInfo:
       type: object
       properties:
@@ -459,3 +573,32 @@ components:
           $ref: "#/components/schemas/WizardFirmResult"
           description: Present only when this node is the create-default-firm action and it just succeeded.
       required: [key, kind]
+    RoleGrant:
+      type: object
+      properties:
+        roleId:
+          type: string
+          format: uuid
+        roleKey:
+          type: string
+        roleName:
+          type: string
+        permissionKeys:
+          type: array
+          items:
+            type: string
+      required: [roleId, roleKey, roleName, permissionKeys]
+    FirmPermissionAudit:
+      type: object
+      properties:
+        myPermissionKeys:
+          type: array
+          items:
+            type: string
+          description: The caller's own permission keys, across every role they hold in this firm.
+        roles:
+          type: array
+          items:
+            $ref: "#/components/schemas/RoleGrant"
+          description: Every non-owner role's grants - owner-flagged roles are excluded.
+      required: [myPermissionKeys, roles]

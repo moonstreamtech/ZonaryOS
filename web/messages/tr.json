@@ -40,5 +40,21 @@
     "sellButton": "Sat",
     "sellError": "Satış kaydedilemedi. Lütfen tekrar deneyin.",
     "sellPermissionDenied": "Satış kaydetme izniniz yok."
+  },
+  "PermissionAudit": {
+    "toggleOn": "Denetim Modu",
+    "toggleOff": "Denetim Modundan Çık",
+    "badgeOkAria": "Rolünüzde bu izin var",
+    "badgeMissingAria": "Rolünüzde bu izin yok",
+    "badgeUntaggedAria": "Bu öğe herhangi bir izin denetimine bağlı değil - unutulmuş olabilir",
+    "popupTitle": "Bunu kimler yapabilir?",
+    "rolesWithPermission": "Bu izne sahip roller",
+    "noRoles": "Henüz rol yok",
+    "removeButton": "Kaldır",
+    "addButton": "Ekle",
+    "selectRolePlaceholder": "Bir rol seçin…",
+    "closeButton": "Kapat",
+    "loadError": "İzin denetimi yüklenemedi. Lütfen tekrar deneyin.",
+    "actionError": "Bu değişiklik uygulanamadı. Lütfen tekrar deneyin."
   }
 }

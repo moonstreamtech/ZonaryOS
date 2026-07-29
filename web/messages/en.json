@@ -40,5 +40,21 @@
     "sellButton": "Sell",
     "sellError": "Couldn't record the sale. Please try again.",
     "sellPermissionDenied": "You don't have permission to record a sale."
+  },
+  "PermissionAudit": {
+    "toggleOn": "Audit Mode",
+    "toggleOff": "Exit Audit Mode",
+    "badgeOkAria": "Your role has this permission",
+    "badgeMissingAria": "Your role does not have this permission",
+    "badgeUntaggedAria": "This element isn't wired to any permission check - it may have been forgotten",
+    "popupTitle": "Who can do this?",
+    "rolesWithPermission": "Roles with this permission",
+    "noRoles": "No roles yet",
+    "removeButton": "Remove",
+    "addButton": "Add",
+    "selectRolePlaceholder": "Select a role…",
+    "closeButton": "Close",
+    "loadError": "Couldn't load the permission audit. Please try again.",
+    "actionError": "That change didn't go through. Please try again."
   }
 }
