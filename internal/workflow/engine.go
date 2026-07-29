@@ -147,6 +147,15 @@ func upsertPermission(ctx context.Context, tx pgx.Tx, firmID, granteeRoleID uuid
 // initial state, gated by the definition's create_permission_key. Instance
 // creation has no from-state, so it is deliberately not modeled as a
 // transition - but it is enforced and audited identically to one.
+//
+// The permission.IsMember check up front (Open Points item 37's audit)
+// is not strictly required for correctness here - permission.Has already
+// fails for a non-member, since it needs a real user_firm_roles row - but
+// without it, a non-member supplying a real firmID/definitionID pair
+// could still read create_permission_key and learn that a definition
+// exists there before being denied, a minor existence/metadata oracle.
+// Checking membership first closes that too and keeps every function in
+// this file that touches a firm-scoped table doing so in the same order.
 func CreateInstance(ctx context.Context, pool *pgxpool.Pool, firmID, userID, definitionID uuid.UUID, payload map[string]any) (uuid.UUID, error) {
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
@@ -155,8 +164,16 @@ func CreateInstance(ctx context.Context, pool *pgxpool.Pool, firmID, userID, def
 
 	var instanceID uuid.UUID
 	err = zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		isMember, err := permission.IsMember(ctx, tx, firmID, userID)
+		if err != nil {
+			return err
+		}
+		if !isMember {
+			return ErrDefinitionNotFound
+		}
+
 		var createPermissionKey string
-		err := tx.QueryRow(ctx, `
+		err = tx.QueryRow(ctx, `
 			SELECT create_permission_key FROM workflow_definitions WHERE id = $1
 		`, definitionID).Scan(&createPermissionKey)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -214,6 +231,12 @@ func CreateInstance(ctx context.Context, pool *pgxpool.Pool, firmID, userID, def
 // transition's permission_key. payload is shallow-merged into the
 // instance's stored payload (jsonb `||`) and also recorded verbatim - as
 // the delta this specific call contributed - in the audit_log entry.
+//
+// Same permission.IsMember-first reasoning as CreateInstance (Open
+// Points item 37's audit): permission.Has still fails a non-member on
+// its own, but without this check first, a non-member supplying a real
+// firmID/instanceID pair could read the instance's current state and
+// which transitions structurally exist from it before being denied.
 func ExecuteTransition(ctx context.Context, pool *pgxpool.Pool, firmID, userID, instanceID uuid.UUID, actionKey string, payload map[string]any) error {
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
@@ -221,8 +244,16 @@ func ExecuteTransition(ctx context.Context, pool *pgxpool.Pool, firmID, userID, 
 	}
 
 	return zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		isMember, err := permission.IsMember(ctx, tx, firmID, userID)
+		if err != nil {
+			return err
+		}
+		if !isMember {
+			return ErrInstanceNotFound
+		}
+
 		var definitionID, currentStateID uuid.UUID
-		err := tx.QueryRow(ctx, `
+		err = tx.QueryRow(ctx, `
 			SELECT workflow_definition_id, current_state_id FROM workflow_instances WHERE id = $1
 		`, instanceID).Scan(&definitionID, &currentStateID)
 		if errors.Is(err, pgx.ErrNoRows) {

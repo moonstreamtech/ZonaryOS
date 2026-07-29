@@ -351,6 +351,44 @@ func TestExecuteTransition_RequiresPermission(t *testing.T) {
 	}
 }
 
+// TestExecuteTransition_NonMemberGetsNotFoundNotPermissionDenied is the
+// Open Points item 37 audit's regression test for ExecuteTransition: a
+// caller who isn't a member of firmID at all, but supplies a real
+// firmID/instanceID pair belonging to someone else's firm, must not be
+// able to observe the instance's existence, current state, or which
+// transitions structurally exist from it - it must look exactly like an
+// unknown instance, not a permission denial (which would confirm the
+// instance is real).
+func TestExecuteTransition_NonMemberGetsNotFoundNotPermissionDenied(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	var firmA uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm A') RETURNING id`).Scan(&firmA); err != nil {
+		t.Fatalf("seed firm A: %v", err)
+	}
+	definitionA, err := workflow.SeedStockToSaleWorkflow(ctx, appPool, firmA)
+	if err != nil {
+		t.Fatalf("seed workflow A: %v", err)
+	}
+	userA, _ := seedUserInFirm(ctx, t, adminPool, appPool, firmA, "sub-firm-a-exec", workflow.AddStockPermission)
+	instanceID, err := workflow.CreateInstance(ctx, appPool, firmA, userA, definitionA, map[string]any{"item": "widget"})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+
+	var firmB uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm B') RETURNING id`).Scan(&firmB); err != nil {
+		t.Fatalf("seed firm B: %v", err)
+	}
+	userB, _ := seedUserInFirm(ctx, t, adminPool, appPool, firmB, "sub-outsider-exec")
+
+	err = workflow.ExecuteTransition(ctx, appPool, firmA, userB, instanceID, "record_sale", map[string]any{})
+	if !errors.Is(err, workflow.ErrInstanceNotFound) {
+		t.Fatalf("expected ErrInstanceNotFound for a non-member supplying a real instance ID, got: %v", err)
+	}
+}
+
 func TestExecuteTransition_SucceedsAndAudits(t *testing.T) {
 	adminPool, appPool := setupTest(t)
 	ctx := context.Background()
@@ -472,6 +510,37 @@ func TestCreateInstance_UnknownDefinition(t *testing.T) {
 	_, err := workflow.CreateInstance(ctx, appPool, firmID, userID, uuid.New(), map[string]any{})
 	if !errors.Is(err, workflow.ErrDefinitionNotFound) {
 		t.Fatalf("expected ErrDefinitionNotFound, got: %v", err)
+	}
+}
+
+// TestCreateInstance_NonMemberGetsNotFoundNotPermissionDenied is the
+// Open Points item 37 audit's regression test for CreateInstance: a
+// caller who isn't a member of firmID at all, but supplies a real
+// firmID/definitionID pair belonging to someone else's firm, must not be
+// able to observe that the definition exists (e.g. via a
+// permission-denied response that implies the create_permission_key
+// lookup succeeded) - it must look exactly like an unknown definition.
+func TestCreateInstance_NonMemberGetsNotFoundNotPermissionDenied(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	var firmA uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm A') RETURNING id`).Scan(&firmA); err != nil {
+		t.Fatalf("seed firm A: %v", err)
+	}
+	definitionA, err := workflow.SeedStockToSaleWorkflow(ctx, appPool, firmA)
+	if err != nil {
+		t.Fatalf("seed workflow A: %v", err)
+	}
+
+	var firmB uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm B') RETURNING id`).Scan(&firmB); err != nil {
+		t.Fatalf("seed firm B: %v", err)
+	}
+	userB, _ := seedUserInFirm(ctx, t, adminPool, appPool, firmB, "sub-outsider-create")
+
+	if _, err := workflow.CreateInstance(ctx, appPool, firmA, userB, definitionA, map[string]any{"item": "widget"}); !errors.Is(err, workflow.ErrDefinitionNotFound) {
+		t.Fatalf("expected ErrDefinitionNotFound for a non-member supplying a real definition ID, got: %v", err)
 	}
 }
 
