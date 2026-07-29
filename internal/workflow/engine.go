@@ -10,9 +10,14 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
 )
+
+// workflowInstanceListEntityType is the audit_log.entity_type ListInstances
+// records its view-log entry under - see ListInstances's doc comment.
+const workflowInstanceListEntityType = "workflow_instance_list"
 
 // createInstanceAction is the audit_log.action recorded for instance
 // creation - a fixed label, not a permission key, since creation isn't a
@@ -409,6 +414,18 @@ func CurrentState(ctx context.Context, pool *pgxpool.Pool, firmID, userID, insta
 // Sale's stock list). userID must actually belong to firmID (see
 // permission.IsMember and CurrentState's doc comment for why this check
 // exists) - RLS alone doesn't prove that.
+//
+// This is Vision §3's Audit Trail Infrastructure's one wired-up view/read
+// log call site (internal/auditlog.LogView) for this PR: view/read logging
+// is explicitly called for in the vision but is also the part flagged as
+// legally uncertain (docs/OPEN_POINTS.md item 33 - whether retaining
+// detailed view records creates KVKK exposure is an open question requiring
+// legal counsel). Rather than wiring every read endpoint in the system
+// (CurrentState, LookupDefinitionByKey, Permission Audit Mode's own reads,
+// ...) into this mechanism now, only this one representative path - the
+// stock list, PR #8's read endpoint - does, as a proof of the mechanism.
+// Broader rollout is future work pending that legal-review decision, not an
+// oversight.
 func ListInstances(ctx context.Context, pool *pgxpool.Pool, firmID, userID, definitionID uuid.UUID) ([]InstanceState, error) {
 	var results []InstanceState
 
@@ -419,6 +436,10 @@ func ListInstances(ctx context.Context, pool *pgxpool.Pool, firmID, userID, defi
 		}
 		if !isMember {
 			return ErrDefinitionNotFound
+		}
+
+		if err := auditlog.LogView(ctx, tx, firmID, userID, definitionID, workflowInstanceListEntityType); err != nil {
+			return err
 		}
 
 		// One query for every transition this definition has, grouped by

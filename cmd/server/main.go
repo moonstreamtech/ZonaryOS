@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
 	"github.com/moonstreamtech/ZonaryOS/internal/identity"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/config"
@@ -41,6 +42,7 @@ func main() {
 	workflow.RegisterRoutes(mux, verifier, pool)
 	wizard.RegisterRoutes(mux, verifier, pool)
 	permission.RegisterRoutes(mux, verifier, pool, broadcaster)
+	auditlog.RegisterRoutes(mux, verifier, pool)
 
 	log.Printf("ZonaryOS server listening on %s", cfg.HTTPAddr)
 	if err := http.ListenAndServe(cfg.HTTPAddr, mux); err != nil {
