@@ -37,7 +37,12 @@ if ! command -v pg_isready >/dev/null 2>&1; then
 fi
 if ! pg_isready -q; then
 	echo "starting local postgresql service..."
-	service postgresql start
+	# `service` invokes systemctl, which needs root - fine as-is when this
+	# script itself runs as root (this sandbox), but GitHub Actions runners
+	# run as an unprivileged `runner` user with passwordless sudo instead;
+	# `sudo service ...` works identically in both cases (sudo as root is
+	# just a no-op wrapper).
+	sudo service postgresql start
 fi
 sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='zonaryos'" | grep -q 1 || \
 	sudo -u postgres psql -c "CREATE ROLE zonaryos LOGIN PASSWORD 'zonaryos' SUPERUSER;"
