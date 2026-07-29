@@ -32,7 +32,19 @@ These are architecture/process decisions from `docs/VISION.md` that must not be 
 
 ## How to Verify a Change
 
-CI pipeline is not yet built. Once it exists, this section will list exact commands. Until then, treat the CI Checklist categories (build, unit/integration tests, RLS drift, i18n hardcoded-string check, API contract diff, migration safety, doc sync, license header, E2E smoke) as the acceptance bar for any change, even before automation exists for all of them.
+`.github/workflows/ci.yml` runs automatically on every PR (and on push to `main`) - see `docs/DEVELOPMENT.md`'s "Continuous Integration" section for what each job actually does. Before pushing, the same checks can be run locally:
+
+```
+go build ./...
+go vet ./... && go test ./...
+go run ./cmd/ciaudit                              # RLS / Permission Drift Audit
+python3 scripts/license_headers.py --check         # License Header Check (--fix to add missing headers)
+cd web && npm ci && npm run build && npm run lint && npm test && npm run check:i18n
+```
+
+Postgres-backed integration tests need a real Postgres (`make dev-up` or `make dev-up-standalone`, then `make migrate` - see `docs/DEVELOPMENT.md`). Doc Sync Check and API Contract Diff are PR-diff checks (`python3 scripts/check_doc_sync.py origin/main`, `python3 scripts/check_api_contract.py origin/main`).
+
+Still "Not Set Up" (need more deploy-pipeline infrastructure first, not attempted yet): Migration Safety Check, Dependency Vulnerability Scan, SAST Security Scan, E2E Smoke Test, Canary/Rollback Trigger. Treat these as manual acceptance-bar items still, same as before CI existed at all.
 
 ## Where to Look for What
 

@@ -1,3 +1,8 @@
+// Copyright (c) ZonaryOS. All rights reserved.
+// Use of this source code is governed by the license found in the LICENSE
+// file in the root of this repository (draft, pending legal review - see
+// docs/OPEN_POINTS.md item 20).
+
 package workflow
 
 import (
@@ -54,6 +59,9 @@ var StockToSaleSpec = DefinitionSpec{
 // returning its workflow_definitions.id. Intended for test fixtures and
 // firm provisioning until the wizard (a later PR) can define workflows
 // like this one interactively.
+//
+// ciaudit:ignore-firmid-check: thin wrapper around DefineWorkflow, same
+// reasoning - provisioning-only, never exposed via an HTTP handler.
 func SeedStockToSaleWorkflow(ctx context.Context, pool *pgxpool.Pool, firmID uuid.UUID) (uuid.UUID, error) {
 	return DefineWorkflow(ctx, pool, firmID, StockToSaleSpec)
 }
@@ -65,6 +73,10 @@ func SeedStockToSaleWorkflow(ctx context.Context, pool *pgxpool.Pool, firmID uui
 // granteeRoleID is granted every permission this workflow introduces (the
 // self-action auto-grant DefineWorkflowTx implements) - the caller no
 // longer needs a separate grant step of its own.
+//
+// ciaudit:ignore-firmid-check: thin wrapper around DefineWorkflowTx, same
+// reasoning - only called by internal/wizard.CreateDefaultFirm with a
+// firmID it just created, and test fixtures.
 func SeedStockToSaleWorkflowTx(ctx context.Context, tx pgx.Tx, firmID, granteeRoleID uuid.UUID) (uuid.UUID, error) {
 	return DefineWorkflowTx(ctx, tx, firmID, granteeRoleID, StockToSaleSpec)
 }

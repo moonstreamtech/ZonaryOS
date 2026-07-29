@@ -1,3 +1,8 @@
+// Copyright (c) ZonaryOS. All rights reserved.
+// Use of this source code is governed by the license found in the LICENSE
+// file in the root of this repository (draft, pending legal review - see
+// docs/OPEN_POINTS.md item 20).
+
 // Package auditlog is Vision §3's Audit Trail Infrastructure: a shared,
 // reusable place for any module to record a data-change or a view/read
 // event against the `audit_log` table (migrations/0003_workflow_engine.up.sql),
@@ -68,6 +73,11 @@ const ViewAction = "view"
 // NOTHING on both statements). Must be called within a transaction already
 // scoped to firmID (or, during firm creation, one that has just set
 // app.current_firm_id itself - see internal/wizard.CreateDefaultFirm).
+//
+// ciaudit:ignore-firmid-check: permission-catalog provisioning helper,
+// only ever called by internal/wizard.CreateDefaultFirm with a firmID it
+// just created in the same transaction - never reachable with a caller-
+// supplied firmID via an HTTP handler.
 func RegisterReadPermissionTx(ctx context.Context, tx pgx.Tx, firmID, granteeRoleID uuid.UUID) error {
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO permissions (key, description)
@@ -100,6 +110,11 @@ func RegisterReadPermissionTx(ctx context.Context, tx pgx.Tx, firmID, granteeRol
 // zdb.WithFirmContext (or, during firm creation, one that has just set
 // app.current_firm_id itself), same requirement as every other write in
 // this codebase.
+//
+// ciaudit:ignore-firmid-check: pure audit_log writer, invoked only after
+// its caller has already checked membership/permission for the operation
+// it's recording - it makes no read/write authorization decision of its
+// own.
 func Write(ctx context.Context, tx pgx.Tx, firmID, userID, entityID uuid.UUID, entityType, action string, changes map[string]any) error {
 	if changes == nil {
 		changes = map[string]any{}
@@ -123,6 +138,9 @@ func Write(ctx context.Context, tx pgx.Tx, firmID, userID, entityID uuid.UUID, e
 // internal/workflow.ListInstances, the one representative read path this PR
 // wires it into, and docs/OPEN_POINTS.md item 33 for why broader rollout is
 // pending a legal-review decision, not an oversight.
+//
+// ciaudit:ignore-firmid-check: thin wrapper around Write, same reasoning -
+// invoked only after its caller has already checked membership/permission.
 func LogView(ctx context.Context, tx pgx.Tx, firmID, userID, entityID uuid.UUID, entityType string) error {
 	return Write(ctx, tx, firmID, userID, entityID, entityType, ViewAction, nil)
 }

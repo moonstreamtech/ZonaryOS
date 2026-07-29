@@ -1,4 +1,4 @@
-.PHONY: build test vet run migrate audit-purge web-dev web-build web-lint dev-up dev-down dev-up-standalone dev-down-standalone
+.PHONY: build test vet run migrate audit-purge ci-audit license-check license-fix web-dev web-build web-lint web-i18n-check dev-up dev-down dev-up-standalone dev-down-standalone
 
 build:
 	go build ./...
@@ -29,6 +29,21 @@ web-build:
 
 web-lint:
 	cd web && npm run lint
+
+web-i18n-check:
+	cd web && npm run check:i18n
+
+# CI Checklist item 4, "RLS / Permission Drift Audit" - see cmd/ciaudit and
+# docs/DEVELOPMENT.md's "Continuous Integration" section.
+ci-audit:
+	go run ./cmd/ciaudit
+
+# CI Checklist item 7, "License Header Check" - see scripts/license_headers.py.
+license-check:
+	python3 scripts/license_headers.py --check
+
+license-fix:
+	python3 scripts/license_headers.py --fix
 
 dev-up:
 	docker compose up -d

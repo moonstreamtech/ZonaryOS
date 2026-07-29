@@ -1,3 +1,8 @@
+// Copyright (c) ZonaryOS. All rights reserved.
+// Use of this source code is governed by the license found in the LICENSE
+// file in the root of this repository (draft, pending legal review - see
+// docs/OPEN_POINTS.md item 20).
+
 package db
 
 import (
@@ -17,6 +22,12 @@ import (
 // database engine enforcing the policy against this setting, never from an
 // application-level "WHERE firm_id = ?" that could be forgotten in some
 // code path (Never-Violate Rule 3).
+//
+// ciaudit:ignore-firmid-check: this is the low-level RLS session
+// primitive itself, not a caller-facing operation - it is fn's job (every
+// caller in this codebase) to call permission.IsMember/Has inside the
+// closure it passes here; see docs/DEVELOPMENT.md's Authorization
+// checklist.
 func WithFirmContext(ctx context.Context, pool *pgxpool.Pool, firmID uuid.UUID, fn func(ctx context.Context, tx pgx.Tx) error) error {
 	return withSessionContext(ctx, pool, "app.current_firm_id", firmID, fn)
 }

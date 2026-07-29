@@ -1,3 +1,8 @@
+// Copyright (c) ZonaryOS. All rights reserved.
+// Use of this source code is governed by the license found in the LICENSE
+// file in the root of this repository (draft, pending legal review - see
+// docs/OPEN_POINTS.md item 20).
+
 package permission
 
 import (
@@ -39,6 +44,10 @@ func NewBroadcaster() *Broadcaster {
 // an unsubscribe function the caller must always run (typically via
 // defer) to avoid leaking the channel from the internal map once the
 // connection closes.
+//
+// ciaudit:ignore-firmid-check: pure in-process pub/sub, touches no
+// database table - the caller (handleEvents) already checks
+// CheckMembership before subscribing.
 func (b *Broadcaster) Subscribe(firmID uuid.UUID) (ch <-chan struct{}, unsubscribe func()) {
 	c := make(chan struct{}, 1)
 
@@ -66,6 +75,10 @@ func (b *Broadcaster) Subscribe(firmID uuid.UUID) (ch <-chan struct{}, unsubscri
 // queue of individual events, so multiple Publish calls between two
 // wakeups coalesce into one - subscribers always re-fetch full current
 // state on wakeup, never try to apply a diff.
+//
+// ciaudit:ignore-firmid-check: pure in-process pub/sub, touches no
+// database table - only called by grant/revoke handlers after their own
+// IsMember+IsOwner check and a successful commit.
 func (b *Broadcaster) Publish(firmID uuid.UUID) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
