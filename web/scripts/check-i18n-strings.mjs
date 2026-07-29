@@ -21,10 +21,17 @@
 // state/action names, which come from the backend as data, not UI copy -
 // see web/src/app/[locale]/stock/StockList.tsx's own doc comment on why
 // those specifically are out of scope for the i18n layer).
-const fs = require("fs");
-const path = require("path");
-const ts = require("typescript");
+//
+// ESM (not .cjs): this project's ESLint config flags require()-style
+// imports (@typescript-eslint/no-require-imports) across the repo, this
+// script included - using import here keeps it lint-clean instead of
+// carving out a per-file exception.
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+import ts from "typescript";
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SRC_ROOT = path.join(__dirname, "..", "src");
 const TEXT_ATTRIBUTES = new Set(["placeholder", "aria-label", "title", "alt"]);
 const HAS_LETTERS = /[A-Za-z]{2,}/;
