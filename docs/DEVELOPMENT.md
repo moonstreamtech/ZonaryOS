@@ -286,3 +286,15 @@ cd web && npm ci && npm run build && npm run lint && npm test && npm run check:i
 ```
 
 The Postgres-backed integration test job, Doc Sync Check, API Contract Diff, and Migration Safety Check need either a real Postgres (see "Running the RLS integration tests" above) or a base ref to diff against (`python3 scripts/check_doc_sync.py origin/main` / `python3 scripts/check_api_contract.py origin/main` / `python3 scripts/check_migration_safety.py origin/main`) - all fine to run locally against a local clone with `main` fetched. `scripts/check_gitleaks.sh` needs `gitleaks` installed (`go install github.com/zricethezav/gitleaks/v8@latest`) and on `PATH`. `scripts/e2e_smoke_test.sh` needs the full standalone stack up (`make dev-up-standalone && make migrate`, the backend running, and the frontend built and started) - see the job definition in `.github/workflows/ci.yml` for the exact sequence.
+
+### Context-Loss Tactics: PR review-comment catch-up
+
+(No prior "Context-Loss Tactics" section existed in this repo before this note - this is the first one, added here per the Notion Development Process page §8. If a broader context-loss-mitigation section gets written later, merge this into it rather than keeping two.)
+
+**Every session starts by checking the immediately preceding PR for unaddressed review comments before starting new work** - the same discipline already applied to `docs/VISION.md`/`docs/OPEN_POINTS.md` at the start of a new task. A CI run going green does not mean a PR is done: a human reviewer, GitHub's own bots (CodeQL, Dependabot, secret-scanning alerts), or any other automated commenter can leave feedback after the fact, and nothing in this repo's process otherwise re-surfaces it.
+
+Checklist for the PR(s) in scope:
+- Pull all three comment surfaces, not just one: issue-level comments, inline review comments, and formal reviews (`pull_request_read` with `get_comments`/`get_review_comments`/`get_reviews`, or the equivalent for whatever tool is available) - a comment can land in any of the three.
+- For each comment found: address it with a real code change if it's actionable, note explicitly if it's already stale/resolved by later work, or reply substantively if it's a question - never leave it silently unread.
+- If the PR in question has already merged, don't rewrite merged history - open a new small follow-up PR/commit referencing the original instead.
+- Report per PR explicitly, including "none found" - don't assume a PR has nothing just because it's old or because CI was green.
