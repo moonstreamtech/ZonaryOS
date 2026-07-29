@@ -1,3 +1,8 @@
+// Copyright (c) ZonaryOS. All rights reserved.
+// Use of this source code is governed by the license found in the LICENSE
+// file in the root of this repository (draft, pending legal review - see
+// docs/OPEN_POINTS.md item 20).
+
 // Package permission checks a user's permission grants within a firm,
 // against the global permission catalog and per-firm role grants
 // established in migrations/0001_core_schema.up.sql (`permissions`,
@@ -28,6 +33,9 @@ import (
 // since the ID itself is what makes the RLS-scoped rows visible. Must be
 // called within a transaction already scoped to firmID via
 // db.WithFirmContext, same as Has.
+//
+// ciaudit:ignore-firmid-check: this *is* one of the permission-check
+// primitives cmd/ciaudit looks for; it cannot call itself.
 func IsMember(ctx context.Context, tx pgx.Tx, firmID, userID uuid.UUID) (bool, error) {
 	var member bool
 	err := tx.QueryRow(ctx, `
@@ -64,6 +72,9 @@ func CheckMembership(ctx context.Context, pool *pgxpool.Pool, firmID, userID uui
 // within a transaction already scoped to firmID via db.WithFirmContext;
 // firmID is passed explicitly here only so the query is unambiguous even
 // though RLS also confines it.
+//
+// ciaudit:ignore-firmid-check: this *is* one of the permission-check
+// primitives cmd/ciaudit looks for; it cannot call itself.
 func Has(ctx context.Context, tx pgx.Tx, firmID, userID uuid.UUID, permissionKey string) (bool, error) {
 	var has bool
 	err := tx.QueryRow(ctx, `

@@ -1,3 +1,8 @@
+// Copyright (c) ZonaryOS. All rights reserved.
+// Use of this source code is governed by the license found in the LICENSE
+// file in the root of this repository (draft, pending legal review - see
+// docs/OPEN_POINTS.md item 20).
+
 package workflow
 
 import (
@@ -40,6 +45,11 @@ const createInstanceAction = "create"
 // firm-creation wizard, which also has to insert the firm, its default
 // role, and that role's permission grants in the same transaction) should
 // call DefineWorkflowTx directly instead.
+//
+// ciaudit:ignore-firmid-check: workflow-provisioning helper, only called
+// by test fixtures and internal/workflow.SeedStockToSaleWorkflow - never
+// exposed via an HTTP handler that would hand it a caller-supplied
+// firmID.
 func DefineWorkflow(ctx context.Context, pool *pgxpool.Pool, firmID uuid.UUID, spec DefinitionSpec) (uuid.UUID, error) {
 	var definitionID uuid.UUID
 	err := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
@@ -69,6 +79,11 @@ func DefineWorkflow(ctx context.Context, pool *pgxpool.Pool, firmID uuid.UUID, s
 // entirely - what DefineWorkflow (above) does for fixture/test callers
 // that only want the workflow's shape to exist, not a real grant against
 // a real acting role.
+//
+// ciaudit:ignore-firmid-check: workflow-provisioning helper, only called
+// during firm creation (internal/wizard.CreateDefaultFirm, with a firmID
+// it just created in the same transaction) and test fixtures - never
+// reachable with a caller-supplied firmID via an HTTP handler.
 func DefineWorkflowTx(ctx context.Context, tx pgx.Tx, firmID, granteeRoleID uuid.UUID, spec DefinitionSpec) (uuid.UUID, error) {
 	if err := spec.Validate(); err != nil {
 		return uuid.UUID{}, err
@@ -125,6 +140,10 @@ func DefineWorkflowTx(ctx context.Context, tx pgx.Tx, firmID, granteeRoleID uuid
 // means calling this again for the same key/role (e.g. a second workflow
 // definition referencing an already-known permission) is a no-op, not an
 // error.
+//
+// ciaudit:ignore-firmid-check: internal helper called only by
+// DefineWorkflowTx, which is itself provisioning-only (see its own
+// suppression note above).
 func upsertPermission(ctx context.Context, tx pgx.Tx, firmID, granteeRoleID uuid.UUID, p PermissionSpec) error {
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO permissions (key, description)

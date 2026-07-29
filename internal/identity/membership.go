@@ -1,3 +1,8 @@
+// Copyright (c) ZonaryOS. All rights reserved.
+// Use of this source code is governed by the license found in the LICENSE
+// file in the root of this repository (draft, pending legal review - see
+// docs/OPEN_POINTS.md item 20).
+
 package identity
 
 import (
@@ -81,6 +86,13 @@ type RoleDetail struct {
 // verified token through to an RLS-scoped database session for that firm.
 // It returns an error (no rows) if userID has no membership in firmID,
 // which RLS enforces regardless of what the caller passes in.
+//
+// ciaudit:ignore-firmid-check: the membership check is implied by this
+// function's own query - it joins user_firm_roles on both userID and
+// firmID and returns an error when no row matches, the same "no
+// membership, no data" guarantee permission.IsMember provides, just
+// inlined here instead of calling it (docs/DEVELOPMENT.md's Authorization
+// checklist item 2).
 func RoleInFirm(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.UUID) (RoleDetail, error) {
 	var detail RoleDetail
 

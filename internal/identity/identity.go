@@ -1,3 +1,8 @@
+// Copyright (c) ZonaryOS. All rights reserved.
+// Use of this source code is governed by the license found in the LICENSE
+// file in the root of this repository (draft, pending legal review - see
+// docs/OPEN_POINTS.md item 20).
+
 // Package identity resolves an authenticated Keycloak user into the
 // ZonaryOS identity/firm model from internal/platform/db: verifying the
 // bearer token proves who the caller is; everything about which firms they

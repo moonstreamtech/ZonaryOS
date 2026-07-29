@@ -1,3 +1,8 @@
+// Copyright (c) ZonaryOS. All rights reserved.
+// Use of this source code is governed by the license found in the LICENSE
+// file in the root of this repository (draft, pending legal review - see
+// docs/OPEN_POINTS.md item 20).
+
 // Command auditpurge deletes audit_log rows older than an operator-supplied
 // retention window (ZONARYOS_AUDIT_RETENTION_DAYS). It is a manually-invoked
 // maintenance command, not something cmd/server ever runs automatically:

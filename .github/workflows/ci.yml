@@ -1,0 +1,181 @@
+# CI pipeline turning the CI Checklist categories (see CLAUDE.md's "How to
+# Verify a Change") from manual PR-by-PR discipline into automated,
+# enforced checks. Each job below maps to one CI Checklist item - see
+# docs/DEVELOPMENT.md's "Continuous Integration" section for what each one
+# actually does and why, and the PR that introduced this file for which
+# items are intentionally still "Not Set Up" (Migration Safety, Dependency
+# Vulnerability Scan, SAST, E2E Smoke, Canary/Rollback).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+env:
+  GO_VERSION: "1.25"
+  NODE_VERSION: "22"
+
+jobs:
+  # --- Build (CI Checklist item 1) ---------------------------------------
+
+  build-backend:
+    name: Build (backend)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "${{ env.GO_VERSION }}" }
+      - run: go build ./...
+
+  build-frontend:
+    name: Build (frontend)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "${{ env.NODE_VERSION }}" }
+      - run: npm ci
+      - run: npm run build
+
+  # --- Unit Tests (CI Checklist item 2) ----------------------------------
+  # No database/Keycloak env vars are set here, so every integration test
+  # (identified by t.Skip when its required env vars are unset - the same
+  # mechanism this codebase's tests already use locally, not a new one)
+  # self-skips; only the true unit tests (spec_test.go, tree_test.go,
+  # verifier_test.go, config_test.go, mux_test.go, ...) actually run.
+
+  unit-tests-backend:
+    name: Unit Tests (backend)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "${{ env.GO_VERSION }}" }
+      - run: go vet ./...
+      - run: go test ./...
+
+  unit-tests-frontend:
+    name: Unit Tests (frontend) + lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "${{ env.NODE_VERSION }}" }
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+
+  # --- Integration Tests (CI Checklist item 3) ---------------------------
+  # A real Postgres service container, mirroring docker-compose.yml's
+  # `postgres` service exactly (same image, same POSTGRES_USER/PASSWORD/DB)
+  # so the same migrations and the same ZONARYOS_TEST_ADMIN/APP_DATABASE_URL
+  # convention docs/DEVELOPMENT.md documents for local dev applies here
+  # unchanged - not a new mechanism for CI. This is what actually runs the
+  # RLS/tenant-isolation tests (internal/platform/db, and every package's
+  # own *_integration_test.go) that previously only ran when a human
+  # remembered to `make dev-up` and set these env vars by hand - the gap
+  # that let Open Points item 37 ship once. Keycloak-dependent tests
+  # (internal/identity/keycloak_integration_test.go) are deliberately left
+  # out of this job's scope (no ZONARYOS_TEST_KEYCLOAK_* vars are set, so
+  # that one test self-skips here too) - see the PR description for why.
+
+  integration-tests:
+    name: Integration Tests (Postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: zonaryos
+          POSTGRES_PASSWORD: zonaryos
+          POSTGRES_DB: zonaryos
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U zonaryos -d zonaryos"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      ZONARYOS_MIGRATE_DATABASE_URL: postgres://zonaryos:zonaryos@localhost:5432/zonaryos?sslmode=disable
+      ZONARYOS_TEST_ADMIN_DATABASE_URL: postgres://zonaryos:zonaryos@localhost:5432/zonaryos?sslmode=disable
+      ZONARYOS_TEST_APP_DATABASE_URL: postgres://zonaryos_app:zonaryos_app@localhost:5432/zonaryos?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "${{ env.GO_VERSION }}" }
+      - run: go run ./cmd/migrate
+      - run: go test -p 1 ./...
+
+  # --- RLS / Permission Drift Audit (CI Checklist item 4) ----------------
+
+  rls-permission-audit:
+    name: RLS / Permission Drift Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "${{ env.GO_VERSION }}" }
+      - run: go run ./cmd/ciaudit
+
+  # --- i18n Hardcoded-String Check (CI Checklist item 5) -----------------
+
+  i18n-check:
+    name: i18n Hardcoded-String Check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "${{ env.NODE_VERSION }}" }
+      - run: npm ci
+      - run: npm run check:i18n
+
+  # --- Doc Sync Check (CI Checklist item 6) ------------------------------
+  # Pull-request-only: this is inherently a diff-against-base check, which
+  # only means something in the context of a PR's changeset.
+
+  doc-sync-check:
+    name: Doc Sync Check
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: python3 scripts/check_doc_sync.py "origin/${{ github.base_ref }}" "${{ github.event.pull_request.head.sha }}"
+
+  # --- License Header Check (CI Checklist item 7) ------------------------
+
+  license-header-check:
+    name: License Header Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/license_headers.py --check
+
+  # --- API Contract Diff (CI Checklist item 8) ---------------------------
+  # Pull-request-only, same reasoning as Doc Sync Check above - diffs
+  # docs/api/openapi.yaml against the version on the PR's base branch
+  # (typically main), which doubles as this check's "baseline" mechanism
+  # (no separate versioned-snapshot file needed - the base branch's own
+  # history already is one).
+
+  api-contract-diff:
+    name: API Contract Diff
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: python3 scripts/check_api_contract.py "origin/${{ github.base_ref }}"

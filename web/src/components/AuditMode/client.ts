@@ -1,3 +1,8 @@
+// Copyright (c) ZonaryOS. All rights reserved.
+// Use of this source code is governed by the license found in the LICENSE
+// file in the root of this repository (draft, pending legal review - see
+// docs/OPEN_POINTS.md item 20).
+
 // Client-side (browser) fetch helpers for Audit Mode - calls this app's
 // own Next.js proxy routes (never the Go backend directly, and never
 // carries a token itself: the httpOnly session cookie travels

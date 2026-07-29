@@ -1,3 +1,8 @@
+// Copyright (c) ZonaryOS. All rights reserved.
+// Use of this source code is governed by the license found in the LICENSE
+// file in the root of this repository (draft, pending legal review - see
+// docs/OPEN_POINTS.md item 20).
+
 package permission
 
 import (
@@ -26,6 +31,9 @@ const (
 // (roles.is_owner, migrations/0004_role_owner_flag.up.sql) within firmID.
 // Must be called within a transaction already scoped to firmID via
 // db.WithFirmContext, same as Has/IsMember.
+//
+// ciaudit:ignore-firmid-check: this *is* one of the permission-check
+// primitives cmd/ciaudit looks for; it cannot call itself.
 func IsOwner(ctx context.Context, tx pgx.Tx, firmID, userID uuid.UUID) (bool, error) {
 	var owner bool
 	err := tx.QueryRow(ctx, `
@@ -169,6 +177,13 @@ func checkPermissionKeyExists(ctx context.Context, tx pgx.Tx, permissionKey stri
 	return nil
 }
 
+// writeGrantAuditLog is an internal helper called only by GrantPermission/
+// RevokePermission, after those have already checked IsMember+IsOwner - it
+// never runs on a caller-supplied firmID that hasn't already cleared that
+// gate.
+//
+// ciaudit:ignore-firmid-check: authorization already checked by the caller
+// before this runs; see doc comment above.
 func writeGrantAuditLog(ctx context.Context, tx pgx.Tx, firmID, userID, roleID uuid.UUID, action, permissionKey string) error {
 	changes, err := json.Marshal(map[string]any{"permissionKey": permissionKey})
 	if err != nil {
