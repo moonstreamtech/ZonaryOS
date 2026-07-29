@@ -27,15 +27,18 @@ const createInstanceAction = "create"
 // Stock-In-Sale workflow (see stock_to_sale.go) and any future, much
 // larger workflow definition go through - the engine itself never
 // hardcodes a specific workflow's shape. It is a thin WithFirmContext
-// wrapper around DefineWorkflowTx; callers that need workflow provisioning
-// to be one step inside a larger atomic operation (e.g. the firm-creation
-// wizard, which also has to insert the firm, its default role, and role
-// grants in the same transaction) should call DefineWorkflowTx directly
-// instead.
+// wrapper around DefineWorkflowTx, calling it with no granting role (see
+// DefineWorkflowTx) - this pool-based entry point exists for test
+// fixtures and other callers that just need a workflow's shape to exist,
+// not for real firm-initiated provisioning. Callers that need workflow
+// provisioning to be one step inside a larger atomic operation (e.g. the
+// firm-creation wizard, which also has to insert the firm, its default
+// role, and that role's permission grants in the same transaction) should
+// call DefineWorkflowTx directly instead.
 func DefineWorkflow(ctx context.Context, pool *pgxpool.Pool, firmID uuid.UUID, spec DefinitionSpec) (uuid.UUID, error) {
 	var definitionID uuid.UUID
 	err := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
-		id, err := DefineWorkflowTx(ctx, tx, firmID, spec)
+		id, err := DefineWorkflowTx(ctx, tx, firmID, uuid.Nil, spec)
 		definitionID = id
 		return err
 	})
@@ -50,16 +53,27 @@ func DefineWorkflow(ctx context.Context, pool *pgxpool.Pool, firmID uuid.UUID, s
 // being scoped to firmID (typically via WithFirmContext, or - during firm
 // creation, before WithFirmContext can apply - by having just set
 // app.current_firm_id itself within the same transaction).
-func DefineWorkflowTx(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, spec DefinitionSpec) (uuid.UUID, error) {
+//
+// granteeRoleID implements the "self-action auto-grant" rule: when a
+// firm's own action provisions a new permission key (here, by defining a
+// workflow), that permission is granted to the role that triggered the
+// action, in the same transaction - not left as a separate step the
+// caller has to remember (and, for the firm-creation wizard, not
+// something a bespoke grant loop needs to duplicate; see
+// internal/wizard.CreateDefaultFirm). Pass uuid.Nil to skip granting
+// entirely - what DefineWorkflow (above) does for fixture/test callers
+// that only want the workflow's shape to exist, not a real grant against
+// a real acting role.
+func DefineWorkflowTx(ctx context.Context, tx pgx.Tx, firmID, granteeRoleID uuid.UUID, spec DefinitionSpec) (uuid.UUID, error) {
 	if err := spec.Validate(); err != nil {
 		return uuid.UUID{}, err
 	}
 
-	if err := upsertPermission(ctx, tx, spec.CreatePermission); err != nil {
+	if err := upsertPermission(ctx, tx, firmID, granteeRoleID, spec.CreatePermission); err != nil {
 		return uuid.UUID{}, err
 	}
 	for _, t := range spec.Transitions {
-		if err := upsertPermission(ctx, tx, t.Permission); err != nil {
+		if err := upsertPermission(ctx, tx, firmID, granteeRoleID, t.Permission); err != nil {
 			return uuid.UUID{}, err
 		}
 	}
@@ -99,13 +113,32 @@ func DefineWorkflowTx(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, spec Def
 	return definitionID, nil
 }
 
-func upsertPermission(ctx context.Context, tx pgx.Tx, p PermissionSpec) error {
+// upsertPermission registers p in the global permissions catalog and,
+// when granteeRoleID is not uuid.Nil, grants it to that role within
+// firmID in the same statement batch - see DefineWorkflowTx's doc comment
+// for why. Idempotent either way: ON CONFLICT DO NOTHING on both inserts
+// means calling this again for the same key/role (e.g. a second workflow
+// definition referencing an already-known permission) is a no-op, not an
+// error.
+func upsertPermission(ctx context.Context, tx pgx.Tx, firmID, granteeRoleID uuid.UUID, p PermissionSpec) error {
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO permissions (key, description)
 		VALUES ($1, $2)
 		ON CONFLICT (key) DO NOTHING
 	`, p.Key, p.Description); err != nil {
 		return fmt.Errorf("upsert permission %q: %w", p.Key, err)
+	}
+
+	if granteeRoleID == uuid.Nil {
+		return nil
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO role_permissions (firm_id, role_id, permission_key)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (role_id, permission_key) DO NOTHING
+	`, firmID, granteeRoleID, p.Key); err != nil {
+		return fmt.Errorf("grant permission %q to role %s: %w", p.Key, granteeRoleID, err)
 	}
 	return nil
 }

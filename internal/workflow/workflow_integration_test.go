@@ -155,6 +155,77 @@ func TestDefineWorkflow_SeedsStatesTransitionsAndPermissions(t *testing.T) {
 	}
 }
 
+// TestDefineWorkflowTx_GrantsPermissionsToGivenRole covers the
+// self-action auto-grant: a caller that supplies a real granteeRoleID to
+// DefineWorkflowTx (as internal/wizard.CreateDefaultFirm does for its
+// default "owner" role) should see that role granted every permission
+// the spec introduces, in the same transaction - not as a separate step.
+func TestDefineWorkflowTx_GrantsPermissionsToGivenRole(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	var firmID uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm A') RETURNING id`).Scan(&firmID); err != nil {
+		t.Fatalf("seed firm: %v", err)
+	}
+	var roleID uuid.UUID
+	if err := adminPool.QueryRow(ctx, `
+		INSERT INTO roles (firm_id, key, name) VALUES ($1, 'owner', 'Owner') RETURNING id
+	`, firmID).Scan(&roleID); err != nil {
+		t.Fatalf("seed role: %v", err)
+	}
+
+	err := zdb.WithFirmContext(ctx, appPool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := workflow.DefineWorkflowTx(ctx, tx, firmID, roleID, workflow.StockToSaleSpec)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("DefineWorkflowTx: %v", err)
+	}
+
+	for _, key := range workflow.StockToSaleSpec.PermissionKeys() {
+		var granted bool
+		if err := adminPool.QueryRow(ctx, `
+			SELECT EXISTS (SELECT 1 FROM role_permissions WHERE firm_id = $1 AND role_id = $2 AND permission_key = $3)
+		`, firmID, roleID, key).Scan(&granted); err != nil {
+			t.Fatalf("check role_permissions for %q: %v", key, err)
+		}
+		if !granted {
+			t.Errorf("expected role %v to be granted permission %q", roleID, key)
+		}
+	}
+}
+
+// TestDefineWorkflow_DoesNotGrantAnyRole covers the other half: the
+// pool-based DefineWorkflow/SeedStockToSaleWorkflow entry points (used
+// only by fixtures/tests, per their own doc comments) must not silently
+// start granting permissions to any role - TestCreateInstance_
+// RequiresPermission below already depends on this (it deliberately seeds
+// a role with nothing granted), but this test asserts it directly:
+// nothing in role_permissions should exist for a firm right after
+// SeedStockToSaleWorkflow, before any role has been seeded at all.
+func TestDefineWorkflow_DoesNotGrantAnyRole(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	var firmID uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm A') RETURNING id`).Scan(&firmID); err != nil {
+		t.Fatalf("seed firm: %v", err)
+	}
+
+	if _, err := workflow.SeedStockToSaleWorkflow(ctx, appPool, firmID); err != nil {
+		t.Fatalf("SeedStockToSaleWorkflow: %v", err)
+	}
+
+	var count int
+	if err := adminPool.QueryRow(ctx, `SELECT count(*) FROM role_permissions WHERE firm_id = $1`, firmID).Scan(&count); err != nil {
+		t.Fatalf("count role_permissions: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected no role_permissions rows from a pool-based SeedStockToSaleWorkflow call, got %d", count)
+	}
+}
+
 func TestCreateInstance_RequiresPermission(t *testing.T) {
 	adminPool, appPool := setupTest(t)
 	ctx := context.Background()
