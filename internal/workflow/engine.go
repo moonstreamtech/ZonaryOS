@@ -27,15 +27,18 @@ const createInstanceAction = "create"
 // Stock-In-Sale workflow (see stock_to_sale.go) and any future, much
 // larger workflow definition go through - the engine itself never
 // hardcodes a specific workflow's shape. It is a thin WithFirmContext
-// wrapper around DefineWorkflowTx; callers that need workflow provisioning
-// to be one step inside a larger atomic operation (e.g. the firm-creation
-// wizard, which also has to insert the firm, its default role, and role
-// grants in the same transaction) should call DefineWorkflowTx directly
-// instead.
+// wrapper around DefineWorkflowTx, calling it with no granting role (see
+// DefineWorkflowTx) - this pool-based entry point exists for test
+// fixtures and other callers that just need a workflow's shape to exist,
+// not for real firm-initiated provisioning. Callers that need workflow
+// provisioning to be one step inside a larger atomic operation (e.g. the
+// firm-creation wizard, which also has to insert the firm, its default
+// role, and that role's permission grants in the same transaction) should
+// call DefineWorkflowTx directly instead.
 func DefineWorkflow(ctx context.Context, pool *pgxpool.Pool, firmID uuid.UUID, spec DefinitionSpec) (uuid.UUID, error) {
 	var definitionID uuid.UUID
 	err := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
-		id, err := DefineWorkflowTx(ctx, tx, firmID, spec)
+		id, err := DefineWorkflowTx(ctx, tx, firmID, uuid.Nil, spec)
 		definitionID = id
 		return err
 	})
@@ -50,16 +53,27 @@ func DefineWorkflow(ctx context.Context, pool *pgxpool.Pool, firmID uuid.UUID, s
 // being scoped to firmID (typically via WithFirmContext, or - during firm
 // creation, before WithFirmContext can apply - by having just set
 // app.current_firm_id itself within the same transaction).
-func DefineWorkflowTx(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, spec DefinitionSpec) (uuid.UUID, error) {
+//
+// granteeRoleID implements the "self-action auto-grant" rule: when a
+// firm's own action provisions a new permission key (here, by defining a
+// workflow), that permission is granted to the role that triggered the
+// action, in the same transaction - not left as a separate step the
+// caller has to remember (and, for the firm-creation wizard, not
+// something a bespoke grant loop needs to duplicate; see
+// internal/wizard.CreateDefaultFirm). Pass uuid.Nil to skip granting
+// entirely - what DefineWorkflow (above) does for fixture/test callers
+// that only want the workflow's shape to exist, not a real grant against
+// a real acting role.
+func DefineWorkflowTx(ctx context.Context, tx pgx.Tx, firmID, granteeRoleID uuid.UUID, spec DefinitionSpec) (uuid.UUID, error) {
 	if err := spec.Validate(); err != nil {
 		return uuid.UUID{}, err
 	}
 
-	if err := upsertPermission(ctx, tx, spec.CreatePermission); err != nil {
+	if err := upsertPermission(ctx, tx, firmID, granteeRoleID, spec.CreatePermission); err != nil {
 		return uuid.UUID{}, err
 	}
 	for _, t := range spec.Transitions {
-		if err := upsertPermission(ctx, tx, t.Permission); err != nil {
+		if err := upsertPermission(ctx, tx, firmID, granteeRoleID, t.Permission); err != nil {
 			return uuid.UUID{}, err
 		}
 	}
@@ -99,13 +113,32 @@ func DefineWorkflowTx(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, spec Def
 	return definitionID, nil
 }
 
-func upsertPermission(ctx context.Context, tx pgx.Tx, p PermissionSpec) error {
+// upsertPermission registers p in the global permissions catalog and,
+// when granteeRoleID is not uuid.Nil, grants it to that role within
+// firmID in the same statement batch - see DefineWorkflowTx's doc comment
+// for why. Idempotent either way: ON CONFLICT DO NOTHING on both inserts
+// means calling this again for the same key/role (e.g. a second workflow
+// definition referencing an already-known permission) is a no-op, not an
+// error.
+func upsertPermission(ctx context.Context, tx pgx.Tx, firmID, granteeRoleID uuid.UUID, p PermissionSpec) error {
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO permissions (key, description)
 		VALUES ($1, $2)
 		ON CONFLICT (key) DO NOTHING
 	`, p.Key, p.Description); err != nil {
 		return fmt.Errorf("upsert permission %q: %w", p.Key, err)
+	}
+
+	if granteeRoleID == uuid.Nil {
+		return nil
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO role_permissions (firm_id, role_id, permission_key)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (role_id, permission_key) DO NOTHING
+	`, firmID, granteeRoleID, p.Key); err != nil {
+		return fmt.Errorf("grant permission %q to role %s: %w", p.Key, granteeRoleID, err)
 	}
 	return nil
 }
@@ -114,6 +147,15 @@ func upsertPermission(ctx context.Context, tx pgx.Tx, p PermissionSpec) error {
 // initial state, gated by the definition's create_permission_key. Instance
 // creation has no from-state, so it is deliberately not modeled as a
 // transition - but it is enforced and audited identically to one.
+//
+// The permission.IsMember check up front (Open Points item 37's audit)
+// is not strictly required for correctness here - permission.Has already
+// fails for a non-member, since it needs a real user_firm_roles row - but
+// without it, a non-member supplying a real firmID/definitionID pair
+// could still read create_permission_key and learn that a definition
+// exists there before being denied, a minor existence/metadata oracle.
+// Checking membership first closes that too and keeps every function in
+// this file that touches a firm-scoped table doing so in the same order.
 func CreateInstance(ctx context.Context, pool *pgxpool.Pool, firmID, userID, definitionID uuid.UUID, payload map[string]any) (uuid.UUID, error) {
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
@@ -122,8 +164,16 @@ func CreateInstance(ctx context.Context, pool *pgxpool.Pool, firmID, userID, def
 
 	var instanceID uuid.UUID
 	err = zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		isMember, err := permission.IsMember(ctx, tx, firmID, userID)
+		if err != nil {
+			return err
+		}
+		if !isMember {
+			return ErrDefinitionNotFound
+		}
+
 		var createPermissionKey string
-		err := tx.QueryRow(ctx, `
+		err = tx.QueryRow(ctx, `
 			SELECT create_permission_key FROM workflow_definitions WHERE id = $1
 		`, definitionID).Scan(&createPermissionKey)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -181,6 +231,12 @@ func CreateInstance(ctx context.Context, pool *pgxpool.Pool, firmID, userID, def
 // transition's permission_key. payload is shallow-merged into the
 // instance's stored payload (jsonb `||`) and also recorded verbatim - as
 // the delta this specific call contributed - in the audit_log entry.
+//
+// Same permission.IsMember-first reasoning as CreateInstance (Open
+// Points item 37's audit): permission.Has still fails a non-member on
+// its own, but without this check first, a non-member supplying a real
+// firmID/instanceID pair could read the instance's current state and
+// which transitions structurally exist from it before being denied.
 func ExecuteTransition(ctx context.Context, pool *pgxpool.Pool, firmID, userID, instanceID uuid.UUID, actionKey string, payload map[string]any) error {
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
@@ -188,8 +244,16 @@ func ExecuteTransition(ctx context.Context, pool *pgxpool.Pool, firmID, userID, 
 	}
 
 	return zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		isMember, err := permission.IsMember(ctx, tx, firmID, userID)
+		if err != nil {
+			return err
+		}
+		if !isMember {
+			return ErrInstanceNotFound
+		}
+
 		var definitionID, currentStateID uuid.UUID
-		err := tx.QueryRow(ctx, `
+		err = tx.QueryRow(ctx, `
 			SELECT workflow_definition_id, current_state_id FROM workflow_instances WHERE id = $1
 		`, instanceID).Scan(&definitionID, &currentStateID)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -253,11 +317,15 @@ type StateInfo struct {
 
 // AvailableAction is one transition the instance could take from its
 // current state - listed regardless of the caller's own permissions;
-// enforcement happens at ExecuteTransition time, not here.
+// enforcement happens at ExecuteTransition time, not here. PermissionKey
+// is included so a UI rendering this action can carry the Never-Violate
+// Rule 7 "permission tag" (Vision §3 Permission Audit Mode) without
+// hardcoding a duplicate of the key ExecuteTransition actually checks.
 type AvailableAction struct {
-	ActionKey string
-	Name      string
-	ToState   StateInfo
+	ActionKey     string
+	Name          string
+	ToState       StateInfo
+	PermissionKey string
 }
 
 // InstanceState is the current state of one workflow instance, plus what
@@ -271,14 +339,27 @@ type InstanceState struct {
 }
 
 // CurrentState reads instanceID's current state and its structurally
-// available next actions.
-func CurrentState(ctx context.Context, pool *pgxpool.Pool, firmID, instanceID uuid.UUID) (InstanceState, error) {
+// available next actions. userID must actually belong to firmID (see
+// permission.IsMember) - WithFirmContext's RLS scoping alone only
+// confines the query to rows whose firm_id matches firmID, which by
+// itself doesn't prove the caller has any right to that firmID at all;
+// without this check, any authenticated user could read any firm's
+// instances just by supplying that firm's real ID.
+func CurrentState(ctx context.Context, pool *pgxpool.Pool, firmID, userID, instanceID uuid.UUID) (InstanceState, error) {
 	var result InstanceState
 	var definitionID, currentStateID uuid.UUID
 
 	err := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		isMember, err := permission.IsMember(ctx, tx, firmID, userID)
+		if err != nil {
+			return err
+		}
+		if !isMember {
+			return ErrInstanceNotFound
+		}
+
 		var payloadJSON []byte
-		err := tx.QueryRow(ctx, `
+		err = tx.QueryRow(ctx, `
 			SELECT wi.id, wi.workflow_definition_id, wi.current_state_id, ws.key, ws.name, wi.payload
 			FROM workflow_instances wi
 			JOIN workflow_states ws ON ws.id = wi.current_state_id
@@ -296,7 +377,7 @@ func CurrentState(ctx context.Context, pool *pgxpool.Pool, firmID, instanceID uu
 		}
 
 		rows, err := tx.Query(ctx, `
-			SELECT wt.action_key, wt.name, ws.key, ws.name
+			SELECT wt.action_key, wt.name, ws.key, ws.name, wt.permission_key
 			FROM workflow_transitions wt
 			JOIN workflow_states ws ON ws.id = wt.to_state_id
 			WHERE wt.workflow_definition_id = $1 AND wt.from_state_id = $2
@@ -308,7 +389,7 @@ func CurrentState(ctx context.Context, pool *pgxpool.Pool, firmID, instanceID uu
 		defer rows.Close()
 		for rows.Next() {
 			var a AvailableAction
-			if err := rows.Scan(&a.ActionKey, &a.Name, &a.ToState.Key, &a.ToState.Name); err != nil {
+			if err := rows.Scan(&a.ActionKey, &a.Name, &a.ToState.Key, &a.ToState.Name, &a.PermissionKey); err != nil {
 				return err
 			}
 			result.AvailableActions = append(result.AvailableActions, a)
@@ -319,4 +400,127 @@ func CurrentState(ctx context.Context, pool *pgxpool.Pool, firmID, instanceID uu
 		return InstanceState{}, err
 	}
 	return result, nil
+}
+
+// ListInstances returns every workflow_instances row for definitionID
+// within firmID, each with its current state and structurally available
+// next actions - the same per-instance shape CurrentState returns for
+// one instance, but for a firm-scoped listing screen (e.g. Stock In ->
+// Sale's stock list). userID must actually belong to firmID (see
+// permission.IsMember and CurrentState's doc comment for why this check
+// exists) - RLS alone doesn't prove that.
+func ListInstances(ctx context.Context, pool *pgxpool.Pool, firmID, userID, definitionID uuid.UUID) ([]InstanceState, error) {
+	var results []InstanceState
+
+	err := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		isMember, err := permission.IsMember(ctx, tx, firmID, userID)
+		if err != nil {
+			return err
+		}
+		if !isMember {
+			return ErrDefinitionNotFound
+		}
+
+		// One query for every transition this definition has, grouped by
+		// its from-state key, instead of one query per instance - the
+		// number of transitions is small and fixed per definition
+		// regardless of how many instances exist.
+		actionsByFromState := make(map[string][]AvailableAction)
+		transitionRows, err := tx.Query(ctx, `
+			SELECT src.key, wt.action_key, wt.name, dst.key, dst.name, wt.permission_key
+			FROM workflow_transitions wt
+			JOIN workflow_states src ON src.id = wt.from_state_id
+			JOIN workflow_states dst ON dst.id = wt.to_state_id
+			WHERE wt.workflow_definition_id = $1
+			ORDER BY wt.action_key
+		`, definitionID)
+		if err != nil {
+			return fmt.Errorf("look up transitions: %w", err)
+		}
+		for transitionRows.Next() {
+			var fromStateKey string
+			var a AvailableAction
+			if err := transitionRows.Scan(&fromStateKey, &a.ActionKey, &a.Name, &a.ToState.Key, &a.ToState.Name, &a.PermissionKey); err != nil {
+				transitionRows.Close()
+				return err
+			}
+			actionsByFromState[fromStateKey] = append(actionsByFromState[fromStateKey], a)
+		}
+		if err := transitionRows.Err(); err != nil {
+			return err
+		}
+		transitionRows.Close()
+
+		instanceRows, err := tx.Query(ctx, `
+			SELECT wi.id, wi.current_state_id, ws.key, ws.name, wi.payload
+			FROM workflow_instances wi
+			JOIN workflow_states ws ON ws.id = wi.current_state_id
+			WHERE wi.workflow_definition_id = $1
+			ORDER BY wi.created_at
+		`, definitionID)
+		if err != nil {
+			return fmt.Errorf("look up instances: %w", err)
+		}
+		defer instanceRows.Close()
+		for instanceRows.Next() {
+			var inst InstanceState
+			var currentStateID uuid.UUID
+			var payloadJSON []byte
+			if err := instanceRows.Scan(&inst.InstanceID, &currentStateID, &inst.State.Key, &inst.State.Name, &payloadJSON); err != nil {
+				return err
+			}
+			if err := json.Unmarshal(payloadJSON, &inst.Payload); err != nil {
+				return fmt.Errorf("unmarshal payload: %w", err)
+			}
+			inst.WorkflowDefinitionID = definitionID
+			inst.AvailableActions = actionsByFromState[inst.State.Key]
+			results = append(results, inst)
+		}
+		return instanceRows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
+// DefinitionInfo names one workflow_definitions row - just enough for a
+// caller (e.g. a frontend page that only knows the well-known key
+// "stock_to_sale") to resolve the UUID the rest of this package's
+// functions take.
+type DefinitionInfo struct {
+	ID   uuid.UUID
+	Key  string
+	Name string
+}
+
+// LookupDefinitionByKey resolves firmID's workflow_definitions row by its
+// key (e.g. "stock_to_sale", see stock_to_sale.go's StockToSaleKey).
+// userID must actually belong to firmID (see permission.IsMember and
+// CurrentState's doc comment for why) - a key that doesn't exist for
+// firmID, or a firmID the caller isn't a member of at all, both resolve
+// to the same ErrDefinitionNotFound, by design (see writeEngineError).
+func LookupDefinitionByKey(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.UUID, key string) (DefinitionInfo, error) {
+	var info DefinitionInfo
+	err := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		isMember, err := permission.IsMember(ctx, tx, firmID, userID)
+		if err != nil {
+			return err
+		}
+		if !isMember {
+			return ErrDefinitionNotFound
+		}
+
+		err = tx.QueryRow(ctx, `
+			SELECT id, key, name FROM workflow_definitions WHERE key = $1
+		`, key).Scan(&info.ID, &info.Key, &info.Name)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrDefinitionNotFound
+		}
+		return err
+	})
+	if err != nil {
+		return DefinitionInfo{}, err
+	}
+	return info, nil
 }

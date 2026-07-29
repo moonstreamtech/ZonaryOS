@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import { fetchMe } from "@/lib/me";
+import { Link } from "@/i18n/navigation";
 
 type PageProps = {
   params: Promise<{ locale: string }>;
@@ -59,6 +60,12 @@ export default async function Home({ params }: PageProps) {
               <li key={firm.firmId}>{firm.firmName}</li>
             ))}
           </ul>
+          <Link
+            href="/stock"
+            className="font-medium text-zinc-950 underline dark:text-zinc-50"
+          >
+            {t("goToStock")}
+          </Link>
           {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- /api/auth/logout is a route handler, not a page: it must be a real navigation, not client-side routing */}
           <a
             href="/api/auth/logout"

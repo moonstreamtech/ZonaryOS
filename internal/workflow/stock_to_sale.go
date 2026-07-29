@@ -61,8 +61,10 @@ func SeedStockToSaleWorkflow(ctx context.Context, pool *pgxpool.Pool, firmID uui
 // SeedStockToSaleWorkflowTx is SeedStockToSaleWorkflow's DefineWorkflowTx
 // counterpart, for callers that need it as one step inside a larger
 // transaction - namely the firm-creation wizard, which provisions this
-// workflow atomically alongside the firm itself, its default role, and
-// that role's permission grants.
-func SeedStockToSaleWorkflowTx(ctx context.Context, tx pgx.Tx, firmID uuid.UUID) (uuid.UUID, error) {
-	return DefineWorkflowTx(ctx, tx, firmID, StockToSaleSpec)
+// workflow atomically alongside the firm itself and its default role.
+// granteeRoleID is granted every permission this workflow introduces (the
+// self-action auto-grant DefineWorkflowTx implements) - the caller no
+// longer needs a separate grant step of its own.
+func SeedStockToSaleWorkflowTx(ctx context.Context, tx pgx.Tx, firmID, granteeRoleID uuid.UUID) (uuid.UUID, error) {
+	return DefineWorkflowTx(ctx, tx, firmID, granteeRoleID, StockToSaleSpec)
 }

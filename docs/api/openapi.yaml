@@ -77,6 +77,42 @@ paths:
         "403":
           description: Caller has no membership in firmID
 
+  /api/firms/{firmID}/workflow-definitions:
+    get:
+      summary: Resolve a well-known workflow key (e.g. "stock_to_sale") to its firm-scoped definition ID
+      description: >
+        Lets a caller that only knows a workflow's well-known key (see
+        internal/workflow's *Key constants, e.g. StockToSaleKey) resolve
+        the UUID every other workflow endpoint takes, without a separate
+        "list all definitions" round trip. A query parameter rather than a
+        path segment deliberately - a "by-key/{key}" path segment here
+        once collided with the sibling
+        `{definitionID}/instances` path below (net/http's ServeMux
+        rejects the pair as an ambiguous pattern at startup; neither is
+        more specific than the other at every differing segment).
+        Membership-checked (internal/permission.IsMember): a firmID the
+        caller genuinely isn't a member of resolves to the same 404 as an
+        unknown key, not a 200 with someone else's definition.
+      parameters:
+        - name: firmID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: key
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The matching workflow definition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowDefinition"
+        "400": { description: Invalid firmID }
+        "401": { description: Missing or invalid bearer token }
+        "404": { description: No workflow definition with this key in this firm, or the caller isn't a member of firmID }
+
   /api/firms/{firmID}/workflow-definitions/{definitionID}/instances:
     post:
       summary: Start a new instance of a workflow definition ("add stock")
@@ -114,6 +150,39 @@ paths:
         "401": { description: Missing or invalid bearer token }
         "403": { description: Caller lacks the definition's create permission }
         "404": { description: No such workflow definition in this firm }
+    get:
+      summary: List every instance of a workflow definition (e.g. a stock list)
+      description: >
+        Not filtered by the caller's own *permissions* - same convention
+        as reading one instance's state: enforcement happens when an
+        action is actually executed, not when instances are merely
+        listed. It is membership-checked though
+        (internal/permission.IsMember): a firmID the caller isn't a
+        member of resolves to 404, the same as an unknown definitionID -
+        RLS alone (Never-Violate Rule 3) confines the query to rows
+        matching the firmID given, but by itself doesn't prove the caller
+        has any right to that firmID.
+      parameters:
+        - name: firmID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: definitionID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Every instance of this definition within the caller's firm
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/InstanceState"
+        "400": { description: Invalid firmID/definitionID }
+        "401": { description: Missing or invalid bearer token }
+        "404": { description: No such workflow definition, or the caller isn't a member of firmID }
 
   /api/firms/{firmID}/workflow-instances/{instanceID}:
     get:
@@ -121,7 +190,10 @@ paths:
       description: >
         Available actions are listed regardless of the caller's own
         permissions - enforcement happens when a transition is actually
-        executed, not here.
+        executed, not here. Membership-checked though
+        (internal/permission.IsMember): reading another firm's instance
+        by ID, even a genuinely existing one, resolves to the same 404 as
+        an unknown instanceID.
       parameters:
         - name: firmID
           in: path
@@ -312,7 +384,21 @@ components:
           type: string
         toState:
           $ref: "#/components/schemas/StateInfo"
-      required: [actionKey, name, toState]
+        permissionKey:
+          type: string
+          description: The permission ExecuteTransition checks for this action - included so a UI can carry the Never-Violate Rule 7 permission tag without hardcoding a duplicate of it.
+      required: [actionKey, name, toState, permissionKey]
+    WorkflowDefinition:
+      type: object
+      properties:
+        definitionId:
+          type: string
+          format: uuid
+        key:
+          type: string
+        name:
+          type: string
+      required: [definitionId, key, name]
     InstanceState:
       type: object
       properties:

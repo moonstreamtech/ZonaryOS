@@ -113,6 +113,33 @@ func TestCreateDefaultFirm_CreatesFirmRoleMembershipAndWorkflow(t *testing.T) {
 	}
 }
 
+// TestCreateDefaultFirm_FlagsOwnerRoleAsOwner covers migrations/
+// 0004_role_owner_flag.up.sql's is_owner column: CreateDefaultFirm's
+// default role should be flagged so a future Permission Audit Mode UI can
+// exclude it from grant/revoke lists (Vision §3) - this flag is cosmetic
+// only and never consulted by permission.Has, which the other tests in
+// this file already exercise indirectly by relying on real
+// role_permissions grants.
+func TestCreateDefaultFirm_FlagsOwnerRoleAsOwner(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	userID := seedUser(ctx, t, adminPool, "wizard-user-owner-flag")
+
+	result, err := wizard.CreateDefaultFirm(ctx, appPool, userID, "Acme Trading Co.")
+	if err != nil {
+		t.Fatalf("CreateDefaultFirm: %v", err)
+	}
+
+	var isOwner bool
+	if err := adminPool.QueryRow(ctx, `SELECT is_owner FROM roles WHERE id = $1`, result.RoleID).Scan(&isOwner); err != nil {
+		t.Fatalf("query is_owner: %v", err)
+	}
+	if !isOwner {
+		t.Error("expected the default role to be flagged is_owner")
+	}
+}
+
 func TestCreateDefaultFirm_GrantsStockToSalePermissionsToOwnerRole(t *testing.T) {
 	adminPool, appPool := setupTest(t)
 	ctx := context.Background()

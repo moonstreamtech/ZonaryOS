@@ -4,7 +4,8 @@
     "subtitle": "Universal, sector-agnostic ERP/WMS/MES system kernel.",
     "statusLabel": "Backend status",
     "statusOk": "Connected",
-    "statusError": "Unreachable"
+    "statusError": "Unreachable",
+    "goToStock": "Go to stock"
   },
   "Auth": {
     "signIn": "Sign in",
@@ -26,5 +27,18 @@
     "firmCreatedBody": "{firmName} is ready to go.",
     "continueToApp": "Continue",
     "errorGeneric": "Something went wrong. Please try again."
+  },
+  "Stock": {
+    "title": "Stock",
+    "empty": "No stock items yet.",
+    "definitionMissing": "This firm's Stock In -> Sale workflow isn't set up yet.",
+    "columnItem": "Item",
+    "columnQuantity": "Quantity",
+    "columnStatus": "Status",
+    "columnAction": "Action",
+    "unknownItem": "(unnamed item)",
+    "sellButton": "Sell",
+    "sellError": "Couldn't record the sale. Please try again.",
+    "sellPermissionDenied": "You don't have permission to record a sale."
   }
 }

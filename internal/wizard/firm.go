@@ -14,19 +14,16 @@ import (
 
 // defaultRoleKey is the key of the role every wizard-created firm starts
 // with. Its holder is the firm's founder - the person who just ran the
-// wizard - so it is granted every permission the wizard provisions for
-// this firm (see CreateDefaultFirm), not a restricted starter role: there
-// is nobody else yet to grant permissions to them, and Vision §3's
-// Parametric Permission/Role System expects the firm owner to configure
-// roles for everyone else from here via Permission Audit Mode. This
-// intentionally does not reach for "grant every key in the global
-// permissions catalog" - that catalog is shared across all firms (see
-// migrations/0001_core_schema.up.sql), so it can also hold permission
-// keys other firms' own custom workflows introduced, which have nothing
-// to do with this firm. Granting exactly what this firm's own
-// provisioning just created keeps the grant bounded and meaningful; a
-// firm that defines more workflows later needs its own grant step when it
-// does, same as this one.
+// wizard - so it ends up holding every permission the wizard provisions
+// for this firm: not because it bypasses any check (there is no
+// superuser bypass anywhere in this system - see the is_owner column
+// added by migrations/0004_role_owner_flag.up.sql, which is cosmetic
+// only), but because DefineWorkflowTx's self-action auto-grant (see
+// internal/workflow/engine.go) grants this role every permission each
+// workflow it seeds for this firm introduces, in the same transaction.
+// There is nobody else yet to grant permissions to the founder, and
+// Vision §3's Parametric Permission/Role System expects the firm owner to
+// configure roles for everyone else from here via Permission Audit Mode.
 const defaultRoleKey = "owner"
 
 // createFirmAuditAction is the audit_log.action recorded for firm
@@ -49,11 +46,13 @@ type CreateDefaultFirmResult struct {
 
 // CreateDefaultFirm is the wizard's one implemented terminal action
 // (ActionCreateDefaultFirm): it creates a new firm, a default "owner"
-// role for it, adds userID as that role's holder, seeds the firm with the
-// Stock In -> Sale workflow (reusing workflow.SeedStockToSaleWorkflowTx
-// as-is, not duplicating its logic), and writes one audit_log entry - all
-// inside a single transaction, so a caller never ends up with a
-// half-created firm.
+// role for it (flagged is_owner for Permission Audit Mode's UI, see
+// migrations/0004_role_owner_flag.up.sql), adds userID as that role's
+// holder, seeds the firm with the Stock In -> Sale workflow - granting
+// the owner role every permission that introduces along the way, via
+// workflow.SeedStockToSaleWorkflowTx's self-action auto-grant, not a
+// bespoke grant step here - and writes one audit_log entry, all inside a
+// single transaction, so a caller never ends up with a half-created firm.
 //
 // A plain WithFirmContext (internal/platform/db) can't be used here: it
 // requires a firmID up front to scope the transaction to, but the firm
@@ -97,24 +96,19 @@ func CreateDefaultFirm(ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID
 	}
 
 	if err := tx.QueryRow(ctx, `
-		INSERT INTO roles (firm_id, key, name) VALUES ($1, $2, $3) RETURNING id
+		INSERT INTO roles (firm_id, key, name, is_owner) VALUES ($1, $2, $3, true) RETURNING id
 	`, result.FirmID, defaultRoleKey, "Owner").Scan(&result.RoleID); err != nil {
 		return CreateDefaultFirmResult{}, fmt.Errorf("insert default role: %w", err)
 	}
 
-	definitionID, err := workflow.SeedStockToSaleWorkflowTx(ctx, tx, result.FirmID)
+	// Granting the owner role every permission this seeds is
+	// SeedStockToSaleWorkflowTx's job, not this function's - see
+	// DefineWorkflowTx's self-action auto-grant.
+	definitionID, err := workflow.SeedStockToSaleWorkflowTx(ctx, tx, result.FirmID, result.RoleID)
 	if err != nil {
 		return CreateDefaultFirmResult{}, fmt.Errorf("seed stock-to-sale workflow: %w", err)
 	}
 	result.StockToSaleDefinitionID = definitionID
-
-	for _, key := range workflow.StockToSaleSpec.PermissionKeys() {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO role_permissions (firm_id, role_id, permission_key) VALUES ($1, $2, $3)
-		`, result.FirmID, result.RoleID, key); err != nil {
-			return CreateDefaultFirmResult{}, fmt.Errorf("grant permission %q to default role: %w", key, err)
-		}
-	}
 
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO user_firm_roles (firm_id, user_id, role_id) VALUES ($1, $2, $3)

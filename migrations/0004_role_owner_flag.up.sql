@@ -1,0 +1,18 @@
+-- Marks a firm's highest-permission-tier role - cosmetic/UI purposes only.
+-- Vision §3's Permission Audit Mode description: "Roles at the highest
+-- permission tier (that already have everything) don't appear in these
+-- lists." This flag is what a future Permission Audit Mode UI would read
+-- to exclude such roles from grant/revoke lists.
+--
+-- Deliberately NOT a permission bypass: internal/permission.Has and every
+-- other authorization check keep consulting role_permissions exactly as
+-- before, unaware this column exists. There is no superuser short-circuit
+-- anywhere in this system - an "owner" role holds every permission it has
+-- because each one was actually granted (see internal/workflow's
+-- self-action auto-grant, migrations/0003_workflow_engine.up.sql's
+-- role_permissions), not because is_owner waives the check.
+--
+-- Naming mirrors workflow_states.is_initial/is_terminal
+-- (migrations/0003_workflow_engine.up.sql) - a plain boolean flag on the
+-- row it describes, not a separate lookup table.
+ALTER TABLE roles ADD COLUMN is_owner boolean NOT NULL DEFAULT false;

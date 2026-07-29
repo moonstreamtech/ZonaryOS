@@ -15,6 +15,29 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// IsMember reports whether userID belongs to firmID at all, through any
+// role. This is the check every read path that isn't already gated by a
+// specific Has call must still perform: WithFirmContext's RLS scoping
+// only confines a query to rows whose firm_id matches the firmID the
+// caller passed in - it says nothing about whether the caller is
+// actually a member of that firm. Without this check, any authenticated
+// user could read any firm's data just by supplying that firm's real ID,
+// since the ID itself is what makes the RLS-scoped rows visible. Must be
+// called within a transaction already scoped to firmID via
+// db.WithFirmContext, same as Has.
+func IsMember(ctx context.Context, tx pgx.Tx, firmID, userID uuid.UUID) (bool, error) {
+	var member bool
+	err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM user_firm_roles WHERE user_id = $1 AND firm_id = $2
+		)
+	`, userID, firmID).Scan(&member)
+	if err != nil {
+		return false, fmt.Errorf("check membership: %w", err)
+	}
+	return member, nil
+}
+
 // Has reports whether userID holds permissionKey in firmID, through any of
 // the roles they've been assigned there (a user can hold more than one
 // role per firm - see user_firm_roles's unique constraint). Must be called
