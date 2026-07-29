@@ -1,4 +1,4 @@
-.PHONY: build test vet run migrate web-dev web-build web-lint dev-up dev-down dev-up-standalone dev-down-standalone
+.PHONY: build test vet run migrate audit-purge web-dev web-build web-lint dev-up dev-down dev-up-standalone dev-down-standalone
 
 build:
 	go build ./...
@@ -14,6 +14,12 @@ run:
 
 migrate:
 	go run ./cmd/migrate
+
+# Manually-invoked maintenance command - not run by anything automatically.
+# Requires ZONARYOS_AUDIT_RETENTION_DAYS to be set (see cmd/auditpurge and
+# docs/OPEN_POINTS.md item 33; no default retention period is built in).
+audit-purge:
+	go run ./cmd/auditpurge
 
 web-dev:
 	cd web && npm run dev

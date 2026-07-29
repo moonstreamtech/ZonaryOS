@@ -204,6 +204,30 @@ make migrate
 go test ./internal/permission/... -v
 ```
 
+## Audit Trail Infrastructure
+
+`internal/auditlog` is Vision §3's Audit Trail Infrastructure: every operation should be traceable "at the most detailed level" - both data changes and view/read access - readable by the firm owner (and, later, an "Auditor Role") and nobody else.
+
+- **Data-change coverage**: the write-side pattern already existed before this package (`internal/workflow.CreateInstance`/`ExecuteTransition`, `internal/wizard.CreateDefaultFirm`, `internal/permission.GrantPermission`/`RevokePermission` each write one explicit `audit_log` row) and is left as-is - this codebase's modular-monolith style favors an explicit "log this write" call at each mutation point over a generic diffing framework (see `CLAUDE.md`). `auditlog.Write` exists so *new* write call sites share one `INSERT` instead of duplicating it; the existing four call sites above predate it and were not retrofitted, since `internal/permission` can't import `internal/auditlog` without an import cycle (`auditlog` itself depends on `internal/permission` for read-gating, see below) and touching the other three wasn't necessary to close any actual gap - firm creation, workflow transitions, and permission grant/revoke already covered every data-changing operation this slice has.
+- **View/read logging** (`auditlog.LogView`): Vision §3 explicitly calls for logging reads too, not just writes - and explicitly flags this as the part with unresolved legal exposure (see docs/OPEN_POINTS.md item 33: whether retaining detailed view/read records, particularly employee access records, creates a KVKK issue is an open question requiring legal counsel). Rather than wiring every read endpoint in the system into this mechanism, only one representative path does: `internal/workflow.ListInstances` (the stock list's data source, PR #8) writes one `action: "view"` entry per call. Every other read path (`CurrentState`, `LookupDefinitionByKey`, Permission Audit Mode's own reads, the audit log read itself) is deliberately left unwired - broader rollout is future work pending that legal-review decision, not an oversight.
+- **`auditlog.ReadPermission`** (`audit.log.read`) gates `GET /api/firms/{firmID}/audit-log` through the ordinary `permission.IsMember` + `Has` check (docs/DEVELOPMENT.md's own Authorization checklist above), not a hardcoded `IsOwner` check like Permission Audit Mode uses. The Auditor Role Vision §3 describes isn't designed or built in this PR (no external-auditor-invitation flow exists) - gating on a permission key instead of ownership means a firm can extend audit log access to any future Auditor Role later, purely by granting it this key via Permission Audit Mode, with no code change here. `internal/wizard.CreateDefaultFirm` grants it to every new firm's own owner role at creation time (`auditlog.RegisterReadPermissionTx`, the same self-action-auto-grant shape `workflow.DefineWorkflowTx` already established for workflow-introduced permissions).
+- **Retention**: docs/OPEN_POINTS.md item 33 leaves the actual retention period - and even whether automatic deletion is appropriate at all, given the KVKK question above - unresolved; Vision §3's own "at least 10 years" figure is explicitly marked not finalized. Nothing in this codebase hardcodes a retention duration. `auditlog.PurgeOlderThan` is a plain, firm-by-firm (RLS-respecting) deletion function that takes an explicit cutoff; the only caller is `cmd/auditpurge` (`make audit-purge`), a manually-invoked maintenance command that refuses to run at all unless an operator has explicitly set `ZONARYOS_AUDIT_RETENTION_DAYS` to a positive integer - there is no default to fall back to, and `cmd/server` never invokes it automatically.
+
+HTTP surface:
+
+- `GET /api/firms/{firmID}/audit-log` — the firm's audit trail, most recent first (gated by `audit.log.read`)
+
+### Running the audit log tests
+
+`internal/auditlog/auditlog_integration_test.go` needs a real Postgres, same convention as everywhere else above:
+
+```
+export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5432/zonaryos?sslmode=disable
+export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5432/zonaryos?sslmode=disable
+make migrate
+go test ./internal/auditlog/... -v
+```
+
 ### Running the workflow engine tests
 
 `internal/workflow/spec_test.go` is a pure unit test (spec validation, no database). `internal/workflow/workflow_integration_test.go` needs a real Postgres, same convention as the RLS tests above:

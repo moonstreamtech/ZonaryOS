@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
 	"github.com/moonstreamtech/ZonaryOS/internal/workflow"
 )
 
@@ -99,6 +100,17 @@ func CreateDefaultFirm(ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID
 		INSERT INTO roles (firm_id, key, name, is_owner) VALUES ($1, $2, $3, true) RETURNING id
 	`, result.FirmID, defaultRoleKey, "Owner").Scan(&result.RoleID); err != nil {
 		return CreateDefaultFirmResult{}, fmt.Errorf("insert default role: %w", err)
+	}
+
+	// Vision §3's Audit Trail Infrastructure: audit log read access is
+	// gated by a permission key like everything else in this system
+	// (internal/auditlog.ReadPermission), not a bespoke is_owner check -
+	// this grants it to the founder's owner role now, the same
+	// self-action-auto-grant shape the workflow seed below uses, so a
+	// firm can later extend it to an "Auditor Role" via Permission Audit
+	// Mode without any code change.
+	if err := auditlog.RegisterReadPermissionTx(ctx, tx, result.FirmID, result.RoleID); err != nil {
+		return CreateDefaultFirmResult{}, fmt.Errorf("register audit log read permission: %w", err)
 	}
 
 	// Granting the owner role every permission this seeds is

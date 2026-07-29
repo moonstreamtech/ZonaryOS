@@ -429,6 +429,40 @@ paths:
         "401": { description: Missing or invalid bearer token }
         "404": { description: Caller isn't a member of firmID }
 
+  /api/firms/{firmID}/audit-log:
+    get:
+      summary: Read this firm's audit trail (Vision §3 Audit Trail Infrastructure)
+      description: >
+        Gated by internal/auditlog.ReadPermission through the ordinary
+        permission.IsMember + Has check (not a hardcoded owner-only gate),
+        so a firm can later extend read access to an "Auditor Role" purely
+        by granting this permission key via Permission Audit Mode.
+        internal/wizard.CreateDefaultFirm grants it to a firm's own owner
+        role automatically. Returns every audit_log row for the firm, most
+        recent first, covering both data-change entries (action values like
+        "create", "grant", "revoke", "record_sale", ...) and view/read
+        entries (action "view") - see docs/DEVELOPMENT.md's Audit Trail
+        section and docs/OPEN_POINTS.md item 33 for why view/read logging
+        is only wired into one representative read path so far.
+      parameters:
+        - name: firmID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The firm's audit log entries, most recent first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AuditLogEntry"
+        "400": { description: Invalid firmID }
+        "401": { description: Missing or invalid bearer token }
+        "403": { description: Caller is a member of firmID but does not hold audit.log.read }
+        "404": { description: Caller isn't a member of firmID at all }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -602,3 +636,32 @@ components:
             $ref: "#/components/schemas/RoleGrant"
           description: Every non-owner role's grants - owner-flagged roles are excluded.
       required: [myPermissionKeys, roles]
+    AuditLogEntry:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        entityType:
+          type: string
+          description: e.g. "firm", "workflow_instance", "workflow_instance_list", "role_permission".
+        entityId:
+          type: string
+          format: uuid
+        action:
+          type: string
+          description: e.g. "create", "grant", "revoke", a workflow action key, or "view" for a view/read entry.
+        changes:
+          type: object
+          description: Old/new values or other detail recorded for this entry, where feasible - empty for view/read entries.
+        userId:
+          type: string
+          format: uuid
+        userEmail:
+          type: string
+        userDisplayName:
+          type: string
+        occurredAt:
+          type: string
+          format: date-time
+      required: [id, entityType, entityId, action, changes, userId, userEmail, userDisplayName, occurredAt]
