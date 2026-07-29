@@ -39,12 +39,14 @@ go build ./...
 go vet ./... && go test ./...
 go run ./cmd/ciaudit                              # RLS / Permission Drift Audit
 python3 scripts/license_headers.py --check         # License Header Check (--fix to add missing headers)
-cd web && npm ci && npm run build && npm run lint && npm test && npm run check:i18n
+python3 scripts/check_gosec.py                     # SAST (Go)
+python3 scripts/check_govulncheck.py               # Dependency vulnerability scan (Go)
+cd web && npm ci && npm run build && npm run lint && npm test && npm run check:i18n && npm run check:audit
 ```
 
-Postgres-backed integration tests need a real Postgres (`make dev-up` or `make dev-up-standalone`, then `make migrate` - see `docs/DEVELOPMENT.md`). Doc Sync Check and API Contract Diff are PR-diff checks (`python3 scripts/check_doc_sync.py origin/main`, `python3 scripts/check_api_contract.py origin/main`).
+Postgres-backed integration tests need a real Postgres (`make dev-up` or `make dev-up-standalone`, then `make migrate` - see `docs/DEVELOPMENT.md`). Doc Sync Check, API Contract Diff, and Migration Safety Check are PR-diff checks (`python3 scripts/check_doc_sync.py origin/main`, `python3 scripts/check_api_contract.py origin/main`, `python3 scripts/check_migration_safety.py origin/main`). Secret scanning needs `gitleaks` on `PATH` (`go install github.com/zricethezav/gitleaks/v8@latest`, then `./scripts/check_gitleaks.sh`). The E2E Smoke Test needs the full standalone dev stack up (`make dev-up-standalone && make migrate`, backend running, frontend built and started) - see `docs/DEVELOPMENT.md`'s Continuous Integration section for the exact sequence.
 
-Still "Not Set Up" (need more deploy-pipeline infrastructure first, not attempted yet): Migration Safety Check, Dependency Vulnerability Scan, SAST Security Scan, E2E Smoke Test, Canary/Rollback Trigger. Treat these as manual acceptance-bar items still, same as before CI existed at all.
+Still "Not Set Up": Canary/Rollback Trigger - there is no ZonaryOS deployment target/infrastructure decided yet for a rollback trigger to hook into (see `docs/OPEN_POINTS.md` item 34). Every other CI Checklist category is now automated.
 
 ## Where to Look for What
 

@@ -69,6 +69,11 @@ Rule 1: No item in this file moves to the main document (`docs/VISION.md`) until
 * Finalized principle (see Vision §3): Audit at the most detailed level (data changes + view/read records), access held by the firm administrator + opened to an external auditor via the "Auditor Role" if needed, data will not be deleted (at least 10 years).
 * Remaining open questions: (1) Will the exact retention period be set as ZonaryOS's own parameter, or will it vary by compliance standard? (2) Whether this level of detailed monitoring (particularly retaining view/read records) creates an issue under Turkey's data protection law (KVKK) — an open question requiring legal counsel; Claude cannot resolve this.
 
+34. Deployment Target / Infrastructure (not yet decided)
+
+* Found while building out the CI pipeline's checklist items (see CLAUDE.md's "How to Verify a Change"): a "Canary/Rollback Trigger" CI check is listed as part of the eventual acceptance bar, but there is no decided deployment target or infrastructure for ZonaryOS to actually deploy to yet (checked: not in Vision, not elsewhere in this file) — Vision §4 only fixes the *database* topology (single global primary + read-only replicas, active-passive, automatic failover), not where/how the application binary itself gets deployed, released, or rolled back.
+* Remaining open question: what is the actual deployment target (cloud provider, container orchestration platform, bare-metal, PaaS, ...) and release mechanism (blue/green, canary, rolling)? A rollback trigger needs a real deploy pipeline to hook into — inventing one just to attach a CI check to would be designing production infrastructure that hasn't been decided, not implementing an agreed decision. Left as "Not Set Up" in the CI Checklist until this is resolved.
+
 REFERENCE NOTES (no decision required, context only)
 
 * Developer's industry background: Familiar with various third-party ERP/WMS software; has previously written their own WMS/order-management application. (Credibility/experience background for this project.)

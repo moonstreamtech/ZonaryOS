@@ -1,4 +1,4 @@
-.PHONY: build test vet run migrate audit-purge ci-audit license-check license-fix web-dev web-build web-lint web-i18n-check dev-up dev-down dev-up-standalone dev-down-standalone
+.PHONY: build test vet run migrate audit-purge ci-audit license-check license-fix govulncheck gosec gitleaks web-dev web-build web-lint web-i18n-check web-audit-check dev-up dev-down dev-up-standalone dev-down-standalone
 
 build:
 	go build ./...
@@ -33,6 +33,9 @@ web-lint:
 web-i18n-check:
 	cd web && npm run check:i18n
 
+web-audit-check:
+	cd web && npm run check:audit
+
 # CI Checklist item 4, "RLS / Permission Drift Audit" - see cmd/ciaudit and
 # docs/DEVELOPMENT.md's "Continuous Integration" section.
 ci-audit:
@@ -44,6 +47,20 @@ license-check:
 
 license-fix:
 	python3 scripts/license_headers.py --fix
+
+# CI Checklist item 10, "Dependency Vulnerability Scan" (Go half) - see
+# scripts/check_govulncheck.py.
+govulncheck:
+	python3 scripts/check_govulncheck.py
+
+# CI Checklist item 11, "SAST Security Scan" - see scripts/check_gosec.py
+# and scripts/check_gitleaks.sh (requires gitleaks on PATH: go install
+# github.com/zricethezav/gitleaks/v8@latest).
+gosec:
+	python3 scripts/check_gosec.py
+
+gitleaks:
+	./scripts/check_gitleaks.sh
 
 dev-up:
 	docker compose up -d

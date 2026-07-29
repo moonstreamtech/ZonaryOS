@@ -1,0 +1,26 @@
+title = "ZonaryOS gitleaks config"
+
+# CI Checklist item 11, "SAST Security Scan" (secret-scanning half - see
+# scripts/check_gosec.py for the Go static-analysis half). Extends
+# gitleaks' own default ruleset rather than replacing it.
+[extend]
+useDefault = true
+
+# Documented exceptions only, never a silent path exclusion for real
+# source code - same "suppress with a reason, don't hide it" convention
+# as every other check in this pipeline.
+[allowlist]
+description = "Known false positives, each documented, not silently hidden."
+# Test-helper string concatenation, not a secret: seedUser(...) helpers
+# across *_integration_test.go build a fake Keycloak subject like
+# keycloakSubject+"@example.com" - the generic-api-key rule's entropy
+# heuristic extracts "keycloakSubject+" itself (the identifier plus the
+# concatenation operator) as if it were a high-entropy key. Matched
+# against gitleaks' default regexTarget ("secret", the extracted value),
+# not the full matched line.
+regexes = ['''^keycloakSubject\+$''']
+# Next.js build output - never committed (see web/.gitignore), contains
+# build-time-only keys, not application secrets. Excluded here only as a
+# safety net for a local `gitleaks detect --no-git` run against an
+# uncommitted working tree, which doesn't consult .gitignore itself.
+paths = ['''web/\.next/.*''', '''web/node_modules/.*''']

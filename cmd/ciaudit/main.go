@@ -131,7 +131,7 @@ func auditRLSTables(repoRoot string) ([]string, error) {
 		if !strings.HasSuffix(name, ".up.sql") {
 			continue
 		}
-		content, err := os.ReadFile(filepath.Join(migrationsDir, name))
+		content, err := os.ReadFile(filepath.Join(migrationsDir, name)) // #nosec G304 -- name comes from os.ReadDir on this repo's own migrations/ directory, never external input
 		if err != nil {
 			return nil, err
 		}
