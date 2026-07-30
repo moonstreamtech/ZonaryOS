@@ -92,6 +92,76 @@ make migrate
 go test ./internal/identity/... -v
 ```
 
+## Running the full stack in containers
+
+See `docs/OPEN_POINTS.md` item 34 for the deployment-target investigation this came out of. This section covers what actually exists today: a containerized backend + frontend, a local docker-compose stack that runs the whole thing (Postgres, Keycloak, backend, frontend) together, and (if/when the Developer provisions real Oracle access) a near-term dev/test deployment target. **None of this is a production commitment** - see the caveats below.
+
+### Building the images
+
+`Dockerfile` (backend, builds both `cmd/server` and `cmd/migrate`) and `web/Dockerfile` (frontend, Next.js standalone output) are both multi-stage and use only portable, multi-arch base images (`golang`, `node:22-alpine`, `gcr.io/distroless/static-debian12`) - nothing Oracle- or any other cloud-specific. Build for the current machine's architecture with:
+
+```
+docker compose build
+```
+
+or cross-build for the Oracle Ampere A1 target (arm64) explicitly:
+
+```
+docker buildx build --platform linux/arm64 -t zonaryos-backend:arm64 .
+docker buildx build --platform linux/arm64 -t zonaryos-frontend:arm64 -f web/Dockerfile .
+```
+
+**Verify the architecture, don't assume it.** The backend `Dockerfile` cross-compiles Go (`CGO_ENABLED=0`, `GOOS`/`GOARCH` from Docker's `TARGETOS`/`TARGETARCH` build args) rather than needing to execute arm64 code during the build - but this only works correctly if `buildx` actually populates `TARGETARCH` for the requested `--platform`. Verified during this work: the plain default `docker` buildx driver silently produced an image whose manifest said `linux/arm64` but whose binary inside was still `x86-64` (`TARGETARCH` wasn't propagated) - a real, not hypothetical, failure mode. Use a `docker-container` driver builder (`docker buildx create --driver docker-container --use`) and confirm the output before trusting it:
+
+```
+docker create --name check <image> && docker cp check:/usr/local/bin/server /tmp/server-check && docker rm check
+file /tmp/server-check   # must say "ELF 64-bit LSB executable, ARM aarch64" for the arm64 build
+```
+
+### Running the full stack locally
+
+```
+docker compose up -d
+```
+
+This builds and starts Postgres, Keycloak, a one-shot `migrate` service (applies migrations, then exits - `backend` waits for it via `depends_on: condition: service_completed_successfully`), the backend, and the frontend. Every service uses `network_mode: host` **deliberately**, not as a shortcut: the frontend's OIDC login flow (`web/src/app/api/auth/login` and `.../callback`) needs one issuer URL reachable both by the end user's real browser and by the frontend container's own server-side token exchange, and Keycloak's `start-dev` mode derives each issued token's `iss` claim from whichever host:port actually requested it - bridge-network service names (e.g. `keycloak:8080`) would be unreachable from a real browser. Host networking keeps every service reachable at `localhost:<port>` from every other service *and* the browser, matching the exact assumption every existing manual/CI E2E verification already made (`scripts/e2e_smoke_test.sh`, the CI E2E job) - so no env var values differ from the non-containerized `.env`/`web/.env.local` setup already documented above.
+
+First boot: the backend's `identity.NewVerifier` discovers Keycloak's OIDC config at startup and fails fast if Keycloak isn't ready yet (`cmd/server/main.go` doesn't retry) - `backend` is configured `restart: on-failure:10` to ride out that race rather than needing a bespoke wait-for-it script. A few restarts on first `docker compose up` are expected, not a bug.
+
+**A real, non-hypothetical bug found and fixed while proving this end-to-end**: Next.js's standalone-mode `server.js` always builds `request.url` from its own bind hostname (`HOSTNAME` env, defaulting to `0.0.0.0`), never from the incoming request's actual `Host` header - a known Next.js standalone-server limitation (`experimental.trustHostHeader` does not override it, since `server.js` unconditionally passes its own hostname to the server constructor). This broke the OAuth `redirect_uri` the login/callback/logout routes built via `new URL(path, request.url)` - it came out as `http://0.0.0.0:3000/...`, which Keycloak's registered client (`http://localhost:3000/*`) rejects. Fixed in `web/src/lib/requestOrigin.ts`, used by all three `web/src/app/api/auth/*` routes: builds the origin from the request's `Host`/`X-Forwarded-Host` header instead of `request.url`. Verified with a full interactive PKCE round-trip (not just the Direct Access Grant `scripts/e2e_smoke_test.sh` normally uses) against the containerized stack: real Keycloak login form submission -> real authorization code -> real token exchange -> correct `redirect_uri` -> session cookie set -> homepage rendered.
+
+Verifying the stack works: `./scripts/e2e_smoke_test.sh` against the containerized services (same script CI already runs against the non-containerized ones):
+
+```
+BACKEND_URL=http://localhost:8080 FRONTEND_URL=http://localhost:3000 \
+KEYCLOAK_ISSUER_URL=http://localhost:8081/realms/zonaryos ./scripts/e2e_smoke_test.sh
+```
+
+`docker compose down` stops and removes the containers (add `-v` to also drop the Postgres volume).
+
+### Deploying to Oracle Cloud Always Free (near-term dev/test target only)
+
+Per the item 34 interim decision: an Oracle Always Free Ampere A1 instance (currently 2 OCPU/12GB, arm64) is a **near-term dev/test deployment target, not a production commitment**. Nothing in `Dockerfile`, `web/Dockerfile`, or `docker-compose.yml` is Oracle-specific - the same artifacts run on any plain Linux host with Docker (a DigitalOcean droplet, a bare-metal box, etc.) with no changes. The steps below that *are* Oracle-specific are called out separately, on purpose, so it's clear what's portable and what isn't.
+
+**Provisioning (Developer-owned, not something this session can do):** actually creating/provisioning the Oracle Cloud instance requires the Developer's own Oracle Cloud account, tenancy, and credentials - an agent session has no path to create or guess these. The Developer needs to either provision the instance and hand over reachable access (SSH key + public IP), or provide OCI CLI credentials for programmatic provisioning.
+
+**Portable steps (identical to local, once on the instance):**
+1. Install Docker + the Compose plugin on the instance (standard Docker install for the instance's Linux distribution - nothing Oracle-specific here either).
+2. Copy this repository (or just `Dockerfile`, `web/Dockerfile`, `docker-compose.yml`, `deploy/`, `migrations/`, and source) to the instance.
+3. `docker compose up -d --build` (native build on the arm64 instance itself avoids needing cross-compilation at all).
+
+**Oracle-specific steps (not portable, tracked separately on purpose):**
+1. **Security list / network security group**: only the frontend's port (3000, or 80/443 behind a reverse proxy - not set up here) should be open to `0.0.0.0/0`. Because this compose file uses host networking (see above), Postgres (5432), Keycloak (8081), and the backend (8080) all bind directly to the instance's network interfaces with no Docker-level isolation to fall back on - **the cloud firewall is the only thing protecting them**, not Docker. Leave those ports closed in the security list.
+2. SSH access / bastion setup, if the Developer wants restricted admin access - ordinary Oracle Cloud instance configuration, unrelated to this repository.
+
+**Caveats - so this is never mistaken for a production environment (see `docs/OPEN_POINTS.md` item 34):**
+- **No SLA.** Always Free is a best-effort tier with no uptime guarantee.
+- **No automatic backup.** The Postgres data volume lives only on that one instance's disk; nothing here schedules snapshots or off-instance backups.
+- **Single region, single instance.** This does not implement Vision §4's active-passive/multi-region topology - it is one Postgres, one Keycloak, one backend, one frontend, all on one host.
+- **Oracle can reclaim Always Free resources under capacity pressure.** The instance is not guaranteed to stay up or keep its allocation indefinitely.
+
+None of this blocks using the instance for dev/test purposes - it just means nothing here should be pointed to by real customer data or treated as the answer to item 34's actual production deployment-target question, which remains open pending the Developer's decision (see item 34's open questions).
+
 ## Database schema and Row-Level Security
 
 Migrations live in `migrations/*.sql` (embedded into the binary via `migrations/embed.go`) and are applied with:

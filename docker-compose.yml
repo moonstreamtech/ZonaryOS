@@ -1,12 +1,45 @@
+# Local/dev-test full-stack compose (see docs/OPEN_POINTS.md item 34 and
+# docs/DEVELOPMENT.md's "Running the full stack in containers" section).
+#
+# Every service uses `network_mode: host` deliberately, not as a shortcut:
+# the frontend's OIDC login flow (web/src/app/api/auth/login and
+# .../callback) uses one env var, ZONARYOS_KEYCLOAK_ISSUER_URL, both to
+# build the browser-facing redirect to Keycloak *and* for the frontend
+# container's own server-side token exchange - and Keycloak (in the
+# `start-dev` mode used here) derives each issued token's `iss` claim from
+# whatever host:port the request that minted it actually used. If backend,
+# frontend, and Keycloak were on separate bridge-network hostnames (e.g.
+# `keycloak:8080`), that hostname would be unreachable from the end user's
+# real browser, breaking login - a real containerization gotcha, not a
+# hypothetical one, since it doesn't show up until the frontend itself is
+# containerized rather than run via `npm run dev` on the host. Host
+# networking keeps every service reachable at `localhost:<port>` from every
+# other service and from the browser alike, on one Linux host - the exact
+# same assumption every existing manual/CI E2E verification already relies
+# on (see scripts/e2e_smoke_test.sh, .github/workflows/ci.yml's E2E job),
+# so no application code or env var values change between the
+# non-containerized and containerized ways of running this stack.
+#
+# Tradeoff, deliberately accepted and documented rather than silently
+# designed around: host networking means each container binds directly to
+# the host's own network interfaces (loopback *and* any public one) - there
+# is no bridge-network isolation to fall back on. On a real internet-facing
+# host (e.g. the Oracle Always Free instance - see docs/DEVELOPMENT.md),
+# only the frontend's port should ever be reachable from the public
+# internet; Postgres/Keycloak/backend must be locked down by the cloud
+# provider's own firewall (Oracle's security list, or a droplet's ufw/iptables
+# rules), not by Docker - this is exactly why that firewall configuration is
+# tracked as a separate, explicit step in docs/DEVELOPMENT.md rather than
+# assumed. This compose file itself has zero Oracle-specific settings -
+# nothing here is more than plain Docker Compose against portable images.
 services:
   postgres:
     image: postgres:16
+    network_mode: host
     environment:
       POSTGRES_USER: zonaryos
       POSTGRES_PASSWORD: zonaryos
       POSTGRES_DB: zonaryos
-    ports:
-      - "5432:5432"
     volumes:
       - zonaryos-postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -17,14 +50,65 @@ services:
 
   keycloak:
     image: quay.io/keycloak/keycloak:26.0
-    command: start-dev --import-realm
+    network_mode: host
+    command: start-dev --import-realm --http-port=8081
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin
-    ports:
-      - "8081:8080"
     volumes:
       - ./deploy/keycloak/zonaryos-realm.json:/opt/keycloak/data/import/zonaryos-realm.json:ro
+
+  # One-shot: applies migrations, then exits. `backend` waits for it to
+  # finish successfully (see its own depends_on below) before starting -
+  # this is the containerized equivalent of `make migrate` before `make run`.
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: zonaryos-backend:local
+    network_mode: host
+    entrypoint: ["/usr/local/bin/migrate"]
+    environment:
+      ZONARYOS_MIGRATE_DATABASE_URL: postgres://zonaryos:zonaryos@localhost:5432/zonaryos?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: zonaryos-backend:local
+    network_mode: host
+    environment:
+      ZONARYOS_HTTP_ADDR: ":8080"
+      ZONARYOS_DATABASE_URL: postgres://zonaryos_app:zonaryos_app@localhost:5432/zonaryos?sslmode=disable
+      ZONARYOS_OIDC_ISSUER_URL: http://localhost:8081/realms/zonaryos
+      ZONARYOS_OIDC_CLIENT_ID: zonaryos-web
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    # Keycloak's discovery endpoint may not be ready the instant this
+    # container starts (identity.NewVerifier fails fast rather than
+    # retrying - see cmd/server/main.go) - restart-on-failure covers that
+    # first-boot race without adding a bespoke wait-for-it script.
+    restart: on-failure:10
+
+  frontend:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    image: zonaryos-frontend:local
+    network_mode: host
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      ZONARYOS_API_BASE_URL: http://localhost:8080
+      ZONARYOS_KEYCLOAK_ISSUER_URL: http://localhost:8081/realms/zonaryos
+      ZONARYOS_KEYCLOAK_CLIENT_ID: zonaryos-web
+    depends_on:
+      - backend
 
 volumes:
   zonaryos-postgres-data:

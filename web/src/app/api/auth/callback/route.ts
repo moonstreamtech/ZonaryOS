@@ -4,6 +4,7 @@
 // docs/OPEN_POINTS.md item 20).
 
 import { NextRequest, NextResponse } from "next/server";
+import { requestOrigin } from "@/lib/requestOrigin";
 
 const isProduction = process.env.NODE_ENV === "production";
 
@@ -30,7 +31,7 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const redirectUri = new URL("/api/auth/callback", request.url).toString();
+  const redirectUri = `${requestOrigin(request)}/api/auth/callback`;
 
   const tokenResponse = await fetch(
     `${issuer.replace(/\/$/, "")}/protocol/openid-connect/token`,
@@ -59,7 +60,7 @@ export async function GET(request: NextRequest) {
     expires_in?: number;
   };
 
-  const response = NextResponse.redirect(new URL("/", request.url));
+  const response = NextResponse.redirect(`${requestOrigin(request)}/`);
   // The access token is kept in an httpOnly cookie - never readable by
   // client-side JS - and forwarded as a Bearer token by server-side code
   // only (see src/app/api/me/route.ts and the homepage's server component).

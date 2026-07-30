@@ -1,0 +1,20 @@
+# Shared build context for both Dockerfile (backend) and web/Dockerfile
+# (frontend) - see docs/OPEN_POINTS.md item 34. Keeps the build context
+# small and reproducible: no local caches, VCS metadata, or dev-only state
+# leaking into an image layer.
+.git/
+.zonaryos/
+docs/
+*.md
+LICENSE
+
+# Go build artifacts (never needed inside the build context - the build
+# stage compiles from source)
+bin/
+dist/
+
+# Frontend: node_modules/.next are rebuilt inside the image; committing the
+# host's copy in would be stale and enormous
+web/node_modules/
+web/.next/
+web/coverage/
