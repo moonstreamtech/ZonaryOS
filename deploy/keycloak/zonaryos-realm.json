@@ -13,8 +13,14 @@
       "implicitFlowEnabled": false,
       "directAccessGrantsEnabled": true,
       "serviceAccountsEnabled": false,
-      "redirectUris": ["http://localhost:3000/*"],
-      "webOrigins": ["http://localhost:3000"],
+      "redirectUris": [
+        "http://localhost:3000/*",
+        "https://zonaryos.duckdns.org/*"
+      ],
+      "webOrigins": [
+        "http://localhost:3000",
+        "https://zonaryos.duckdns.org"
+      ],
       "attributes": {
         "pkce.code.challenge.method": "S256"
       }

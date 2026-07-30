@@ -1,0 +1,47 @@
+# Production-target overlay for the near-term Oracle Cloud dev/test
+# deployment (docs/OPEN_POINTS.md item 34, docs/DEPLOYMENT.md). Layers on
+# top of docker-compose.yml - `docker compose -f docker-compose.yml -f
+# docker-compose.prod.yml up -d` - rather than duplicating it, so the local
+# dev stack (`docker compose up -d` with no override) is completely
+# untouched by anything in this file.
+#
+# What this solves: docker-compose.yml's base config assumes one reachable
+# hostname (`localhost`) for browser, frontend, and Keycloak alike - true
+# for local dev, false once the browser is a remote user's machine. Here,
+# nginx on the host (outside Docker - see deploy/nginx/zonaryos.conf) is the
+# single public entry point at https://zonaryos.duckdns.org, reverse-proxying
+# `/` to the frontend and `/auth/` to Keycloak. Keycloak is told its own
+# external identity via KC_HOSTNAME (a full URL, including the `/auth` path
+# prefix - Keycloak 26's "hostname:v2" provider) instead of deriving it from
+# whatever host:port a given request happened to arrive on, so the issuer
+# baked into every token is the same `https://zonaryos.duckdns.org/auth/...`
+# value regardless of whether the request came from nginx (the public
+# browser path) or a direct localhost call (backend/frontend server-side
+# calls) - the two paths must produce identical tokens or the backend's
+# issuer-matching verification (internal/identity.NewVerifier) rejects them.
+#
+# `extra_hosts` on backend and frontend resolves the public hostname to the
+# loopback interface for their own outbound calls (OIDC discovery, token
+# exchange) rather than depending on the instance's NAT/routing correctly
+# hairpinning a request back to its own public IP, which is not guaranteed
+# on every cloud network. This works because every service still runs
+# `network_mode: host` (unchanged from the base file) - the container's
+# 127.0.0.1 *is* the host's loopback, which is exactly where nginx listens.
+services:
+  keycloak:
+    environment:
+      KC_HOSTNAME: https://zonaryos.duckdns.org/auth
+      KC_HTTP_RELATIVE_PATH: /auth
+      KC_PROXY_HEADERS: xforwarded
+
+  backend:
+    environment:
+      ZONARYOS_OIDC_ISSUER_URL: https://zonaryos.duckdns.org/auth/realms/zonaryos
+    extra_hosts:
+      - "zonaryos.duckdns.org:127.0.0.1"
+
+  frontend:
+    environment:
+      ZONARYOS_KEYCLOAK_ISSUER_URL: https://zonaryos.duckdns.org/auth/realms/zonaryos
+    extra_hosts:
+      - "zonaryos.duckdns.org:127.0.0.1"

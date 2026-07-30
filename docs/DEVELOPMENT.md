@@ -141,18 +141,9 @@ KEYCLOAK_ISSUER_URL=http://localhost:8081/realms/zonaryos ./scripts/e2e_smoke_te
 
 ### Deploying to Oracle Cloud Always Free (near-term dev/test target only)
 
-Per the item 34 interim decision: an Oracle Always Free Ampere A1 instance (currently 2 OCPU/12GB, arm64) is a **near-term dev/test deployment target, not a production commitment**. Nothing in `Dockerfile`, `web/Dockerfile`, or `docker-compose.yml` is Oracle-specific - the same artifacts run on any plain Linux host with Docker (a DigitalOcean droplet, a bare-metal box, etc.) with no changes. The steps below that *are* Oracle-specific are called out separately, on purpose, so it's clear what's portable and what isn't.
+Per the item 34 interim decision: an Oracle Always Free Ampere A1 instance (currently 2 OCPU/12GB, arm64) is a **near-term dev/test deployment target, not a production commitment**. Nothing in `Dockerfile`, `web/Dockerfile`, or `docker-compose.yml` is Oracle-specific - the same artifacts run on any plain Linux host with Docker (a DigitalOcean droplet, a bare-metal box, etc.) with no changes.
 
-**Provisioning (Developer-owned, not something this session can do):** actually creating/provisioning the Oracle Cloud instance requires the Developer's own Oracle Cloud account, tenancy, and credentials - an agent session has no path to create or guess these. The Developer needs to either provision the instance and hand over reachable access (SSH key + public IP), or provide OCI CLI credentials for programmatic provisioning.
-
-**Portable steps (identical to local, once on the instance):**
-1. Install Docker + the Compose plugin on the instance (standard Docker install for the instance's Linux distribution - nothing Oracle-specific here either).
-2. Copy this repository (or just `Dockerfile`, `web/Dockerfile`, `docker-compose.yml`, `deploy/`, `migrations/`, and source) to the instance.
-3. `docker compose up -d --build` (native build on the arm64 instance itself avoids needing cross-compilation at all).
-
-**Oracle-specific steps (not portable, tracked separately on purpose):**
-1. **Security list / network security group**: only the frontend's port (3000, or 80/443 behind a reverse proxy - not set up here) should be open to `0.0.0.0/0`. Because this compose file uses host networking (see above), Postgres (5432), Keycloak (8081), and the backend (8080) all bind directly to the instance's network interfaces with no Docker-level isolation to fall back on - **the cloud firewall is the only thing protecting them**, not Docker. Leave those ports closed in the security list.
-2. SSH access / bastion setup, if the Developer wants restricted admin access - ordinary Oracle Cloud instance configuration, unrelated to this repository.
+**Provisioning is done**: the instance exists (`zonaryos.duckdns.org`, a shared box also running unrelated live services behind nginx), and a dedicated deploy SSH key is in place. **The real reverse-proxy deployment (making the stack reachable at `https://zonaryos.duckdns.org` instead of `localhost`, alongside those other sites) is a separate, more involved concern than just `docker compose up -d` - see `docs/DEPLOYMENT.md` for the full command-by-command sequence, the `docker-compose.prod.yml` overlay, and `deploy/nginx/zonaryos.conf`.** That document also covers the Oracle Cloud Security List (firewall) rules needed - only 443/80 open publicly, Postgres/backend/Keycloak's raw port never exposed.
 
 **Caveats - so this is never mistaken for a production environment (see `docs/OPEN_POINTS.md` item 34):**
 - **No SLA.** Always Free is a best-effort tier with no uptime guarantee.
