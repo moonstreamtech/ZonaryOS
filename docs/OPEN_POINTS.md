@@ -96,6 +96,15 @@ Rule 1: No item in this file moves to the main document (`docs/VISION.md`) until
   4. If a schema is added later, what happens to existing instances created before the schema existed (e.g. Stock In → Sale's real production instances, if any exist by the time this is decided) — is there a migration/backfill story, or does the schema only apply going forward?
 * Not resolved here: this item is deliberately filed rather than guessed at — inventing a schema format now would be real, undesigned product/architecture work landing in mid-implementation of an unrelated frontend genericization task, exactly the kind of thing item 3/4 of `docs/RULES.md` say goes to Open Points instead.
 
+36. Broader Firm Metadata / Settings (new — surfaced while building a deliberately narrow firm-rename endpoint)
+
+* Background: the firm settings page (Vision §3) was read-only until this batch because no backend mutation existed at all for any firm field. This batch added exactly one, `internal/firm.UpdateName` (`PATCH /api/firms/{firmID}`, owner-only) — the firm's `name` column only, on purpose: the task that produced it was explicit that this should stay narrow, not become a general firm-settings endpoint. The `firms` table (`migrations/0001_core_schema.up.sql`) also has a jsonb `attributes` column that has never had any read or write path anywhere in the system — it exists in the schema but is otherwise fully unused today.
+* Remaining open questions:
+  1. What should actually live in `attributes` — arbitrary firm-level key/value settings (e.g. locale/timezone defaults, branding), or is it meant for something more specific that hasn't been decided yet? No Vision/Open Points text defines its intended contents.
+  2. Should firm settings eventually be a real, extensible module (its own package, its own settings schema/versioning) rather than one-mutation-at-a-time endpoints like `UpdateName`, especially once more than a couple of fields need editing?
+  3. Does any of this depend on item 35's payload-schema question resolving first — e.g. if a generic "typed field editor" pattern gets built for workflow instance payloads, should firm settings reuse the same pattern rather than each screen inventing its own?
+* Not resolved here: same reasoning as item 35 - the task that produced `UpdateName` was explicit about keeping it bounded to name-only, and inventing a broader firm-settings design now would be scope creep into a real, undecided product question, not an implementation detail.
+
 REFERENCE NOTES (no decision required, context only)
 
 * Developer's industry background: Familiar with various third-party ERP/WMS software; has previously written their own WMS/order-management application. (Credibility/experience background for this project.)

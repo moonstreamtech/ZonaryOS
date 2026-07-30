@@ -37,6 +37,38 @@ export type WorkflowDefinition = {
   createPermissionKey: string;
 };
 
+// The request body shape for POST .../workflow-definitions - a 1:1 wire
+// mirror of the Go backend's DefinitionSpec (internal/workflow/spec.go),
+// itself mirrored again by defineWorkflowRequest in handlers.go. See
+// docs/api/openapi.yaml's DefinitionSpec schema.
+export type PermissionSpecInput = {
+  key: string;
+  description: string;
+};
+
+export type StateSpecInput = {
+  key: string;
+  name: string;
+  isInitial: boolean;
+  isTerminal: boolean;
+};
+
+export type TransitionSpecInput = {
+  fromStateKey: string;
+  toStateKey: string;
+  actionKey: string;
+  name: string;
+  permission: PermissionSpecInput;
+};
+
+export type DefinitionSpecInput = {
+  key: string;
+  name: string;
+  createPermission: PermissionSpecInput;
+  states: StateSpecInput[];
+  transitions: TransitionSpecInput[];
+};
+
 function apiBase(): string {
   return process.env.ZONARYOS_API_BASE_URL ?? "http://localhost:8080";
 }
@@ -92,6 +124,48 @@ export async function fetchDefinitions(
     return (await res.json()) as WorkflowDefinition[];
   } catch {
     return null;
+  }
+}
+
+/**
+ * Calls the Go backend's `POST /api/firms/{firmId}/workflow-definitions`
+ * (item 1: expose internal/workflow.DefineWorkflow over HTTP, owner-only)
+ * - the builder's submit action. Same failure-surfacing convention as
+ * createInstance/executeTransition below (not the swallow-to-null read
+ * helpers above): the builder needs to show the caller why a definition
+ * didn't get created (e.g. 403 not-owner, 409 duplicate key, 400 an
+ * invalid spec the backend's own DefinitionSpec.Validate rejected even
+ * though the client-side check passed).
+ */
+export async function defineWorkflow(
+  token: string,
+  firmId: string,
+  spec: DefinitionSpecInput,
+): Promise<{ ok: true; definition: WorkflowDefinition } | { ok: false; error: string; status: number }> {
+  try {
+    const res = await fetch(
+      `${apiBase()}/api/firms/${encodeURIComponent(firmId)}/workflow-definitions`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(spec),
+        cache: "no-store",
+      },
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      return {
+        ok: false,
+        error: text || `Request failed (${res.status})`,
+        status: res.status,
+      };
+    }
+    return { ok: true, definition: (await res.json()) as WorkflowDefinition };
+  } catch {
+    return { ok: false, error: "network error", status: 0 };
   }
 }
 

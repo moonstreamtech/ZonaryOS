@@ -826,6 +826,186 @@ func TestListDefinitions_RLS(t *testing.T) {
 	}
 }
 
+// seedOwnerInFirm is seedUserInFirm's owner-flagged counterpart, for
+// TestDefineWorkflowForFirm's tests below - DefineWorkflowForFirm is
+// gated to is_owner (internal/permission.IsOwner), not an ordinary
+// granted permission, so its own tests need a role that actually carries
+// that flag rather than seedUserInFirm's plain "tester" role.
+func seedOwnerInFirm(ctx context.Context, t *testing.T, adminPool, appPool *pgxpool.Pool, firmID uuid.UUID, keycloakSubject string) (userID, roleID uuid.UUID) {
+	t.Helper()
+
+	if err := adminPool.QueryRow(ctx, `
+		INSERT INTO users (keycloak_subject, email, display_name) VALUES ($1, $2, $3) RETURNING id
+	`, keycloakSubject, keycloakSubject+"@example.com", "Test Owner").Scan(&userID); err != nil {
+		t.Fatalf("seed owner user: %v", err)
+	}
+
+	err := zdb.WithFirmContext(ctx, appPool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO roles (firm_id, key, name, is_owner) VALUES ($1, 'owner', 'Owner', true) RETURNING id
+		`, firmID).Scan(&roleID); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `
+			INSERT INTO user_firm_roles (firm_id, user_id, role_id) VALUES ($1, $2, $3)
+		`, firmID, userID, roleID)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("seed owner role/membership: %v", err)
+	}
+
+	return userID, roleID
+}
+
+// purchaseOrderRequestSpec mirrors purchaseOrderSpec (see
+// TestListDefinitions_ReturnsEveryDefinitionForTheFirm above) but is used
+// for TestDefineWorkflowForFirm - a firm's owner actually defining a new
+// workflow through the mechanism this batch exposes over HTTP, not a Go
+// fixture seeding one directly.
+var purchaseOrderRequestSpec = purchaseOrderSpec
+
+func TestDefineWorkflowForFirm_OwnerCanDefineANewWorkflow(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	var firmID uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm A') RETURNING id`).Scan(&firmID); err != nil {
+		t.Fatalf("seed firm: %v", err)
+	}
+	ownerID, ownerRoleID := seedOwnerInFirm(ctx, t, adminPool, appPool, firmID, "sub-define-owner")
+
+	definitionID, err := workflow.DefineWorkflowForFirm(ctx, appPool, firmID, ownerID, purchaseOrderRequestSpec)
+	if err != nil {
+		t.Fatalf("DefineWorkflowForFirm: %v", err)
+	}
+	if definitionID == uuid.Nil {
+		t.Fatal("expected a real definition ID")
+	}
+
+	// Resolvable afterward, same as any other definition.
+	info, err := workflow.LookupDefinitionByKey(ctx, appPool, firmID, ownerID, "purchase_order")
+	if err != nil {
+		t.Fatalf("LookupDefinitionByKey after define: %v", err)
+	}
+	if info.ID != definitionID {
+		t.Errorf("expected %v, got %v", definitionID, info.ID)
+	}
+
+	// Self-action auto-grant: the acting owner's own role should now hold
+	// every permission the new spec introduced, without a separate grant
+	// step - CreateInstance should succeed for that same user immediately.
+	instanceID, err := workflow.CreateInstance(ctx, appPool, firmID, ownerID, definitionID, map[string]any{"vendor": "Acme Supply"})
+	if err != nil {
+		t.Fatalf("expected the defining owner to already hold the create permission (self-action auto-grant), got: %v", err)
+	}
+	if instanceID == uuid.Nil {
+		t.Fatal("expected a real instance ID")
+	}
+
+	var grantedCount int
+	if err := adminPool.QueryRow(ctx, `
+		SELECT count(*) FROM role_permissions WHERE role_id = $1 AND permission_key IN ($2, $3, $4)
+	`, ownerRoleID, "workflow.purchase_order.create", "workflow.purchase_order.approve", "workflow.purchase_order.receive").Scan(&grantedCount); err != nil {
+		t.Fatalf("query role_permissions: %v", err)
+	}
+	if grantedCount != 3 {
+		t.Errorf("expected all 3 purchase_order permissions granted to the owner role, got %d", grantedCount)
+	}
+}
+
+func TestDefineWorkflowForFirm_NonOwnerIsDenied(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	var firmID uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm A') RETURNING id`).Scan(&firmID); err != nil {
+		t.Fatalf("seed firm: %v", err)
+	}
+	// A plain member, not an owner - seedUserInFirm's "tester" role never
+	// sets is_owner.
+	memberID, _ := seedUserInFirm(ctx, t, adminPool, appPool, firmID, "sub-define-nonowner")
+
+	if _, err := workflow.DefineWorkflowForFirm(ctx, appPool, firmID, memberID, purchaseOrderRequestSpec); !errors.Is(err, workflow.ErrPermissionDenied) {
+		t.Fatalf("expected ErrPermissionDenied for a non-owner member, got: %v", err)
+	}
+}
+
+func TestDefineWorkflowForFirm_NonMemberIsDenied(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	var firmA, firmB uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm A') RETURNING id`).Scan(&firmA); err != nil {
+		t.Fatalf("seed firm A: %v", err)
+	}
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm B') RETURNING id`).Scan(&firmB); err != nil {
+		t.Fatalf("seed firm B: %v", err)
+	}
+	outsiderID, _ := seedOwnerInFirm(ctx, t, adminPool, appPool, firmB, "sub-define-outsider")
+
+	if _, err := workflow.DefineWorkflowForFirm(ctx, appPool, firmA, outsiderID, purchaseOrderRequestSpec); !errors.Is(err, workflow.ErrDefinitionNotFound) {
+		t.Fatalf("expected ErrDefinitionNotFound for an owner of a different firm supplying firm A's real ID, got: %v", err)
+	}
+}
+
+func TestDefineWorkflowForFirm_MalformedSpecIsRejected(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	var firmID uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm A') RETURNING id`).Scan(&firmID); err != nil {
+		t.Fatalf("seed firm: %v", err)
+	}
+	ownerID, _ := seedOwnerInFirm(ctx, t, adminPool, appPool, firmID, "sub-define-malformed")
+
+	noInitialState := workflow.DefinitionSpec{
+		Key:  "broken",
+		Name: "Broken",
+		CreatePermission: workflow.PermissionSpec{
+			Key:         "workflow.broken.create",
+			Description: "Create a broken instance.",
+		},
+		States: []workflow.StateSpec{
+			{Key: "only_state", Name: "Only State"}, // IsInitial never set
+		},
+	}
+
+	if _, err := workflow.DefineWorkflowForFirm(ctx, appPool, firmID, ownerID, noInitialState); !errors.Is(err, workflow.ErrInvalidSpec) {
+		t.Fatalf("expected ErrInvalidSpec for a spec with no initial state, got: %v", err)
+	}
+}
+
+func TestDefineWorkflowForFirm_DuplicateKeyIsRejected(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	var firmID uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm A') RETURNING id`).Scan(&firmID); err != nil {
+		t.Fatalf("seed firm: %v", err)
+	}
+	if _, err := workflow.SeedStockToSaleWorkflow(ctx, appPool, firmID); err != nil {
+		t.Fatalf("seed workflow: %v", err)
+	}
+	ownerID, _ := seedOwnerInFirm(ctx, t, adminPool, appPool, firmID, "sub-define-duplicate")
+
+	duplicateKeySpec := workflow.DefinitionSpec{
+		Key:  workflow.StockToSaleKey, // already exists for this firm
+		Name: "Stock In -> Sale (again)",
+		CreatePermission: workflow.PermissionSpec{
+			Key:         "workflow.stock_to_sale_2.add_stock",
+			Description: "Add a new stock item.",
+		},
+		States: []workflow.StateSpec{
+			{Key: "in_stock", Name: "In Stock", IsInitial: true},
+		},
+	}
+
+	if _, err := workflow.DefineWorkflowForFirm(ctx, appPool, firmID, ownerID, duplicateKeySpec); !errors.Is(err, workflow.ErrDefinitionKeyExists) {
+		t.Fatalf("expected ErrDefinitionKeyExists when redefining an already-used key, got: %v", err)
+	}
+}
+
 func TestListInstances_ReturnsEachInstanceWithItsStateAndActions(t *testing.T) {
 	adminPool, appPool := setupTest(t)
 	ctx := context.Background()

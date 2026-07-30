@@ -5,8 +5,10 @@
 
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import { requireFirmContext } from "@/lib/firmContext";
+import { fetchRoleInFirm } from "@/lib/me";
 import { fetchDefinitions } from "@/lib/workflow";
 import { Link } from "@/i18n/navigation";
+import DefinitionBuilder from "@/components/Workflow/DefinitionBuilder";
 
 type PageProps = {
   params: Promise<{ locale: string }>;
@@ -17,20 +19,31 @@ type PageProps = {
 // hardcoded card for stock_to_sale - a firm's second workflow
 // definition, whenever one exists, shows up here automatically. Each
 // entry links to /workflows/{key}, the generic instance view (see
-// components/Workflow/WorkflowDefinitionView.tsx).
+// components/Workflow/WorkflowDefinitionView.tsx). Owners additionally
+// get the "Define new workflow" builder (components/Workflow/DefinitionBuilder.tsx)
+// - the frontend half of item 1's DefineWorkflowForFirm endpoint.
 export default async function WorkflowsPage({ params }: PageProps) {
   const { locale } = await params;
   setRequestLocale(locale);
   const t = await getTranslations("Workflow");
 
   const { sessionToken, firm } = await requireFirmContext(locale);
-  const definitions = await fetchDefinitions(sessionToken, firm.firmId);
+  const [definitions, role] = await Promise.all([
+    fetchDefinitions(sessionToken, firm.firmId),
+    fetchRoleInFirm(sessionToken, firm.firmId),
+  ]);
 
   return (
     <main className="flex flex-1 flex-col items-center gap-6 bg-zinc-50 px-6 py-16 dark:bg-black">
       <h1 className="text-3xl font-semibold tracking-tight text-black dark:text-zinc-50">
         {t("listTitle")}
       </h1>
+
+      {role?.isOwner && (
+        <div className="w-full max-w-md">
+          <DefinitionBuilder firmId={firm.firmId} />
+        </div>
+      )}
 
       {definitions === null ? (
         <p className="text-red-600 dark:text-red-400">{t("listLoadError")}</p>

@@ -168,5 +168,69 @@ assert matches[0]['userEmail'] == '$KEYCLOAK_USERNAME', matches[0]
 " || fail "expected the UI-path add-stock entry to appear in the audit log, correctly attributed to $KEYCLOAK_USERNAME: $UI_AUDIT_LOG"
 log "audit log (UI path) confirmed, correctly attributed"
 
+# --- Define a second, structurally different workflow through the real
+# API, and confirm the generic frontend actually renders it -------------
+#
+# Everything genericness-related so far (this batch's own vitest/Go
+# integration tests) proves the mechanism works against a synthetic Go
+# fixture (workflow_integration_test.go's purchaseOrderSpec) or in
+# isolated unit tests. This section is the real end-to-end proof: define
+# a workflow with a completely different shape than stock_to_sale
+# (three states/two transitions vs. two states/one transition, and a
+# "vendor" payload field instead of "item"/"quantity") through the real,
+# owner-gated POST .../workflow-definitions endpoint (via the frontend's
+# own proxy route, same UI path a real builder submission takes), then
+# confirm the generic /workflows/[key] page (built without any
+# stock_to_sale-specific code) actually renders it - not a mock, not a
+# unit test, a real curl against the running frontend.
+
+log "define workflow (UI path): POSTing a structurally different purchase_order-shaped spec"
+DEFINE_RESPONSE=$(uiAuth -X POST "$FRONTEND_URL/api/workflow/definitions" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "firmId":"'"$FIRM_ID"'",
+      "spec":{
+        "key":"purchase_order",
+        "name":"Purchase Order",
+        "createPermission":{"key":"workflow.purchase_order.create","description":"Create a purchase order."},
+        "states":[
+          {"key":"draft","name":"Draft","isInitial":true},
+          {"key":"approved","name":"Approved"},
+          {"key":"received","name":"Received","isTerminal":true}
+        ],
+        "transitions":[
+          {"fromStateKey":"draft","toStateKey":"approved","actionKey":"approve","name":"Approve","permission":{"key":"workflow.purchase_order.approve","description":"Approve a draft purchase order."}},
+          {"fromStateKey":"approved","toStateKey":"received","actionKey":"receive","name":"Receive","permission":{"key":"workflow.purchase_order.receive","description":"Mark an approved purchase order as received."}}
+        ]
+      }
+    }')
+PO_DEFINITION_ID=$(echo "$DEFINE_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['definitionId'])")
+[ -n "$PO_DEFINITION_ID" ] || fail "did not get a definitionId back from defining purchase_order: $DEFINE_RESPONSE"
+log "purchase_order workflow defined: $PO_DEFINITION_ID"
+
+log "add a purchase_order instance (UI path), through the exact same generic create route stock_to_sale uses"
+PO_INSTANCE_RESPONSE=$(uiAuth -X POST "$FRONTEND_URL/api/workflow/instances" \
+    -H "Content-Type: application/json" \
+    -d "{\"firmId\":\"$FIRM_ID\",\"definitionId\":\"$PO_DEFINITION_ID\",\"payload\":{\"vendor\":\"Acme Supply Co\"}}")
+echo "$PO_INSTANCE_RESPONSE" | python3 -c "import sys, json; d = json.load(sys.stdin); assert d['state']['key'] == 'draft', d" \
+    || fail "expected the new purchase_order instance's state to be draft: $PO_INSTANCE_RESPONSE"
+log "purchase_order instance added, state draft"
+
+log "workflows list (UI path): confirming the frontend's own /workflows page lists Purchase Order alongside Stock In -> Sale"
+WORKFLOWS_LIST_HTML=$(curl -sS -b "zonaryos_session=$TOKEN" "$FRONTEND_URL/en/workflows")
+echo "$WORKFLOWS_LIST_HTML" | grep -q "Purchase Order" \
+    || fail "expected the frontend's /workflows list page to render the newly-defined Purchase Order definition"
+log "workflows list (UI path) confirmed"
+
+log "generic workflow view (UI path): confirming /workflows/purchase_order renders through the SAME generic component tree as /stock, with zero purchase_order-specific frontend code"
+PO_VIEW_HTML=$(curl -sS -b "zonaryos_session=$TOKEN" "$FRONTEND_URL/en/workflows/purchase_order")
+echo "$PO_VIEW_HTML" | grep -q "Purchase Order" \
+    || fail "expected /workflows/purchase_order to render the definition's own name"
+echo "$PO_VIEW_HTML" | grep -q "Acme Supply Co" \
+    || fail "expected /workflows/purchase_order to render the new instance's payload (vendor: Acme Supply Co) via the generic formatPayload rendering"
+echo "$PO_VIEW_HTML" | grep -q "Approve" \
+    || fail "expected /workflows/purchase_order to render the 'Approve' action button, labeled from the backend's own AvailableAction.Name"
+log "generic workflow view (UI path) confirmed - a second, structurally different workflow renders correctly with no new frontend code"
+
 echo ""
-echo "E2E SMOKE TEST PASSED: login + wizard -> firm creation -> add stock -> sell, plus UI-path add stock, firm switch, and audit log view, all against a real stack"
+echo "E2E SMOKE TEST PASSED: login + wizard -> firm creation -> add stock -> sell, plus UI-path add stock, firm switch, audit log view, and a real second workflow defined + rendered through the generic UI, all against a real stack"

@@ -7,22 +7,21 @@ import { getTranslations, setRequestLocale } from "next-intl/server";
 import { requireFirmContext } from "@/lib/firmContext";
 import { fetchRoleInFirm } from "@/lib/me";
 import { fetchDefinitions } from "@/lib/workflow";
+import FirmNameEditor from "./FirmNameEditor";
 
 type PageProps = {
   params: Promise<{ locale: string }>;
 };
 
-// Item 3: a real firm settings page - application settings, not build
-// config. Deliberately read-only: the `firms` table
+// Item 3 (extended by item 4): a real firm settings page - application
+// settings, not build config. The `firms` table
 // (migrations/0001_core_schema.up.sql) has `name`/`attributes`/
-// `created_at`, but no HTTP handler anywhere mutates any of them today
-// (checked internal/identity, internal/wizard - firm creation only, no
-// update path). Promising an editable name/attributes field here would
-// be UI ahead of a backend capability that doesn't exist; this page
-// shows what's actually available (firm name, the caller's role, the
-// firm's active workflow definitions) and nothing it can't back with a
-// real request. Firm metadata editing is a real, separate feature to
-// build later, not something to fake here.
+// `created_at`; only `name` is mutable today (internal/firm.UpdateName,
+// item 4 - a deliberately narrow, owner-gated PATCH, not a general firm-
+// settings endpoint). `attributes` still has no HTTP handler anywhere
+// touching it, so this page still shows everything else read-only rather
+// than promising editing the backend can't back - see the new Open
+// Points entry for the broader firm-metadata story this doesn't attempt.
 export default async function SettingsPage({ params }: PageProps) {
   const { locale } = await params;
   setRequestLocale(locale);
@@ -42,7 +41,11 @@ export default async function SettingsPage({ params }: PageProps) {
         <dl className="flex flex-col gap-3 text-sm">
           <div>
             <dt className="text-zinc-500 dark:text-zinc-400">{t("firmNameLabel")}</dt>
-            <dd className="text-black dark:text-zinc-50">{firm.firmName}</dd>
+            {role?.isOwner ? (
+              <FirmNameEditor firmId={firm.firmId} currentName={firm.firmName} />
+            ) : (
+              <dd className="text-black dark:text-zinc-50">{firm.firmName}</dd>
+            )}
           </div>
           <div>
             <dt className="text-zinc-500 dark:text-zinc-400">{t("roleLabel")}</dt>

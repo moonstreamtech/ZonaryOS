@@ -77,6 +77,47 @@ paths:
         "403":
           description: Caller has no membership in firmID
 
+  /api/firms/{firmID}:
+    patch:
+      summary: Rename a firm (owner-only)
+      description: >
+        Item 4's minimal, bounded firm mutation (internal/firm.UpdateName)
+        - name only, not a general firm-settings endpoint. Owner-gated
+        (internal/permission.IsOwner, after IsMember), same tier as
+        defining a new workflow or creating the firm itself. Broader firm
+        metadata editing (the `firms.attributes` jsonb column) is real,
+        undesigned future work - see docs/OPEN_POINTS.md item 36 - not
+        something this endpoint speculatively supports.
+      parameters:
+        - name: firmID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+              required: [name]
+      responses:
+        "200":
+          description: The firm's new name
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  firmId: { type: string, format: uuid }
+                  name: { type: string }
+                required: [firmId, name]
+        "400": { description: Invalid firmID, malformed body, or an empty/whitespace-only name }
+        "401": { description: Missing or invalid bearer token }
+        "403": { description: Caller is a member of firmID but not an owner }
+        "404": { description: Caller isn't a member of firmID at all }
+
   /api/firms/{firmID}/workflow-definitions:
     get:
       summary: >
@@ -133,6 +174,50 @@ paths:
         "400": { description: Invalid firmID }
         "401": { description: Missing or invalid bearer token }
         "404": { description: "(key mode only) No workflow definition with this key in this firm, or the caller isn't a member of firmID" }
+    post:
+      summary: Define a new workflow for this firm (owner-only)
+      description: >
+        Exposes internal/workflow.DefineWorkflow/DefineWorkflowTx over
+        HTTP - the same mechanism that already defines every firm's
+        stock_to_sale workflow (internal/workflow.SeedStockToSaleWorkflow),
+        now reachable by a firm's owner directly instead of only from Go
+        fixtures/the firm-creation wizard. This is strictly the workflow
+        engine's existing definition mechanism (states, transitions,
+        per-transition permission keys) - not the Rule Engine / conditional
+        decision logic Vision §3 also describes (docs/OPEN_POINTS.md item
+        12), which remains undesigned and out of scope here.
+
+        Owner-gated (internal/permission.IsOwner, after IsMember) -
+        defining a new workflow type is a structural firm decision, the
+        same tier as firm creation itself, not something every member can
+        do. On success, every permission the spec introduces (its create
+        permission, plus each transition's) is granted to the acting
+        owner's own owner-flagged role (the same "self-action auto-grant"
+        DefineWorkflowTx already performs for the firm-creation wizard) -
+        the firm isn't left holding a freshly-defined workflow nobody can
+        use.
+      parameters:
+        - name: firmID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DefinitionSpec"
+      responses:
+        "201":
+          description: The newly-defined workflow definition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowDefinition"
+        "400": { description: Invalid firmID, malformed request body, or a structurally invalid spec (DefinitionSpec.Validate - no initial state, a transition referencing an unknown state, ...) }
+        "401": { description: Missing or invalid bearer token }
+        "403": { description: Caller is a member of firmID but not an owner }
+        "404": { description: Caller isn't a member of firmID at all }
+        "409": { description: firmID already has a workflow definition with this key }
 
   /api/firms/{firmID}/workflow-definitions/{definitionID}/instances:
     post:
@@ -575,6 +660,70 @@ components:
             Never-Violate Rule 7 permission tag on its "add" action instead
             of hardcoding a duplicate of it.
       required: [definitionId, key, name, createPermissionKey]
+    PermissionSpec:
+      type: object
+      description: A permission catalog entry (internal/workflow.PermissionSpec) - upserted into the global permissions table when the workflow is defined.
+      properties:
+        key:
+          type: string
+        description:
+          type: string
+      required: [key]
+    StateSpec:
+      type: object
+      description: One node in the workflow's state graph (internal/workflow.StateSpec).
+      properties:
+        key:
+          type: string
+        name:
+          type: string
+        isInitial:
+          type: boolean
+          description: Exactly one state per definition must set this.
+        isTerminal:
+          type: boolean
+      required: [key, name]
+    TransitionSpec:
+      type: object
+      description: One edge in the state graph (internal/workflow.TransitionSpec) - moving from one state to another via a named, permission-gated action.
+      properties:
+        fromStateKey:
+          type: string
+        toStateKey:
+          type: string
+        actionKey:
+          type: string
+        name:
+          type: string
+        permission:
+          $ref: "#/components/schemas/PermissionSpec"
+      required: [fromStateKey, toStateKey, actionKey, name, permission]
+    DefinitionSpec:
+      type: object
+      description: >
+        The full shape of a new workflow definition (internal/workflow.DefinitionSpec)
+        - the request body for POST .../workflow-definitions. Validated
+        server-side (DefinitionSpec.Validate): exactly one initial state,
+        unique state keys, every transition referencing a state that
+        actually exists, and no two transitions sharing a
+        (from-state, action) pair.
+      properties:
+        key:
+          type: string
+          description: A short, unique-per-firm identifier (e.g. "purchase_order") - see workflow_definitions' UNIQUE (firm_id, key) constraint.
+        name:
+          type: string
+        createPermission:
+          $ref: "#/components/schemas/PermissionSpec"
+        states:
+          type: array
+          items:
+            $ref: "#/components/schemas/StateSpec"
+        transitions:
+          type: array
+          items:
+            $ref: "#/components/schemas/TransitionSpec"
+      required: [key, name, createPermission, states, transitions]
     InstanceState:
       type: object
       properties:

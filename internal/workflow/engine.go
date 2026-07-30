@@ -13,12 +13,19 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
 )
+
+// postgresUniqueViolation is the SQLSTATE code Postgres raises for a
+// UNIQUE constraint violation - used below to turn workflow_definitions'
+// (firm_id, key) collision into the specific ErrDefinitionKeyExists
+// instead of a generic 500.
+const postgresUniqueViolation = "23505"
 
 // workflowInstanceListEntityType is the audit_log.entity_type ListInstances
 // records its view-log entry under - see ListInstances's doc comment.
@@ -104,6 +111,10 @@ func DefineWorkflowTx(ctx context.Context, tx pgx.Tx, firmID, granteeRoleID uuid
 		VALUES ($1, $2, $3, $4)
 		RETURNING id
 	`, firmID, spec.Key, spec.Name, spec.CreatePermission.Key).Scan(&definitionID); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == postgresUniqueViolation {
+			return uuid.UUID{}, ErrDefinitionKeyExists
+		}
 		return uuid.UUID{}, fmt.Errorf("insert workflow definition: %w", err)
 	}
 
@@ -165,6 +176,67 @@ func upsertPermission(ctx context.Context, tx pgx.Tx, firmID, granteeRoleID uuid
 		return fmt.Errorf("grant permission %q to role %s: %w", p.Key, granteeRoleID, err)
 	}
 	return nil
+}
+
+// DefineWorkflowForFirm is DefineWorkflow's HTTP-reachable counterpart -
+// what lets a firm actually use the generic workflow engine (this
+// codebase's own DefineWorkflow/DefineWorkflowTx, already exercised by
+// SeedStockToSaleWorkflow) to define its own workflow, instead of only
+// ever getting the one hardcoded stock_to_sale definition every firm is
+// seeded with. Owner-gated: defining a new workflow type - a new
+// permission-gated action surface for the firm - is a structural firm
+// decision, the same tier as firm creation itself (see
+// internal/wizard.CreateDefaultFirm), not something every member can do.
+//
+// On success, every permission spec introduces (its create permission,
+// plus each transition's) is granted to the acting owner's own
+// owner-flagged role - DefineWorkflowTx's "self-action auto-grant"
+// (see its own doc comment), the same mechanism CreateDefaultFirm and
+// SeedStockToSaleWorkflowTx already rely on - so a firm isn't left
+// holding a freshly-defined workflow nobody can actually use yet. A firm
+// can extend access to other roles afterward via Permission Audit Mode,
+// same as any other permission.
+func DefineWorkflowForFirm(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.UUID, spec DefinitionSpec) (uuid.UUID, error) {
+	var definitionID uuid.UUID
+	err := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		isMember, err := permission.IsMember(ctx, tx, firmID, userID)
+		if err != nil {
+			return err
+		}
+		if !isMember {
+			return ErrDefinitionNotFound
+		}
+
+		isOwner, err := permission.IsOwner(ctx, tx, firmID, userID)
+		if err != nil {
+			return err
+		}
+		if !isOwner {
+			return ErrPermissionDenied
+		}
+
+		if err := spec.Validate(); err != nil {
+			return fmt.Errorf("%w: %s", ErrInvalidSpec, err)
+		}
+
+		var granteeRoleID uuid.UUID
+		if err := tx.QueryRow(ctx, `
+			SELECT r.id FROM user_firm_roles ufr
+			JOIN roles r ON r.id = ufr.role_id
+			WHERE ufr.user_id = $1 AND ufr.firm_id = $2 AND r.is_owner
+			LIMIT 1
+		`, userID, firmID).Scan(&granteeRoleID); err != nil {
+			return fmt.Errorf("look up acting owner's role: %w", err)
+		}
+
+		id, err := DefineWorkflowTx(ctx, tx, firmID, granteeRoleID, spec)
+		definitionID = id
+		return err
+	})
+	if err != nil {
+		return uuid.UUID{}, err
+	}
+	return definitionID, nil
 }
 
 // CreateInstance starts a new instance of definitionID in its designated

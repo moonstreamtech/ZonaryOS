@@ -26,4 +26,16 @@ var (
 	// required for the action - checked via internal/permission against
 	// their role(s) in this firm, never bypassed.
 	ErrPermissionDenied = errors.New("caller does not have the required permission")
+
+	// ErrInvalidSpec means a DefinitionSpec submitted to DefineWorkflowForFirm
+	// failed DefinitionSpec.Validate() - structurally invalid (no initial
+	// state, a transition referencing an unknown state, a duplicate
+	// transition, ...), not a permission or existence problem.
+	ErrInvalidSpec = errors.New("invalid workflow definition spec")
+
+	// ErrDefinitionKeyExists means firmID already has a workflow_definitions
+	// row with the requested key (UNIQUE (firm_id, key),
+	// migrations/0003_workflow_engine.up.sql) - including the well-known
+	// keys this codebase itself seeds (e.g. "stock_to_sale").
+	ErrDefinitionKeyExists = errors.New("a workflow definition with this key already exists for this firm")
 )

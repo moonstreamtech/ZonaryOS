@@ -46,6 +46,7 @@ func RegisterRoutes(mux *http.ServeMux, verifier *identity.Verifier, pool *pgxpo
 	// strictly shorter path than the instances-listing one, and the
 	// mux never has to compare wildcard-vs-literal at the same segment.
 	mux.Handle("GET /api/firms/{firmID}/workflow-definitions", auth(http.HandlerFunc(handleWorkflowDefinitions(pool))))
+	mux.Handle("POST /api/firms/{firmID}/workflow-definitions", auth(http.HandlerFunc(handleDefineWorkflow(pool))))
 	mux.Handle("POST /api/firms/{firmID}/workflow-definitions/{definitionID}/instances", auth(http.HandlerFunc(handleCreateInstance(pool))))
 	mux.Handle("GET /api/firms/{firmID}/workflow-definitions/{definitionID}/instances", auth(http.HandlerFunc(handleListInstances(pool))))
 	mux.Handle("GET /api/firms/{firmID}/workflow-instances/{instanceID}", auth(http.HandlerFunc(handleCurrentState(pool))))
@@ -102,8 +103,10 @@ func writeEngineError(w http.ResponseWriter, err error) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 	case errors.Is(err, ErrPermissionDenied):
 		http.Error(w, err.Error(), http.StatusForbidden)
-	case errors.Is(err, ErrNoSuchTransition):
+	case errors.Is(err, ErrNoSuchTransition), errors.Is(err, ErrInvalidSpec):
 		http.Error(w, err.Error(), http.StatusBadRequest)
+	case errors.Is(err, ErrDefinitionKeyExists):
+		http.Error(w, err.Error(), http.StatusConflict)
 	default:
 		http.Error(w, "internal error", http.StatusInternalServerError)
 	}
@@ -183,6 +186,118 @@ func handleWorkflowDefinitions(pool *pgxpool.Pool) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(toDefinitionInfoResponse(info))
+	}
+}
+
+type definePermissionRequest struct {
+	Key         string `json:"key"`
+	Description string `json:"description"`
+}
+
+type defineStateRequest struct {
+	Key        string `json:"key"`
+	Name       string `json:"name"`
+	IsInitial  bool   `json:"isInitial"`
+	IsTerminal bool   `json:"isTerminal"`
+}
+
+type defineTransitionRequest struct {
+	FromStateKey string                  `json:"fromStateKey"`
+	ToStateKey   string                  `json:"toStateKey"`
+	ActionKey    string                  `json:"actionKey"`
+	Name         string                  `json:"name"`
+	Permission   definePermissionRequest `json:"permission"`
+}
+
+// defineWorkflowRequest is DefinitionSpec's JSON wire shape (see spec.go)
+// - a 1:1 mapping, not a reduced/simplified one, since the whole point of
+// this endpoint is to let a firm's owner define exactly the same kind of
+// spec SeedStockToSaleWorkflow already builds in Go.
+type defineWorkflowRequest struct {
+	Key              string                    `json:"key"`
+	Name             string                    `json:"name"`
+	CreatePermission definePermissionRequest   `json:"createPermission"`
+	States           []defineStateRequest      `json:"states"`
+	Transitions      []defineTransitionRequest `json:"transitions"`
+}
+
+// handleDefineWorkflow lets a firm's owner define a new workflow (item 1
+// of this batch: expose internal/workflow.DefineWorkflow, previously only
+// reachable from Go fixtures/the firm-creation wizard) - owner-gated via
+// DefineWorkflowForFirm, which also handles the self-action auto-grant
+// so the caller's own role can actually use what it just defined. Spec
+// structural validation (DefinitionSpec.Validate) and a duplicate-key
+// collision are both surfaced as real 4xx responses via writeEngineError
+// (ErrInvalidSpec -> 400, ErrDefinitionKeyExists -> 409), not swallowed
+// into a generic 500.
+func handleDefineWorkflow(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := identity.FromContext(r.Context())
+		if !ok {
+			http.Error(w, "missing identity", http.StatusInternalServerError)
+			return
+		}
+
+		firmID, err := uuid.Parse(r.PathValue("firmID"))
+		if err != nil {
+			http.Error(w, "invalid firm id", http.StatusBadRequest)
+			return
+		}
+
+		var req defineWorkflowRequest
+		if err := decodeJSONBody(r, &req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		userID, err := identity.ResolveOrCreateUser(r.Context(), pool, id)
+		if err != nil {
+			http.Error(w, "failed to resolve user", http.StatusInternalServerError)
+			return
+		}
+
+		spec := DefinitionSpec{
+			Key:  req.Key,
+			Name: req.Name,
+			CreatePermission: PermissionSpec{
+				Key:         req.CreatePermission.Key,
+				Description: req.CreatePermission.Description,
+			},
+			States:      make([]StateSpec, 0, len(req.States)),
+			Transitions: make([]TransitionSpec, 0, len(req.Transitions)),
+		}
+		for _, s := range req.States {
+			spec.States = append(spec.States, StateSpec{
+				Key: s.Key, Name: s.Name, IsInitial: s.IsInitial, IsTerminal: s.IsTerminal,
+			})
+		}
+		for _, t := range req.Transitions {
+			spec.Transitions = append(spec.Transitions, TransitionSpec{
+				FromStateKey: t.FromStateKey,
+				ToStateKey:   t.ToStateKey,
+				ActionKey:    t.ActionKey,
+				Name:         t.Name,
+				Permission: PermissionSpec{
+					Key:         t.Permission.Key,
+					Description: t.Permission.Description,
+				},
+			})
+		}
+
+		definitionID, err := DefineWorkflowForFirm(r.Context(), pool, firmID, userID, spec)
+		if err != nil {
+			writeEngineError(w, err)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(toDefinitionInfoResponse(DefinitionInfo{
+			ID:                  definitionID,
+			Key:                 spec.Key,
+			Name:                spec.Name,
+			CreatePermissionKey: spec.CreatePermission.Key,
+		}))
 	}
 }
 
