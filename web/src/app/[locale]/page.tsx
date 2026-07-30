@@ -10,6 +10,7 @@ import { fetchMe, fetchRoleInFirm } from "@/lib/me";
 import { resolveActiveFirm } from "@/lib/activeFirm";
 import {
   fetchDefinitionByKey,
+  fetchDefinitions,
   fetchInstances,
   STOCK_TO_SALE_KEY,
 } from "@/lib/workflow";
@@ -94,6 +95,7 @@ export default async function Home({ params }: PageProps) {
     : null;
   const inStockCount =
     instances?.filter((i) => i.state.key !== "sold").length ?? null;
+  const definitions = await fetchDefinitions(sessionToken!, firm.firmId);
 
   return (
     <main className="flex flex-1 flex-col items-center gap-8 bg-zinc-50 px-6 py-16 dark:bg-black">
@@ -123,6 +125,22 @@ export default async function Home({ params }: PageProps) {
             className="mt-3 inline-block text-sm font-medium text-zinc-950 underline dark:text-zinc-50"
           >
             {tDash("goToStock")}
+          </Link>
+        </div>
+
+        <div className="rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
+          <h2 className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
+            {tDash("workflowCountLabel")}
+          </h2>
+          <p className="mt-1 text-2xl font-semibold text-black dark:text-zinc-50">
+            {definitions === null ? tDash("itemCountUnavailable") : definitions.length}
+          </p>
+          <Link
+            href="/workflows"
+            data-permission-public="true"
+            className="mt-3 inline-block text-sm font-medium text-zinc-950 underline dark:text-zinc-50"
+          >
+            {tDash("goToWorkflows")}
           </Link>
         </div>
 

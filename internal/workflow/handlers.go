@@ -45,7 +45,7 @@ func RegisterRoutes(mux *http.ServeMux, verifier *identity.Verifier, pool *pgxpo
 	// A query parameter on the collection path sidesteps that: it's a
 	// strictly shorter path than the instances-listing one, and the
 	// mux never has to compare wildcard-vs-literal at the same segment.
-	mux.Handle("GET /api/firms/{firmID}/workflow-definitions", auth(http.HandlerFunc(handleLookupDefinitionByKey(pool))))
+	mux.Handle("GET /api/firms/{firmID}/workflow-definitions", auth(http.HandlerFunc(handleWorkflowDefinitions(pool))))
 	mux.Handle("POST /api/firms/{firmID}/workflow-definitions/{definitionID}/instances", auth(http.HandlerFunc(handleCreateInstance(pool))))
 	mux.Handle("GET /api/firms/{firmID}/workflow-definitions/{definitionID}/instances", auth(http.HandlerFunc(handleListInstances(pool))))
 	mux.Handle("GET /api/firms/{firmID}/workflow-instances/{instanceID}", auth(http.HandlerFunc(handleCurrentState(pool))))
@@ -116,12 +116,30 @@ type definitionInfoResponse struct {
 	CreatePermissionKey string `json:"createPermissionKey"`
 }
 
-// handleLookupDefinitionByKey resolves a well-known workflow key (e.g.
-// "stock_to_sale", given as ?key=stock_to_sale) to the firm-scoped
-// definition ID the rest of this package's endpoints take - what lets a
-// frontend page that only knows the key avoid a separate "list all
-// definitions and find the one I want" round trip.
-func handleLookupDefinitionByKey(pool *pgxpool.Pool) http.HandlerFunc {
+func toDefinitionInfoResponse(info DefinitionInfo) definitionInfoResponse {
+	return definitionInfoResponse{
+		DefinitionID:        info.ID.String(),
+		Key:                 info.Key,
+		Name:                info.Name,
+		CreatePermissionKey: info.CreatePermissionKey,
+	}
+}
+
+// handleWorkflowDefinitions serves GET /api/firms/{firmID}/workflow-definitions,
+// dispatching on whether a ?key= query parameter was given rather than a
+// second route: with one, it resolves that well-known key (e.g.
+// "stock_to_sale") to the firm-scoped definition ID the rest of this
+// package's endpoints take - what lets a frontend page that only knows
+// the key avoid a "list everything and find the one I want" round trip.
+// Without one, it lists every workflow definition the firm has (see
+// ListDefinitions) - the data source for a firm-level "Workflows" view
+// that doesn't hardcode one card per known workflow. A second path
+// segment (e.g. a literal "all") was considered instead of the query
+// parameter, but this path already collides at startup with the sibling
+// `{definitionID}/instances` pattern below for any such literal segment
+// (see RegisterRoutes's comment) - a query parameter sidesteps that the
+// same way `?key=` already did.
+func handleWorkflowDefinitions(pool *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := identity.FromContext(r.Context())
 		if !ok {
@@ -135,15 +153,25 @@ func handleLookupDefinitionByKey(pool *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 
-		key := r.URL.Query().Get("key")
-		if key == "" {
-			http.Error(w, "missing key query parameter", http.StatusBadRequest)
-			return
-		}
-
 		userID, err := identity.ResolveOrCreateUser(r.Context(), pool, id)
 		if err != nil {
 			http.Error(w, "failed to resolve user", http.StatusInternalServerError)
+			return
+		}
+
+		key := r.URL.Query().Get("key")
+		if key == "" {
+			defs, err := ListDefinitions(r.Context(), pool, firmID, userID)
+			if err != nil {
+				writeEngineError(w, err)
+				return
+			}
+			resp := make([]definitionInfoResponse, 0, len(defs))
+			for _, d := range defs {
+				resp = append(resp, toDefinitionInfoResponse(d))
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
 			return
 		}
 
@@ -154,12 +182,7 @@ func handleLookupDefinitionByKey(pool *pgxpool.Pool) http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(definitionInfoResponse{
-			DefinitionID:        info.ID.String(),
-			Key:                 info.Key,
-			Name:                info.Name,
-			CreatePermissionKey: info.CreatePermissionKey,
-		})
+		_ = json.NewEncoder(w).Encode(toDefinitionInfoResponse(info))
 	}
 }
 

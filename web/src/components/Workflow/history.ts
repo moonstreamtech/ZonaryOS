@@ -12,17 +12,20 @@ export type HistoryRow = {
   actorEmail: string;
   actorDisplayName: string;
   action: string;
-  itemName: string | null;
   toStateKey: string | null;
+  payload: Record<string, unknown> | null;
 };
 
-// Sale/transaction history (item 6) is built entirely from data the
-// audit trail (internal/auditlog, Vision §3 / PR 8) and the workflow
-// engine (internal/workflow, PR 7) already produce - no parallel history
-// table or backend endpoint. Pulled out of StockHistory.tsx as a pure
-// function so it's unit-testable without rendering (see history.test.ts),
-// same pattern as components/AuditMode/useAuditBadges.ts's
-// scanInteractiveElements.
+// Generic replacement for the old stock-specific stock/history.ts:
+// built entirely from data internal/auditlog and internal/workflow
+// already produce, same as before - but no longer assumes a "payload.item"
+// field. Each row's payload is whatever this specific write's delta
+// carried (audit_log.changes.payload); when that delta is empty (e.g.
+// record_sale's transitions, which the frontend always calls with an
+// empty payload - see lib/workflow.ts's executeTransition default), it
+// falls back to the instance's current full payload, same "best
+// available context, not a hardcoded field name" approach
+// components/Workflow/format.ts's formatPayload takes for rendering it.
 //
 // entries is assumed already most-recent-first (internal/auditlog.List's
 // own ORDER BY) - this function preserves that order rather than
@@ -31,24 +34,18 @@ export function buildHistoryRows(
   instances: InstanceState[],
   entries: AuditLogEntry[],
 ): HistoryRow[] {
-  const itemByInstance = new Map<string, string | null>(
-    instances.map((i) => [
-      i.instanceId,
-      typeof i.payload.item === "string" ? i.payload.item : null,
-    ]),
+  const payloadByInstance = new Map<string, Record<string, unknown>>(
+    instances.map((i) => [i.instanceId, i.payload]),
   );
 
   return entries
     .filter((e) => e.entityType === "workflow_instance")
     .map((e) => {
-      const changesPayload =
+      const deltaPayload =
         e.changes.payload && typeof e.changes.payload === "object"
           ? (e.changes.payload as Record<string, unknown>)
           : null;
-      const fallbackItem =
-        changesPayload && typeof changesPayload.item === "string"
-          ? changesPayload.item
-          : null;
+      const hasDelta = deltaPayload && Object.keys(deltaPayload).length > 0;
 
       return {
         id: e.id,
@@ -56,9 +53,11 @@ export function buildHistoryRows(
         actorEmail: e.userEmail,
         actorDisplayName: e.userDisplayName,
         action: e.action,
-        itemName: itemByInstance.get(e.entityId) ?? fallbackItem,
         toStateKey:
           typeof e.changes.to_state === "string" ? e.changes.to_state : null,
+        payload: hasDelta
+          ? deltaPayload
+          : (payloadByInstance.get(e.entityId) ?? null),
       };
     });
 }

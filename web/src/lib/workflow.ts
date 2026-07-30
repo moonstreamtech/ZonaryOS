@@ -69,6 +69,33 @@ export async function fetchDefinitionByKey(
 }
 
 /**
+ * Calls the Go backend's `GET /api/firms/{firmId}/workflow-definitions`
+ * with no `?key=` - list mode (see internal/workflow.ListDefinitions and
+ * handlers.go's handleWorkflowDefinitions). The data source for a
+ * firm-level "Workflows" view: every definition the firm has, not one
+ * hardcoded by key. Returns null on failure, same convention as
+ * fetchDefinitionByKey.
+ */
+export async function fetchDefinitions(
+  token: string,
+  firmId: string,
+): Promise<WorkflowDefinition[] | null> {
+  try {
+    const res = await fetch(
+      `${apiBase()}/api/firms/${encodeURIComponent(firmId)}/workflow-definitions`,
+      {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      },
+    );
+    if (!res.ok) return null;
+    return (await res.json()) as WorkflowDefinition[];
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Calls the Go backend's `GET /api/firms/{firmId}/workflow-definitions/{definitionId}/instances`
  * (e.g. the stock list). Returns null on failure, same convention as
  * fetchDefinitionByKey.
@@ -135,16 +162,19 @@ export async function createInstance(
 
 /**
  * Calls the Go backend's `POST /api/firms/{firmId}/workflow-instances/{instanceId}/transitions/{actionKey}`
- * (e.g. "record a sale"). Unlike the read helpers above, failures are
- * surfaced to the caller rather than swallowed - the stock UI needs to
- * show the caller why a sale didn't go through (e.g. 403 permission
- * denied), not just that it failed.
+ * - any transition on any workflow definition, not just "record a sale"
+ * (actionKey and payload are exactly what the backend's own generic
+ * ExecuteTransition takes; nothing stock-specific here). Unlike the read
+ * helpers above, failures are surfaced to the caller rather than
+ * swallowed - a UI executing this needs to show the caller why it didn't
+ * go through (e.g. 403 permission denied), not just that it failed.
  */
 export async function executeTransition(
   token: string,
   firmId: string,
   instanceId: string,
   actionKey: string,
+  payload: Record<string, unknown> = {},
 ): Promise<{ ok: true; instance: InstanceState } | { ok: false; error: string; status: number }> {
   try {
     const res = await fetch(
@@ -155,7 +185,7 @@ export async function executeTransition(
           Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ payload: {} }),
+        body: JSON.stringify({ payload }),
         cache: "no-store",
       },
     );

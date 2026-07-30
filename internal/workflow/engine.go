@@ -590,3 +590,48 @@ func LookupDefinitionByKey(ctx context.Context, pool *pgxpool.Pool, firmID, user
 	}
 	return info, nil
 }
+
+// ListDefinitions returns every workflow_definitions row for firmID,
+// ordered by name - the data source for a firm-level "Workflows" view
+// (a firm's second, third, ... workflow definition, whenever one exists,
+// should show up here automatically rather than needing a hardcoded
+// frontend card per workflow the way the Stock In -> Sale page originally
+// did). This complements LookupDefinitionByKey rather than replacing it:
+// a caller that already knows a well-known key (e.g. the stock page)
+// still resolves it directly, without listing everything first. Same
+// IsMember-first treatment as every other read in this file - see
+// CurrentState's doc comment for why RLS scoping alone isn't enough.
+func ListDefinitions(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.UUID) ([]DefinitionInfo, error) {
+	var results []DefinitionInfo
+	err := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		isMember, err := permission.IsMember(ctx, tx, firmID, userID)
+		if err != nil {
+			return err
+		}
+		if !isMember {
+			return ErrDefinitionNotFound
+		}
+
+		rows, err := tx.Query(ctx, `
+			SELECT id, key, name, create_permission_key
+			FROM workflow_definitions
+			ORDER BY name
+		`)
+		if err != nil {
+			return fmt.Errorf("list workflow definitions: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var d DefinitionInfo
+			if err := rows.Scan(&d.ID, &d.Key, &d.Name, &d.CreatePermissionKey); err != nil {
+				return err
+			}
+			results = append(results, d)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return results, nil
+}

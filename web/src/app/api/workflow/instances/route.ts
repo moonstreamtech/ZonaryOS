@@ -6,12 +6,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createInstance } from "@/lib/workflow";
 
-// Proxies the Go backend's "add stock" endpoint - same cookie-to-Bearer-
-// token pattern as src/app/api/stock/[instanceId]/sell/route.ts. No
-// authorization decision is made here: internal/workflow.CreateInstance
-// is the sole place that checks whether the caller holds the
-// definition's create_permission_key - this route only forwards the
-// caller's session token to it.
+// Generic replacement for the old stock-specific /api/stock/create route:
+// proxies the Go backend's "create instance" endpoint for any workflow
+// definition, not just stock_to_sale - same cookie-to-Bearer-token
+// pattern as every other proxy route. No authorization decision is made
+// here: internal/workflow.CreateInstance is the sole place that checks
+// whether the caller holds the definition's create_permission_key.
 export async function POST(request: NextRequest) {
   const token = request.cookies.get("zonaryos_session")?.value;
   if (!token) {

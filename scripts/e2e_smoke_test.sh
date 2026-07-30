@@ -107,22 +107,38 @@ log "audit trail confirmed"
 # --- UI-path add stock, firm switch, and audit log view (item 39 / 3 / 4) ---
 #
 # Everything above exercises the Go backend directly. This section instead
-# drives the frontend's own Next.js proxy routes (app/api/stock/create,
+# drives the frontend's own Next.js proxy routes (app/api/workflow/instances,
 # app/api/firm/switch, app/api/audit-log/[firmId]) the real browser UI
 # calls - same cookie-to-Bearer-token pattern those routes document, using
 # TOKEN as the zonaryos_session cookie value (see
 # src/app/api/auth/callback/route.ts: the cookie *is* the raw access
-# token, nothing translated in between).
+# token, nothing translated in between). app/api/workflow/instances is the
+# generic create-instance proxy route (replaced the stock-specific
+# app/api/stock/create when the frontend's workflow UI was genericized) -
+# it works for any workflow definition, not just stock_to_sale, which is
+# exactly what's being exercised here.
 
 uiAuth() { curl -sS -H "Cookie: zonaryos_session=$TOKEN" "$@"; }
 
-log "add stock (UI path): POSTing through the frontend's own proxy route, not the backend directly"
-UI_INSTANCE_RESPONSE=$(uiAuth -X POST "$FRONTEND_URL/api/stock/create" \
+log "add stock (UI path): POSTing through the frontend's own generic proxy route, not the backend directly"
+UI_INSTANCE_RESPONSE=$(uiAuth -X POST "$FRONTEND_URL/api/workflow/instances" \
     -H "Content-Type: application/json" \
     -d "{\"firmId\":\"$FIRM_ID\",\"definitionId\":\"$DEFINITION_ID\",\"payload\":{\"item\":\"E2E UI-Path Widget\",\"quantity\":3}}")
 echo "$UI_INSTANCE_RESPONSE" | python3 -c "import sys, json; d = json.load(sys.stdin); assert d['state']['key'] == 'in_stock', d" \
     || fail "expected the UI-path instance's state to be in_stock: $UI_INSTANCE_RESPONSE"
 log "add stock (UI path) confirmed"
+
+log "workflows list (generic path): confirming GET .../workflow-definitions with no ?key= lists stock_to_sale"
+DEFINITIONS_LIST=$(auth "$BACKEND_URL/api/firms/$FIRM_ID/workflow-definitions")
+echo "$DEFINITIONS_LIST" | python3 -c "
+import sys, json
+defs = json.load(sys.stdin)
+assert isinstance(defs, list), defs
+matches = [d for d in defs if d['key'] == 'stock_to_sale']
+assert matches, defs
+assert matches[0]['createPermissionKey'], matches[0]
+" || fail "expected the no-key GET to list stock_to_sale with a createPermissionKey: $DEFINITIONS_LIST"
+log "workflows list (generic path) confirmed"
 
 SECOND_FIRM_NAME="E2E Smoke Firm 2 $(date +%s)"
 log "wizard: creating a second firm for the same user ('$SECOND_FIRM_NAME'), to exercise the firm switcher"

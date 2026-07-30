@@ -79,20 +79,33 @@ paths:
 
   /api/firms/{firmID}/workflow-definitions:
     get:
-      summary: Resolve a well-known workflow key (e.g. "stock_to_sale") to its firm-scoped definition ID
+      summary: >
+        With ?key=, resolve a well-known workflow key to its firm-scoped
+        definition ID; without it, list every workflow definition the
+        firm has
       description: >
-        Lets a caller that only knows a workflow's well-known key (see
-        internal/workflow's *Key constants, e.g. StockToSaleKey) resolve
-        the UUID every other workflow endpoint takes, without a separate
-        "list all definitions" round trip. A query parameter rather than a
-        path segment deliberately - a "by-key/{key}" path segment here
-        once collided with the sibling
-        `{definitionID}/instances` path below (net/http's ServeMux
-        rejects the pair as an ambiguous pattern at startup; neither is
+        Two modes on one path, dispatched by whether the `key` query
+        parameter was given - not two routes, since a path-segment
+        variant (e.g. "by-key/{key}" or "all") collides with the sibling
+        `{definitionID}/instances` path below at startup (net/http's
+        ServeMux rejects the pair as an ambiguous pattern; neither is
         more specific than the other at every differing segment).
-        Membership-checked (internal/permission.IsMember): a firmID the
-        caller genuinely isn't a member of resolves to the same 404 as an
-        unknown key, not a 200 with someone else's definition.
+
+        With `key`: lets a caller that only knows a workflow's well-known
+        key (see internal/workflow's *Key constants, e.g. StockToSaleKey)
+        resolve the UUID every other workflow endpoint takes, without a
+        separate "list all definitions" round trip.
+
+        Without `key`: lists every workflow definition the firm has,
+        ordered by name - the data source for a firm-level "Workflows"
+        view that doesn't hardcode one card per known workflow key.
+
+        Both modes are membership-checked (internal/permission.IsMember):
+        a firmID the caller genuinely isn't a member of resolves to the
+        same 404 as an unknown key (key mode) or an empty array never
+        happens for a non-member (list mode also 404s, not 200 with an
+        empty list) - a non-member can't distinguish "no definitions"
+        from "not your firm."
       parameters:
         - name: firmID
           in: path
@@ -100,18 +113,26 @@ paths:
           schema: { type: string, format: uuid }
         - name: key
           in: query
-          required: true
+          required: false
+          description: When given, resolve exactly this key. When omitted, list every definition instead.
           schema: { type: string }
       responses:
         "200":
-          description: The matching workflow definition
+          description: >
+            With `key`: the matching workflow definition (a single
+            object). Without `key`: every workflow definition for the
+            firm (an array).
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/WorkflowDefinition"
+                oneOf:
+                  - $ref: "#/components/schemas/WorkflowDefinition"
+                  - type: array
+                    items:
+                      $ref: "#/components/schemas/WorkflowDefinition"
         "400": { description: Invalid firmID }
         "401": { description: Missing or invalid bearer token }
-        "404": { description: No workflow definition with this key in this firm, or the caller isn't a member of firmID }
+        "404": { description: "(key mode only) No workflow definition with this key in this firm, or the caller isn't a member of firmID" }
 
   /api/firms/{firmID}/workflow-definitions/{definitionID}/instances:
     post:
