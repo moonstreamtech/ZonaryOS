@@ -10,7 +10,9 @@ Written for a human running each command over their own SSH session and pasting 
 
 The fix (`docker-compose.prod.yml`, `deploy/nginx/zonaryos.conf`): nginx reverse-proxies **both** the frontend (`/`) and Keycloak (`/auth/`) under one public hostname, `zonaryos.duckdns.org`. Keycloak is told its own external identity explicitly via `KC_HOSTNAME=https://zonaryos.duckdns.org/auth` (Keycloak 26's "hostname:v2" provider accepts a full URL, path prefix included) instead of deriving it per-request, so the issuer baked into every token is identical regardless of whether a request arrived through nginx (the real browser path) or hit `localhost` directly (backend/frontend server-side calls) - those two paths must produce byte-identical issuer values or `internal/identity.NewVerifier`'s discovery/issuer check rejects the token. `KC_HTTP_RELATIVE_PATH=/auth` keeps Keycloak's own internally-generated links (its login theme, redirects) consistent with the external `/auth/` path nginx exposes, so nothing needs path-rewriting in nginx. The backend and frontend containers get an `extra_hosts` entry mapping `zonaryos.duckdns.org` to `127.0.0.1`, so their own outbound calls to the public issuer URL loop back through nginx on the same host rather than depending on the instance's network correctly hairpinning a request back to its own public IP.
 
-The backend (8080) and Postgres (5432) are **not** proxied by nginx at all and must never be reachable from the public internet - the frontend calls the backend directly over its own `localhost`, and nothing else needs to reach either.
+The backend (8080) and Postgres (5433 - see the note below on why not 5432) are **not** proxied by nginx at all and must never be reachable from the public internet - the frontend calls the backend directly over its own `localhost`, and nothing else needs to reach either.
+
+**Postgres listens on 5433, not the default 5432** - a real collision found on the actual instance, not a hypothetical one: this box already runs a native (non-Docker) PostgreSQL via systemd, bound to `5432`. Since every service here uses `network_mode: host`, Docker's `ports:` publishing doesn't apply - there's no bridge network to remap - so the *server process itself* has to be told to listen elsewhere, which `docker-compose.yml`'s `postgres` service now does via `command: ["postgres", "-p", "5433"]`. **Don't assume 5432 (or 5433) is free on a future deploy target either** - `ss -tln` before deploying is what caught this the first time.
 
 ## Prerequisites already satisfied
 
@@ -128,7 +130,7 @@ This is an OCI console/API change, not a command this sequence can run - flaggin
 - `80/tcp` - needed for certbot's HTTP-01 challenge (step 8) and any future cert renewal
 
 **Must stay closed to the public internet** (reachable only via `localhost` from other processes on the same instance, per `network_mode: host`'s tradeoff documented in `docker-compose.yml`):
-- `5432/tcp` - Postgres. No other service on this box should ever need it, and nothing here proxies it.
+- `5433/tcp` - ZonaryOS's own Postgres (remapped from the default 5432 - see above - because this instance already runs a separate, native PostgreSQL on 5432 for other services on the box; that pre-existing instance's own firewall exposure is unrelated to this deployment and out of scope here). No other service on this box should ever need 5433, and nothing here proxies it.
 - `8080/tcp` - backend. The frontend reaches it over its own `localhost`; nginx never proxies it (see `deploy/nginx/zonaryos.conf`).
 - `8081/tcp` - Keycloak's raw port. Only reachable through nginx's `/auth/` path (443/80), never directly.
 

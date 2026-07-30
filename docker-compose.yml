@@ -33,9 +33,19 @@
 # assumed. This compose file itself has zero Oracle-specific settings -
 # nothing here is more than plain Docker Compose against portable images.
 services:
+  # Listens on 5433, not Postgres's default 5432 - a real, not hypothetical,
+  # collision: an Oracle deploy target turned out to already run a native
+  # (non-Docker) PostgreSQL via systemd on 5432, and `network_mode: host`
+  # means Docker's `ports:` publishing doesn't apply here (there's no
+  # bridge network to remap on) - the *server process itself* has to be
+  # told to listen on a different port, which is what `command` below does
+  # (PGPORT/`ports:` would silently do nothing under host networking).
+  # Don't assume 5432 is free on any future host either - re-check with
+  # `ss -tln` before deploying, the same way this was actually caught.
   postgres:
     image: postgres:16
     network_mode: host
+    command: ["postgres", "-p", "5433"]
     environment:
       POSTGRES_USER: zonaryos
       POSTGRES_PASSWORD: zonaryos
@@ -43,7 +53,7 @@ services:
     volumes:
       - zonaryos-postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U zonaryos -d zonaryos"]
+      test: ["CMD-SHELL", "pg_isready -U zonaryos -d zonaryos -p 5433"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -69,7 +79,7 @@ services:
     network_mode: host
     entrypoint: ["/usr/local/bin/migrate"]
     environment:
-      ZONARYOS_MIGRATE_DATABASE_URL: postgres://zonaryos:zonaryos@localhost:5432/zonaryos?sslmode=disable
+      ZONARYOS_MIGRATE_DATABASE_URL: postgres://zonaryos:zonaryos@localhost:5433/zonaryos?sslmode=disable
     depends_on:
       postgres:
         condition: service_healthy
@@ -83,7 +93,7 @@ services:
     network_mode: host
     environment:
       ZONARYOS_HTTP_ADDR: ":8080"
-      ZONARYOS_DATABASE_URL: postgres://zonaryos_app:zonaryos_app@localhost:5432/zonaryos?sslmode=disable
+      ZONARYOS_DATABASE_URL: postgres://zonaryos_app:zonaryos_app@localhost:5433/zonaryos?sslmode=disable
       ZONARYOS_OIDC_ISSUER_URL: http://localhost:8081/realms/zonaryos
       ZONARYOS_OIDC_CLIENT_ID: zonaryos-web
     depends_on:
