@@ -4,13 +4,30 @@
     "subtitle": "Sektörden bağımsız, evrensel ERP/WMS/MES sistem çekirdeği.",
     "statusLabel": "Sunucu durumu",
     "statusOk": "Bağlı",
-    "statusError": "Ulaşılamıyor",
-    "goToStock": "Stoğa git"
+    "statusError": "Ulaşılamıyor"
   },
   "Auth": {
     "signIn": "Giriş yap",
     "signOut": "Çıkış yap",
     "signedInAs": "{name} olarak giriş yaptınız"
+  },
+  "Nav": {
+    "brand": "ZonaryOS",
+    "stock": "Stok",
+    "auditLog": "Denetim Kaydı",
+    "logout": "Çıkış yap",
+    "firmSwitcherLabel": "Aktif firma"
+  },
+  "Dashboard": {
+    "welcome": "Tekrar hoş geldiniz, {name}.",
+    "roleLabel": "Rolünüz",
+    "roleUnavailable": "Kullanılamıyor",
+    "itemCountLabel": "Stoktaki ürün sayısı",
+    "itemCountUnavailable": "—",
+    "goToStock": "Stoğa git",
+    "auditLogCardTitle": "Denetim izi",
+    "auditLogCardBody": "Bu firmada kimin ne zaman ne yaptığını inceleyin.",
+    "goToAuditLog": "Denetim kaydını görüntüle"
   },
   "Wizard": {
     "title": "Firmanızı oluşturun",
@@ -30,7 +47,7 @@
   },
   "Stock": {
     "title": "Stok",
-    "empty": "Henüz stok kalemi yok.",
+    "empty": "Henüz stok kalemi yok. Başlamak için yukarıdan ilk ürününüzü ekleyin.",
     "definitionMissing": "Bu firma için Stok Girişi -> Satış iş akışı henüz kurulmamış.",
     "columnItem": "Ürün",
     "columnQuantity": "Miktar",
@@ -39,7 +56,33 @@
     "unknownItem": "(isimsiz ürün)",
     "sellButton": "Sat",
     "sellError": "Satış kaydedilemedi. Lütfen tekrar deneyin.",
-    "sellPermissionDenied": "Satış kaydetme izniniz yok."
+    "sellPermissionDenied": "Satış kaydetme izniniz yok.",
+    "addStockTitle": "Stok ekle",
+    "addStockItemLabel": "Ürün",
+    "addStockItemPlaceholder": "örn. Widget",
+    "addStockQuantityLabel": "Miktar",
+    "addStockSubmit": "Ekle",
+    "addStockItemRequired": "Lütfen bir ürün adı girin.",
+    "addStockError": "Bu ürün eklenemedi. Lütfen tekrar deneyin.",
+    "addStockPermissionDenied": "Stok ekleme izniniz yok.",
+    "historyTitle": "İşlem geçmişi",
+    "historyEmpty": "Henüz kaydedilmiş bir işlem yok.",
+    "historyColumnWhen": "Ne zaman",
+    "historyColumnWho": "Kim",
+    "historyColumnItem": "Ürün",
+    "historyColumnAction": "İşlem"
+  },
+  "AuditLog": {
+    "title": "Denetim Kaydı",
+    "empty": "Henüz denetim kaydı yok.",
+    "loadError": "Denetim kaydı yüklenemedi. Lütfen tekrar deneyin.",
+    "notAuthorized": "Denetim kaydını yalnızca firma sahibi görüntüleyebilir.",
+    "columnWhen": "Ne zaman",
+    "columnWho": "Kim",
+    "columnEntityType": "Varlık türü",
+    "columnEntityId": "Varlık kimliği",
+    "columnAction": "İşlem",
+    "columnChanges": "Değişiklikler"
   },
   "PermissionAudit": {
     "toggleOn": "Denetim Modu",

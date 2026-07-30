@@ -548,11 +548,16 @@ func ListInstances(ctx context.Context, pool *pgxpool.Pool, firmID, userID, defi
 // DefinitionInfo names one workflow_definitions row - just enough for a
 // caller (e.g. a frontend page that only knows the well-known key
 // "stock_to_sale") to resolve the UUID the rest of this package's
-// functions take.
+// functions take. CreatePermissionKey is included for the same reason
+// AvailableAction.PermissionKey is: a UI rendering the "create instance"
+// action (e.g. "add stock") needs the real key CreateInstance actually
+// checks to carry a Never-Violate Rule 7 permission tag, instead of
+// hardcoding a duplicate of it.
 type DefinitionInfo struct {
-	ID   uuid.UUID
-	Key  string
-	Name string
+	ID                  uuid.UUID
+	Key                 string
+	Name                string
+	CreatePermissionKey string
 }
 
 // LookupDefinitionByKey resolves firmID's workflow_definitions row by its
@@ -573,8 +578,8 @@ func LookupDefinitionByKey(ctx context.Context, pool *pgxpool.Pool, firmID, user
 		}
 
 		err = tx.QueryRow(ctx, `
-			SELECT id, key, name FROM workflow_definitions WHERE key = $1
-		`, key).Scan(&info.ID, &info.Key, &info.Name)
+			SELECT id, key, name, create_permission_key FROM workflow_definitions WHERE key = $1
+		`, key).Scan(&info.ID, &info.Key, &info.Name, &info.CreatePermissionKey)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrDefinitionNotFound
 		}

@@ -110,9 +110,10 @@ func writeEngineError(w http.ResponseWriter, err error) {
 }
 
 type definitionInfoResponse struct {
-	DefinitionID string `json:"definitionId"`
-	Key          string `json:"key"`
-	Name         string `json:"name"`
+	DefinitionID        string `json:"definitionId"`
+	Key                 string `json:"key"`
+	Name                string `json:"name"`
+	CreatePermissionKey string `json:"createPermissionKey"`
 }
 
 // handleLookupDefinitionByKey resolves a well-known workflow key (e.g.
@@ -154,9 +155,10 @@ func handleLookupDefinitionByKey(pool *pgxpool.Pool) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(definitionInfoResponse{
-			DefinitionID: info.ID.String(),
-			Key:          info.Key,
-			Name:         info.Name,
+			DefinitionID:        info.ID.String(),
+			Key:                 info.Key,
+			Name:                info.Name,
+			CreatePermissionKey: info.CreatePermissionKey,
 		})
 	}
 }

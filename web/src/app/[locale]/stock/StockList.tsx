@@ -55,11 +55,7 @@ export default function StockList({ firmId, instances }: Props) {
   }
 
   return (
-    <main className="flex flex-1 flex-col items-center gap-6 bg-zinc-50 px-6 py-16 dark:bg-black">
-      <h1 className="text-3xl font-semibold tracking-tight text-black dark:text-zinc-50">
-        {t("title")}
-      </h1>
-
+    <div className="flex w-full flex-col items-center gap-4">
       {error && <p className="text-red-600 dark:text-red-400">{error}</p>}
 
       {instances.length === 0 ? (
@@ -123,6 +119,6 @@ export default function StockList({ firmId, instances }: Props) {
           </table>
         </div>
       )}
-    </main>
+    </div>
   );
 }

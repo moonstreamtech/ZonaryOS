@@ -104,5 +104,53 @@ assert ('workflow_instance', 'record_sale') in actions, entries
 " || fail "expected firm-create/instance-create/record_sale entries in the audit log: $AUDIT_LOG"
 log "audit trail confirmed"
 
+# --- UI-path add stock, firm switch, and audit log view (item 39 / 3 / 4) ---
+#
+# Everything above exercises the Go backend directly. This section instead
+# drives the frontend's own Next.js proxy routes (app/api/stock/create,
+# app/api/firm/switch, app/api/audit-log/[firmId]) the real browser UI
+# calls - same cookie-to-Bearer-token pattern those routes document, using
+# TOKEN as the zonaryos_session cookie value (see
+# src/app/api/auth/callback/route.ts: the cookie *is* the raw access
+# token, nothing translated in between).
+
+uiAuth() { curl -sS -H "Cookie: zonaryos_session=$TOKEN" "$@"; }
+
+log "add stock (UI path): POSTing through the frontend's own proxy route, not the backend directly"
+UI_INSTANCE_RESPONSE=$(uiAuth -X POST "$FRONTEND_URL/api/stock/create" \
+    -H "Content-Type: application/json" \
+    -d "{\"firmId\":\"$FIRM_ID\",\"definitionId\":\"$DEFINITION_ID\",\"payload\":{\"item\":\"E2E UI-Path Widget\",\"quantity\":3}}")
+echo "$UI_INSTANCE_RESPONSE" | python3 -c "import sys, json; d = json.load(sys.stdin); assert d['state']['key'] == 'in_stock', d" \
+    || fail "expected the UI-path instance's state to be in_stock: $UI_INSTANCE_RESPONSE"
+log "add stock (UI path) confirmed"
+
+SECOND_FIRM_NAME="E2E Smoke Firm 2 $(date +%s)"
+log "wizard: creating a second firm for the same user ('$SECOND_FIRM_NAME'), to exercise the firm switcher"
+SECOND_ANSWER_RESPONSE=$(auth -X POST "$BACKEND_URL/api/wizard/nodes/root/answer" \
+    -H "Content-Type: application/json" \
+    -d "{\"answer\":\"no\",\"firmName\":\"$SECOND_FIRM_NAME\"}")
+SECOND_FIRM_ID=$(echo "$SECOND_ANSWER_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['result']['firmId'])")
+[ -n "$SECOND_FIRM_ID" ] || fail "did not get a firmId back from the second wizard answer: $SECOND_ANSWER_RESPONSE"
+log "second firm created: $SECOND_FIRM_ID"
+
+log "firm switch (UI path): POSTing to the frontend's firm-switch proxy route"
+SWITCH_RESPONSE=$(uiAuth -X POST "$FRONTEND_URL/api/firm/switch" \
+    -H "Content-Type: application/json" \
+    -d "{\"firmId\":\"$SECOND_FIRM_ID\"}")
+echo "$SWITCH_RESPONSE" | python3 -c "import sys, json; d = json.load(sys.stdin); assert d.get('ok') is True, d" \
+    || fail "expected the firm switch to succeed: $SWITCH_RESPONSE"
+log "firm switch confirmed"
+
+log "audit log (UI path): confirming the frontend's own proxy route surfaces correctly-attributed entries after a write"
+UI_AUDIT_LOG=$(uiAuth "$FRONTEND_URL/api/audit-log/$FIRM_ID")
+echo "$UI_AUDIT_LOG" | python3 -c "
+import sys, json
+entries = json.load(sys.stdin)
+matches = [e for e in entries if e['entityType'] == 'workflow_instance' and e['action'] == 'create' and e['changes'].get('payload', {}).get('item') == 'E2E UI-Path Widget']
+assert matches, entries
+assert matches[0]['userEmail'] == '$KEYCLOAK_USERNAME', matches[0]
+" || fail "expected the UI-path add-stock entry to appear in the audit log, correctly attributed to $KEYCLOAK_USERNAME: $UI_AUDIT_LOG"
+log "audit log (UI path) confirmed, correctly attributed"
+
 echo ""
-echo "E2E SMOKE TEST PASSED: login + wizard -> firm creation -> add stock -> sell, all against a real stack"
+echo "E2E SMOKE TEST PASSED: login + wizard -> firm creation -> add stock -> sell, plus UI-path add stock, firm switch, and audit log view, all against a real stack"

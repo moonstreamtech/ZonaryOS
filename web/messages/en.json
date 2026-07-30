@@ -4,13 +4,30 @@
     "subtitle": "Universal, sector-agnostic ERP/WMS/MES system kernel.",
     "statusLabel": "Backend status",
     "statusOk": "Connected",
-    "statusError": "Unreachable",
-    "goToStock": "Go to stock"
+    "statusError": "Unreachable"
   },
   "Auth": {
     "signIn": "Sign in",
     "signOut": "Sign out",
     "signedInAs": "Signed in as {name}"
+  },
+  "Nav": {
+    "brand": "ZonaryOS",
+    "stock": "Stock",
+    "auditLog": "Audit Log",
+    "logout": "Log out",
+    "firmSwitcherLabel": "Active firm"
+  },
+  "Dashboard": {
+    "welcome": "Welcome back, {name}.",
+    "roleLabel": "Your role",
+    "roleUnavailable": "Unavailable",
+    "itemCountLabel": "Items in stock",
+    "itemCountUnavailable": "—",
+    "goToStock": "Go to stock",
+    "auditLogCardTitle": "Audit trail",
+    "auditLogCardBody": "Review who did what, when, across this firm.",
+    "goToAuditLog": "View audit log"
   },
   "Wizard": {
     "title": "Set up your firm",
@@ -30,7 +47,7 @@
   },
   "Stock": {
     "title": "Stock",
-    "empty": "No stock items yet.",
+    "empty": "No stock items yet. Add your first item above to get started.",
     "definitionMissing": "This firm's Stock In -> Sale workflow isn't set up yet.",
     "columnItem": "Item",
     "columnQuantity": "Quantity",
@@ -39,7 +56,33 @@
     "unknownItem": "(unnamed item)",
     "sellButton": "Sell",
     "sellError": "Couldn't record the sale. Please try again.",
-    "sellPermissionDenied": "You don't have permission to record a sale."
+    "sellPermissionDenied": "You don't have permission to record a sale.",
+    "addStockTitle": "Add stock",
+    "addStockItemLabel": "Item",
+    "addStockItemPlaceholder": "e.g. Widget",
+    "addStockQuantityLabel": "Quantity",
+    "addStockSubmit": "Add",
+    "addStockItemRequired": "Please enter an item name.",
+    "addStockError": "Couldn't add this item. Please try again.",
+    "addStockPermissionDenied": "You don't have permission to add stock.",
+    "historyTitle": "Transaction history",
+    "historyEmpty": "No transactions recorded yet.",
+    "historyColumnWhen": "When",
+    "historyColumnWho": "Who",
+    "historyColumnItem": "Item",
+    "historyColumnAction": "Action"
+  },
+  "AuditLog": {
+    "title": "Audit Log",
+    "empty": "No audit log entries yet.",
+    "loadError": "Couldn't load the audit log. Please try again.",
+    "notAuthorized": "Only the firm owner can view the audit log.",
+    "columnWhen": "When",
+    "columnWho": "Who",
+    "columnEntityType": "Entity type",
+    "columnEntityId": "Entity ID",
+    "columnAction": "Action",
+    "columnChanges": "Changes"
   },
   "PermissionAudit": {
     "toggleOn": "Audit Mode",

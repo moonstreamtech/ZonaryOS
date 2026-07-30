@@ -546,7 +546,14 @@ components:
           type: string
         name:
           type: string
-      required: [definitionId, key, name]
+        createPermissionKey:
+          type: string
+          description: >
+            The permission key that gates instance creation (POST
+            .../instances) on this definition - lets a UI carry the real
+            Never-Violate Rule 7 permission tag on its "add" action instead
+            of hardcoding a duplicate of it.
+      required: [definitionId, key, name, createPermissionKey]
     InstanceState:
       type: object
       properties:

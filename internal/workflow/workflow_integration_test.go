@@ -631,6 +631,9 @@ func TestLookupDefinitionByKey_ResolvesToTheSeededDefinition(t *testing.T) {
 	if info.Key != workflow.StockToSaleKey {
 		t.Errorf("expected key %q, got %q", workflow.StockToSaleKey, info.Key)
 	}
+	if info.CreatePermissionKey != workflow.AddStockPermission {
+		t.Errorf("expected create permission key %q, got %q", workflow.AddStockPermission, info.CreatePermissionKey)
+	}
 }
 
 func TestLookupDefinitionByKey_UnknownKey(t *testing.T) {

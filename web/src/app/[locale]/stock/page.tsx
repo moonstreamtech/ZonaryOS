@@ -7,22 +7,27 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import { fetchMe } from "@/lib/me";
-import { fetchDefinitionByKey, fetchInstances } from "@/lib/workflow";
+import { resolveActiveFirm } from "@/lib/activeFirm";
+import {
+  fetchDefinitionByKey,
+  fetchInstances,
+  STOCK_TO_SALE_KEY,
+} from "@/lib/workflow";
+import { fetchAuditLog } from "@/lib/auditlog";
 import StockList from "./StockList";
+import AddStockForm from "./AddStockForm";
+import StockHistory from "./StockHistory";
 
 type PageProps = {
   params: Promise<{ locale: string }>;
 };
 
-// The well-known workflow key seeded for every firm by the firm-creation
-// wizard (internal/wizard.CreateDefaultFirm -> workflow.SeedStockToSaleWorkflowTx)
-// - see internal/workflow/stock_to_sale.go's StockToSaleKey constant.
-const STOCK_TO_SALE_KEY = "stock_to_sale";
-
-// Server component: resolves the caller's identity, firm, and the Stock
-// In -> Sale workflow's current instances, all server-side through the
-// existing cookie-to-Bearer proxy pattern (see lib/me.ts, lib/wizard.ts).
-// Interactivity (the "sell" action) lives in the client component below.
+// Server component: resolves the caller's identity, active firm (see
+// lib/activeFirm.ts - no longer a hardcoded me.firms[0], see item 3), and
+// the Stock In -> Sale workflow's current instances, all server-side
+// through the existing cookie-to-Bearer proxy pattern (see lib/me.ts,
+// lib/wizard.ts). Interactivity (add stock, sell) lives in the client
+// components below.
 export default async function StockPage({ params }: PageProps) {
   const { locale } = await params;
   setRequestLocale(locale);
@@ -38,12 +43,8 @@ export default async function StockPage({ params }: PageProps) {
     redirect(`/${locale}/wizard`);
   }
 
-  // This vertical slice has no firm-switcher UI yet (Vision §3's
-  // many-firms-per-user model is real, but choosing among several active
-  // memberships is a separate, not-yet-built screen) - the first
-  // membership is used, same simplifying assumption the homepage's firm
-  // list implicitly carries.
-  const firmId = me.firms[0].firmId;
+  const firm = await resolveActiveFirm(me);
+  const firmId = firm.firmId;
 
   const definition = await fetchDefinitionByKey(
     sessionToken!,
@@ -69,10 +70,33 @@ export default async function StockPage({ params }: PageProps) {
     definition.definitionId,
   )) ?? [];
 
+  // Sale/transaction history (item 6) reuses the audit log's own data
+  // rather than a parallel history mechanism - see StockHistory.tsx's
+  // doc comment. Not every member can read it: internal/auditlog.List is
+  // gated by audit.log.read, held by the owner role by default (see
+  // internal/auditlog/auditlog.go) - a null result here just means the
+  // section is omitted below, not an error.
+  const auditEntries = await fetchAuditLog(sessionToken!, firmId);
+
   return (
-    <StockList
-      firmId={firmId}
-      instances={instances}
-    />
+    <main className="flex flex-1 flex-col items-center gap-10 bg-zinc-50 px-6 py-16 dark:bg-black">
+      <div className="flex w-full max-w-2xl flex-col items-center gap-6">
+        <h1 className="text-3xl font-semibold tracking-tight text-black dark:text-zinc-50">
+          {t("title")}
+        </h1>
+
+        <AddStockForm
+          firmId={firmId}
+          definitionId={definition.definitionId}
+          createPermissionKey={definition.createPermissionKey}
+        />
+
+        <StockList firmId={firmId} instances={instances} />
+      </div>
+
+      {auditEntries && (
+        <StockHistory instances={instances} entries={auditEntries} />
+      )}
+    </main>
   );
 }
