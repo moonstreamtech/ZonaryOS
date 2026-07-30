@@ -33,7 +33,7 @@ The frontend serves locale-prefixed routes (`/en`, `/tr`) via `next-intl`; `/` r
 ## Local infrastructure (Postgres, Keycloak)
 
 ```
-make dev-up      # starts Postgres (:5432) and Keycloak (:8081) via docker-compose
+make dev-up      # starts Postgres (:5433 - see "Running the full stack in containers" below for why not :5432) and Keycloak (:8081) via docker-compose
 make dev-down     # stops them
 ```
 
@@ -46,7 +46,7 @@ make dev-up-standalone      # starts Postgres natively + Keycloak as a standalon
 make dev-down-standalone    # stops the Keycloak process (Postgres is left running, as a shared system service)
 ```
 
-`scripts/dev-up-standalone.sh` starts Postgres via the local `postgresql` service (same as this repo's RLS integration tests already assume - see below) and downloads Keycloak's standalone distribution from **GitHub Releases** (`github.com/keycloak/keycloak`, not a Docker registry - a genuinely different network path) into `.zonaryos/keycloak-standalone/` (gitignored), then runs it with `bin/kc.sh start-dev --import-realm`, importing the exact same `deploy/keycloak/zonaryos-realm.json` the Docker path uses. Both paths produce the same realm/client/user, verified identically by `internal/identity`'s tests - which path started Keycloak doesn't matter to the application.
+`scripts/dev-up-standalone.sh` starts Postgres via the local `postgresql` service (a real, natively-running Postgres, on its OS default port `5432` - **not** `5433`, which is specific to `make dev-up`'s containerized Postgres, see "Running the full stack in containers" below for why they differ) and downloads Keycloak's standalone distribution from **GitHub Releases** (`github.com/keycloak/keycloak`, not a Docker registry - a genuinely different network path) into `.zonaryos/keycloak-standalone/` (gitignored), then runs it with `bin/kc.sh start-dev --import-realm`, importing the exact same `deploy/keycloak/zonaryos-realm.json` the Docker path uses. Both paths produce the same realm/client/user, verified identically by `internal/identity`'s tests - which path started Keycloak doesn't matter to the application. **If you're running the "Running the X tests" sections' `ZONARYOS_TEST_*_DATABASE_URL` exports below against `make dev-up-standalone` instead of `make dev-up`, use `5432` in place of the `5433` shown there.**
 
 Prefer `make dev-up` whenever Docker registries are reachable; this is a narrow fallback for one specific failure mode, not a general Docker replacement.
 
@@ -81,8 +81,8 @@ Session storage here is a single httpOnly cookie holding the raw access token, s
 `internal/identity`'s token-verification tests (`verifier_test.go`) run against a fake in-process OIDC provider and need nothing external. `user_membership_integration_test.go` needs a real Postgres, same convention as the RLS tests below. `keycloak_integration_test.go` additionally needs a **live Keycloak** (`make dev-up`, or `make dev-up-standalone` where Docker registries are blocked - see above; both were verified to produce an identical, working realm):
 
 ```
-export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5432/zonaryos?sslmode=disable
-export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5432/zonaryos?sslmode=disable
+export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5433/zonaryos?sslmode=disable
+export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5433/zonaryos?sslmode=disable
 export ZONARYOS_TEST_KEYCLOAK_ISSUER_URL=http://localhost:8081/realms/zonaryos
 export ZONARYOS_TEST_KEYCLOAK_CLIENT_ID=zonaryos-web
 export ZONARYOS_TEST_KEYCLOAK_USERNAME=dev@zonaryos.local
@@ -124,7 +124,7 @@ file /tmp/server-check   # must say "ELF 64-bit LSB executable, ARM aarch64" for
 docker compose up -d
 ```
 
-This builds and starts Postgres, Keycloak, a one-shot `migrate` service (applies migrations, then exits - `backend` waits for it via `depends_on: condition: service_completed_successfully`), the backend, and the frontend. Every service uses `network_mode: host` **deliberately**, not as a shortcut: the frontend's OIDC login flow (`web/src/app/api/auth/login` and `.../callback`) needs one issuer URL reachable both by the end user's real browser and by the frontend container's own server-side token exchange, and Keycloak's `start-dev` mode derives each issued token's `iss` claim from whichever host:port actually requested it - bridge-network service names (e.g. `keycloak:8080`) would be unreachable from a real browser. Host networking keeps every service reachable at `localhost:<port>` from every other service *and* the browser, matching the exact assumption every existing manual/CI E2E verification already made (`scripts/e2e_smoke_test.sh`, the CI E2E job) - so no env var values differ from the non-containerized `.env`/`web/.env.local` setup already documented above.
+This builds and starts Postgres, Keycloak, a one-shot `migrate` service (applies migrations, then exits - `backend` waits for it via `depends_on: condition: service_completed_successfully`), the backend, and the frontend. Every service uses `network_mode: host` **deliberately**, not as a shortcut: the frontend's OIDC login flow (`web/src/app/api/auth/login` and `.../callback`) needs one issuer URL reachable both by the end user's real browser and by the frontend container's own server-side token exchange, and Keycloak's `start-dev` mode derives each issued token's `iss` claim from whichever host:port actually requested it - bridge-network service names (e.g. `keycloak:8080`) would be unreachable from a real browser. Host networking keeps every service reachable at `localhost:<port>` from every other service *and* the browser, matching the exact assumption every existing manual/CI E2E verification already made (`scripts/e2e_smoke_test.sh`, the CI E2E job) - so no env var values differ from the non-containerized `.env`/`web/.env.local` setup already documented above, **except Postgres's port**: this compose file's `postgres` service listens on `5433`, not Postgres's default `5432` - a real deploy target turned out to already run its own native (non-Docker) PostgreSQL on `5432`, and since host networking means Docker's `ports:` publishing doesn't apply (there's no bridge network to remap - the server process itself has to be told to listen elsewhere, which `command: ["postgres", "-p", "5433"]` on the `postgres` service does), the exact same collision could just as easily happen on a developer's own machine if it already runs a local Postgres. Because `make dev-up` (`docker compose up -d`, i.e. this file) is this repo's default/primary way to get "a real Postgres" for the test suites below, **every `ZONARYOS_TEST_*_DATABASE_URL`/`.env.example` connection string in this document now points at `5433` to match** - the one exception is `make dev-up-standalone`'s native system Postgres (see "Fallback: no Docker registry access" below), which is unaffected by any of this and stays on the OS's actual `5432`.
 
 First boot: the backend's `identity.NewVerifier` discovers Keycloak's OIDC config at startup and fails fast if Keycloak isn't ready yet (`cmd/server/main.go` doesn't retry) - `backend` is configured `restart: on-failure:10` to ride out that race rather than needing a bespoke wait-for-it script. A few restarts on first `docker compose up` are expected, not a bug.
 
@@ -141,18 +141,9 @@ KEYCLOAK_ISSUER_URL=http://localhost:8081/realms/zonaryos ./scripts/e2e_smoke_te
 
 ### Deploying to Oracle Cloud Always Free (near-term dev/test target only)
 
-Per the item 34 interim decision: an Oracle Always Free Ampere A1 instance (currently 2 OCPU/12GB, arm64) is a **near-term dev/test deployment target, not a production commitment**. Nothing in `Dockerfile`, `web/Dockerfile`, or `docker-compose.yml` is Oracle-specific - the same artifacts run on any plain Linux host with Docker (a DigitalOcean droplet, a bare-metal box, etc.) with no changes. The steps below that *are* Oracle-specific are called out separately, on purpose, so it's clear what's portable and what isn't.
+Per the item 34 interim decision: an Oracle Always Free Ampere A1 instance (currently 2 OCPU/12GB, arm64) is a **near-term dev/test deployment target, not a production commitment**. Nothing in `Dockerfile`, `web/Dockerfile`, or `docker-compose.yml` is Oracle-specific - the same artifacts run on any plain Linux host with Docker (a DigitalOcean droplet, a bare-metal box, etc.) with no changes.
 
-**Provisioning (Developer-owned, not something this session can do):** actually creating/provisioning the Oracle Cloud instance requires the Developer's own Oracle Cloud account, tenancy, and credentials - an agent session has no path to create or guess these. The Developer needs to either provision the instance and hand over reachable access (SSH key + public IP), or provide OCI CLI credentials for programmatic provisioning.
-
-**Portable steps (identical to local, once on the instance):**
-1. Install Docker + the Compose plugin on the instance (standard Docker install for the instance's Linux distribution - nothing Oracle-specific here either).
-2. Copy this repository (or just `Dockerfile`, `web/Dockerfile`, `docker-compose.yml`, `deploy/`, `migrations/`, and source) to the instance.
-3. `docker compose up -d --build` (native build on the arm64 instance itself avoids needing cross-compilation at all).
-
-**Oracle-specific steps (not portable, tracked separately on purpose):**
-1. **Security list / network security group**: only the frontend's port (3000, or 80/443 behind a reverse proxy - not set up here) should be open to `0.0.0.0/0`. Because this compose file uses host networking (see above), Postgres (5432), Keycloak (8081), and the backend (8080) all bind directly to the instance's network interfaces with no Docker-level isolation to fall back on - **the cloud firewall is the only thing protecting them**, not Docker. Leave those ports closed in the security list.
-2. SSH access / bastion setup, if the Developer wants restricted admin access - ordinary Oracle Cloud instance configuration, unrelated to this repository.
+**Provisioning is done**: the instance exists (`zonaryos.duckdns.org`, a shared box also running unrelated live services behind nginx), and a dedicated deploy SSH key is in place. **The real reverse-proxy deployment (making the stack reachable at `https://zonaryos.duckdns.org` instead of `localhost`, alongside those other sites) is a separate, more involved concern than just `docker compose up -d` - see `docs/DEPLOYMENT.md` for the full command-by-command sequence, the `docker-compose.prod.yml` overlay, and `deploy/nginx/zonaryos.conf`.** That document also covers the Oracle Cloud Security List (firewall) rules needed - only 443/80 open publicly, Postgres/backend/Keycloak's raw port never exposed.
 
 **Caveats - so this is never mistaken for a production environment (see `docs/OPEN_POINTS.md` item 34):**
 - **No SLA.** Always Free is a best-effort tier with no uptime guarantee.
@@ -225,8 +216,8 @@ HTTP surface (mirrors `internal/identity`'s `/api/me/firms/{firmID}/...` path-sc
 `internal/wizard/tree_test.go` is a pure unit test (tree traversal/lookup, no database). `internal/wizard/firm_integration_test.go` needs a real Postgres, same convention as the workflow engine tests above:
 
 ```
-export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5432/zonaryos?sslmode=disable
-export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5432/zonaryos?sslmode=disable
+export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5433/zonaryos?sslmode=disable
+export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5433/zonaryos?sslmode=disable
 make migrate
 go test ./internal/wizard/... -v
 ```
@@ -268,8 +259,8 @@ HTTP surface (mirrors the existing `/api/firms/{firmID}/...` convention):
 `internal/permission/permission_integration_test.go` covers `Has`/`IsMember` directly; `internal/permission/audit_integration_test.go` covers Permission Audit Mode's business logic (the is_owner exclusion, the owner-only gate, idempotent grant/revoke, audit_log writes) - all real Postgres, same convention as everywhere else:
 
 ```
-export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5432/zonaryos?sslmode=disable
-export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5432/zonaryos?sslmode=disable
+export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5433/zonaryos?sslmode=disable
+export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5433/zonaryos?sslmode=disable
 make migrate
 go test ./internal/permission/... -v
 ```
@@ -292,8 +283,8 @@ HTTP surface:
 `internal/auditlog/auditlog_integration_test.go` needs a real Postgres, same convention as everywhere else above:
 
 ```
-export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5432/zonaryos?sslmode=disable
-export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5432/zonaryos?sslmode=disable
+export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5433/zonaryos?sslmode=disable
+export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5433/zonaryos?sslmode=disable
 make migrate
 go test ./internal/auditlog/... -v
 ```
@@ -303,8 +294,8 @@ go test ./internal/auditlog/... -v
 `internal/workflow/spec_test.go` is a pure unit test (spec validation, no database). `internal/workflow/workflow_integration_test.go` needs a real Postgres, same convention as the RLS tests above:
 
 ```
-export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5432/zonaryos?sslmode=disable
-export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5432/zonaryos?sslmode=disable
+export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5433/zonaryos?sslmode=disable
+export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5433/zonaryos?sslmode=disable
 make migrate
 go test ./internal/workflow/... -v
 ```
@@ -314,8 +305,8 @@ go test ./internal/workflow/... -v
 These require a real Postgres instance (e.g. `make dev-up`) and are skipped otherwise:
 
 ```
-export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5432/zonaryos?sslmode=disable
-export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5432/zonaryos?sslmode=disable
+export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5433/zonaryos?sslmode=disable
+export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5433/zonaryos?sslmode=disable
 make migrate
 go test ./internal/platform/db/... -v
 ```
