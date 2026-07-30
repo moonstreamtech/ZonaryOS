@@ -4,9 +4,10 @@
 // docs/OPEN_POINTS.md item 20).
 
 import { NextRequest, NextResponse } from "next/server";
+import { requestOrigin } from "@/lib/requestOrigin";
 
 export async function GET(request: NextRequest) {
-  const response = NextResponse.redirect(new URL("/", request.url));
+  const response = NextResponse.redirect(`${requestOrigin(request)}/`);
   response.cookies.delete("zonaryos_session");
   return response;
 }

@@ -9,6 +9,7 @@ import {
   generateCodeVerifier,
   generateState,
 } from "@/lib/pkce";
+import { requestOrigin } from "@/lib/requestOrigin";
 
 const isProduction = process.env.NODE_ENV === "production";
 
@@ -25,7 +26,7 @@ export async function GET(request: NextRequest) {
   const verifier = generateCodeVerifier();
   const challenge = codeChallengeFromVerifier(verifier);
   const state = generateState();
-  const redirectUri = new URL("/api/auth/callback", request.url).toString();
+  const redirectUri = `${requestOrigin(request)}/api/auth/callback`;
 
   const authUrl = new URL(
     `${issuer.replace(/\/$/, "")}/protocol/openid-connect/auth`,
