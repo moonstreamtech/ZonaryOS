@@ -519,13 +519,47 @@ func CurrentState(ctx context.Context, pool *pgxpool.Pool, firmID, userID, insta
 	return result, nil
 }
 
-// ListInstances returns every workflow_instances row for definitionID
-// within firmID, each with its current state and structurally available
-// next actions - the same per-instance shape CurrentState returns for
-// one instance, but for a firm-scoped listing screen (e.g. Stock In ->
-// Sale's stock list). userID must actually belong to firmID (see
+// ListInstancesOptions controls paging and text filtering for
+// ListInstances - kept generic (a raw search string matched against
+// whatever's actually stored per-instance) rather than any
+// definition-specific field, since this must work identically for
+// stock_to_sale, purchase_order, or any other definition. The zero value
+// (Limit 0, Offset 0, Search "") returns every instance, unfiltered - the
+// same behavior ListInstances always had, so existing callers (the
+// integration tests, WorkflowHistory's own correlation fetch below) don't
+// need to opt into pagination to keep working.
+type ListInstancesOptions struct {
+	// Limit caps how many instances are returned. 0 means unlimited.
+	Limit int
+	// Offset skips this many instances (after filtering), for paging
+	// past Limit-sized pages. Ignored when Limit is 0.
+	Offset int
+	// Search, when non-empty, keeps only instances whose current state's
+	// key/name or whose payload (serialized) contains this substring,
+	// case-insensitively. There's no fixed set of "searchable fields" -
+	// the payload is arbitrary per-definition JSON, so this matches
+	// against its raw text rather than assuming any particular key
+	// exists.
+	Search string
+}
+
+// ListInstancesResult is ListInstances's return shape: the (possibly
+// paged/filtered) instances themselves, plus Total - the count that
+// would match Search with no Limit/Offset applied, so a caller can
+// render "page X of Y" without a second round trip.
+type ListInstancesResult struct {
+	Instances []InstanceState
+	Total     int
+}
+
+// ListInstances returns workflow_instances rows for definitionID within
+// firmID, each with its current state and structurally available next
+// actions - the same per-instance shape CurrentState returns for one
+// instance, but for a firm-scoped listing screen (e.g. Stock In -> Sale's
+// stock list). userID must actually belong to firmID (see
 // permission.IsMember and CurrentState's doc comment for why this check
-// exists) - RLS alone doesn't prove that.
+// exists) - RLS alone doesn't prove that. opts controls paging/filtering -
+// see ListInstancesOptions.
 //
 // This is Vision §3's Audit Trail Infrastructure's one wired-up view/read
 // log call site (internal/auditlog.LogView) for this PR: view/read logging
@@ -538,8 +572,8 @@ func CurrentState(ctx context.Context, pool *pgxpool.Pool, firmID, userID, insta
 // stock list, PR #8's read endpoint - does, as a proof of the mechanism.
 // Broader rollout is future work pending that legal-review decision, not an
 // oversight.
-func ListInstances(ctx context.Context, pool *pgxpool.Pool, firmID, userID, definitionID uuid.UUID) ([]InstanceState, error) {
-	var results []InstanceState
+func ListInstances(ctx context.Context, pool *pgxpool.Pool, firmID, userID, definitionID uuid.UUID, opts ListInstancesOptions) (ListInstancesResult, error) {
+	var result ListInstancesResult
 
 	err := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
 		isMember, err := permission.IsMember(ctx, tx, firmID, userID)
@@ -584,22 +618,32 @@ func ListInstances(ctx context.Context, pool *pgxpool.Pool, firmID, userID, defi
 		}
 		transitionRows.Close()
 
+		// COUNT(*) OVER() rides along with the paged rows so Total
+		// reflects the filtered-but-unpaged count in the same round
+		// trip, rather than a separate COUNT query. NULLIF($3, 0) turns
+		// a Limit of 0 into a SQL NULL, and `LIMIT NULL` in Postgres
+		// means "no limit" - so the zero-value ListInstancesOptions
+		// keeps returning everything, unpaged.
 		instanceRows, err := tx.Query(ctx, `
-			SELECT wi.id, wi.current_state_id, ws.key, ws.name, wi.payload
+			SELECT wi.id, wi.current_state_id, ws.key, ws.name, wi.payload, COUNT(*) OVER()
 			FROM workflow_instances wi
 			JOIN workflow_states ws ON ws.id = wi.current_state_id
 			WHERE wi.workflow_definition_id = $1
+			  AND ($2 = '' OR ws.key ILIKE '%' || $2 || '%' OR ws.name ILIKE '%' || $2 || '%' OR wi.payload::text ILIKE '%' || $2 || '%')
 			ORDER BY wi.created_at
-		`, definitionID)
+			LIMIT NULLIF($3, 0) OFFSET $4
+		`, definitionID, opts.Search, opts.Limit, opts.Offset)
 		if err != nil {
 			return fmt.Errorf("look up instances: %w", err)
 		}
 		defer instanceRows.Close()
+		var instances []InstanceState
 		for instanceRows.Next() {
 			var inst InstanceState
 			var currentStateID uuid.UUID
 			var payloadJSON []byte
-			if err := instanceRows.Scan(&inst.InstanceID, &currentStateID, &inst.State.Key, &inst.State.Name, &payloadJSON); err != nil {
+			var total int
+			if err := instanceRows.Scan(&inst.InstanceID, &currentStateID, &inst.State.Key, &inst.State.Name, &payloadJSON, &total); err != nil {
 				return err
 			}
 			if err := json.Unmarshal(payloadJSON, &inst.Payload); err != nil {
@@ -607,14 +651,16 @@ func ListInstances(ctx context.Context, pool *pgxpool.Pool, firmID, userID, defi
 			}
 			inst.WorkflowDefinitionID = definitionID
 			inst.AvailableActions = actionsByFromState[inst.State.Key]
-			results = append(results, inst)
+			instances = append(instances, inst)
+			result.Total = total
 		}
+		result.Instances = instances
 		return instanceRows.Err()
 	})
 	if err != nil {
-		return nil, err
+		return ListInstancesResult{}, err
 	}
-	return results, nil
+	return result, nil
 }
 
 // DefinitionInfo names one workflow_definitions row - just enough for a

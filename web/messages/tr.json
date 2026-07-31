@@ -17,6 +17,7 @@
     "workflows": "İş Akışları",
     "settings": "Ayarlar",
     "auditLog": "Denetim Kaydı",
+    "permissions": "İzinler",
     "logout": "Çıkış yap",
     "firmSwitcherLabel": "Aktif firma"
   },
@@ -58,6 +59,12 @@
     "columnActions": "İşlemler",
     "actionError": "Bu işlem gerçekleşmedi. Lütfen tekrar deneyin.",
     "actionPermissionDenied": "Bunu yapma izniniz yok.",
+    "searchPlaceholder": "Ara...",
+    "searchButton": "Ara",
+    "searchEmpty": "Aramanızla eşleşen kayıt yok.",
+    "paginationPrevious": "Önceki",
+    "paginationNext": "Sonraki",
+    "paginationSummary": "Sayfa {page} / {totalPages} (toplam {total})",
     "addTitle": "Yeni ekle",
     "fieldKeyLabel": "Alan",
     "fieldKeyPlaceholder": "örn. ürün",
@@ -160,5 +167,16 @@
     "closeButton": "Kapat",
     "loadError": "İzin denetimi yüklenemedi. Lütfen tekrar deneyin.",
     "actionError": "Bu değişiklik uygulanamadı. Lütfen tekrar deneyin."
+  },
+  "PermissionSettings": {
+    "title": "İzinler",
+    "description": "Bu firmanın iş akışları için tanımlanan her izin anahtarı ve şu anda hangi rollerin bu izne sahip olduğu. Bir yetkiyi değiştirmek için, ilgili işlemin göründüğü ekranda Denetim Modu'nu kullanın.",
+    "notAuthorized": "Bu sayfayı görüntüleme izniniz yok.",
+    "loadError": "İzin kataloğu yüklenemedi. Lütfen tekrar deneyin.",
+    "empty": "Bu firma için henüz izin anahtarı tanımlanmamış.",
+    "columnKey": "Anahtar",
+    "columnDescription": "Açıklama",
+    "columnRoles": "Roller",
+    "noRoles": "Henüz rol yok"
   }
 }

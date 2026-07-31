@@ -17,6 +17,7 @@
     "workflows": "Workflows",
     "settings": "Settings",
     "auditLog": "Audit Log",
+    "permissions": "Permissions",
     "logout": "Log out",
     "firmSwitcherLabel": "Active firm"
   },
@@ -58,6 +59,12 @@
     "columnActions": "Actions",
     "actionError": "That action didn't go through. Please try again.",
     "actionPermissionDenied": "You don't have permission to do that.",
+    "searchPlaceholder": "Search...",
+    "searchButton": "Search",
+    "searchEmpty": "No instances match your search.",
+    "paginationPrevious": "Previous",
+    "paginationNext": "Next",
+    "paginationSummary": "Page {page} of {totalPages} ({total} total)",
     "addTitle": "Add new",
     "fieldKeyLabel": "Field",
     "fieldKeyPlaceholder": "e.g. item",
@@ -160,5 +167,16 @@
     "closeButton": "Close",
     "loadError": "Couldn't load the permission audit. Please try again.",
     "actionError": "That change didn't go through. Please try again."
+  },
+  "PermissionSettings": {
+    "title": "Permissions",
+    "description": "Every permission key defined for this firm's workflows, and which roles currently hold each. To change a grant, use Audit Mode on the screen where the action actually appears.",
+    "notAuthorized": "You don't have permission to view this page.",
+    "loadError": "Couldn't load the permission catalog. Please try again.",
+    "empty": "No permission keys defined for this firm yet.",
+    "columnKey": "Key",
+    "columnDescription": "Description",
+    "columnRoles": "Roles",
+    "noRoles": "No roles yet"
   }
 }

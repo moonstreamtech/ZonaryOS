@@ -277,16 +277,49 @@ paths:
           in: path
           required: true
           schema: { type: string, format: uuid }
+        - name: limit
+          in: query
+          required: false
+          description: >
+            Caps the number of instances returned, for paging. Omitted
+            (or 0) means "no limit" - every matching instance, the same
+            response this endpoint always returned before pagination
+            existed. Capped server-side at 200; a larger value is a 400,
+            not a silently-clamped 200.
+          schema: { type: integer, minimum: 0, maximum: 200 }
+        - name: offset
+          in: query
+          required: false
+          description: Skips this many matching instances before applying limit. Ignored when limit is omitted.
+          schema: { type: integer, minimum: 0 }
+        - name: q
+          in: query
+          required: false
+          description: >
+            Case-insensitive substring match against the instance's
+            current state (key/name) or its raw payload text - generic
+            across any workflow definition's payload shape, not a
+            fixed field name.
+          schema: { type: string }
       responses:
         "200":
-          description: Every instance of this definition within the caller's firm
+          description: >
+            The matching instances (paged/filtered per the query params
+            above). The total matching count before paging is reported
+            via the X-Total-Count response header, not in the body -
+            the body stays a plain array so this remains a
+            non-breaking change for any existing caller.
+          headers:
+            X-Total-Count:
+              description: Total instances matching definitionID and q, before limit/offset is applied.
+              schema: { type: integer }
           content:
             application/json:
               schema:
                 type: array
                 items:
                   $ref: "#/components/schemas/InstanceState"
-        "400": { description: Invalid firmID/definitionID }
+        "400": { description: Invalid firmID/definitionID, or an invalid limit/offset }
         "401": { description: Missing or invalid bearer token }
         "404": { description: No such workflow definition, or the caller isn't a member of firmID }
 
@@ -447,6 +480,39 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/FirmPermissionAudit"
+        "400": { description: Invalid firmID }
+        "401": { description: Missing or invalid bearer token }
+        "403": { description: Caller is a member of firmID but not an owner }
+        "404": { description: Caller is not a member of firmID at all }
+
+  /api/firms/{firmID}/permission-catalog:
+    get:
+      summary: Every permission key that exists for the firm, and which roles hold each
+      description: >
+        Owner-only, same gate as permission-audit above (this endpoint's
+        internal/permission.GetFirmPermissionCatalog is built on top of
+        GetFirmPermissionAudit rather than a second, parallel path). The
+        data source for the full permission-management page
+        (/settings/permissions) as opposed to permission-audit's
+        role-keyed shape (Permission Audit Mode's live overlay): a
+        firm-scoped union of every key referenced by the firm's own
+        workflow_definitions.create_permission_key /
+        workflow_transitions.permission_key, plus every key any non-owner
+        role already holds - so a key defined but never granted to
+        anyone still appears, with an empty roleKeys array, which
+        permission-audit's response has no way to represent.
+      parameters:
+        - name: firmID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The firm's full permission catalog
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FirmPermissionCatalog"
         "400": { description: Invalid firmID }
         "401": { description: Missing or invalid bearer token }
         "403": { description: Caller is a member of firmID but not an owner }
@@ -813,6 +879,27 @@ components:
             $ref: "#/components/schemas/RoleGrant"
           description: Every non-owner role's grants - owner-flagged roles are excluded.
       required: [myPermissionKeys, roles]
+    PermissionCatalogEntry:
+      type: object
+      properties:
+        key:
+          type: string
+        description:
+          type: string
+        roleKeys:
+          type: array
+          items:
+            type: string
+          description: Non-owner role keys currently holding this permission - empty if nobody's been granted it yet.
+      required: [key, description, roleKeys]
+    FirmPermissionCatalog:
+      type: object
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/PermissionCatalogEntry"
+      required: [entries]
     AuditLogEntry:
       type: object
       properties:

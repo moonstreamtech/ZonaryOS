@@ -4,8 +4,8 @@
 // file in the root of this repository (draft, pending legal review - see
 // docs/OPEN_POINTS.md item 20).
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useState, type FormEvent } from "react";
+import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
 import type { InstanceState } from "@/lib/workflow";
 import { formatPayload } from "./format";
@@ -13,6 +13,14 @@ import { formatPayload } from "./format";
 type Props = {
   firmId: string;
   instances: InstanceState[];
+  // total/page/pageSize/q drive the pagination controls and search box
+  // below - server-computed (see WorkflowDefinitionView), not derived
+  // from `instances.length` here, since `instances` is only the current
+  // page.
+  total: number;
+  page: number;
+  pageSize: number;
+  q: string;
 };
 
 // Generic replacement for the old stock-specific StockList.tsx: renders
@@ -25,11 +33,44 @@ type Props = {
 // file - see internal/workflow/workflow_integration_test.go's
 // purchaseOrderSpec and this component's own instanceList.test.ts for
 // the proof.
-export default function WorkflowInstanceList({ firmId, instances }: Props) {
+export default function WorkflowInstanceList({
+  firmId,
+  instances,
+  total,
+  page,
+  pageSize,
+  q,
+}: Props) {
   const t = useTranslations("Workflow");
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [pendingKey, setPendingKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [searchInput, setSearchInput] = useState(q);
+
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+  // Builds a URL for pathname carrying every current search param except
+  // the ones this navigation is meant to change - so e.g. clicking
+  // "Next" while a search is active keeps `q` in the URL, and searching
+  // resets `page` back to 1 rather than keeping a stale offset.
+  function navigate(next: { page?: number; q?: string }) {
+    const params = new URLSearchParams(searchParams.toString());
+    const nextPage = next.page ?? 1;
+    const nextQ = next.q ?? "";
+    if (nextPage > 1) params.set("page", String(nextPage));
+    else params.delete("page");
+    if (nextQ) params.set("q", nextQ);
+    else params.delete("q");
+    const qs = params.toString();
+    router.push(qs ? `${pathname}?${qs}` : pathname);
+  }
+
+  function submitSearch(e: FormEvent) {
+    e.preventDefault();
+    navigate({ page: 1, q: searchInput });
+  }
 
   async function runAction(instanceId: string, actionKey: string) {
     setError(null);
@@ -62,8 +103,34 @@ export default function WorkflowInstanceList({ firmId, instances }: Props) {
     <div className="flex w-full flex-col items-center gap-4">
       {error && <p className="text-red-600 dark:text-red-400">{error}</p>}
 
+      {/* Only shown once there's something to search across - an empty
+          firm with zero instances doesn't need a search box yet. */}
+      {(total > 0 || q) && (
+        <form
+          onSubmit={submitSearch}
+          className="flex w-full gap-2"
+          role="search"
+        >
+          <input
+            type="text"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            placeholder={t("searchPlaceholder")}
+            className="w-full rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm text-black dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
+          />
+          <button
+            type="submit"
+            className="rounded-md bg-foreground px-4 py-1.5 text-xs font-medium text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc]"
+          >
+            {t("searchButton")}
+          </button>
+        </form>
+      )}
+
       {instances.length === 0 ? (
-        <p className="text-zinc-600 dark:text-zinc-400">{t("empty")}</p>
+        <p className="text-zinc-600 dark:text-zinc-400">
+          {q ? t("searchEmpty") : t("empty")}
+        </p>
       ) : (
         <div className="w-full overflow-x-auto">
           <table className="w-full border-collapse text-left text-sm">
@@ -123,6 +190,30 @@ export default function WorkflowInstanceList({ firmId, instances }: Props) {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {total > 0 && totalPages > 1 && (
+        <div className="flex w-full items-center justify-between gap-4 text-sm text-zinc-600 dark:text-zinc-400">
+          <button
+            type="button"
+            disabled={page <= 1}
+            onClick={() => navigate({ page: page - 1, q })}
+            className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium disabled:opacity-50 dark:border-zinc-700"
+          >
+            {t("paginationPrevious")}
+          </button>
+          <span>
+            {t("paginationSummary", { page, totalPages, total })}
+          </span>
+          <button
+            type="button"
+            disabled={page >= totalPages}
+            onClick={() => navigate({ page: page + 1, q })}
+            className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium disabled:opacity-50 dark:border-zinc-700"
+          >
+            {t("paginationNext")}
+          </button>
         </div>
       )}
     </div>

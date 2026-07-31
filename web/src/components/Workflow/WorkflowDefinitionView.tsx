@@ -7,16 +7,27 @@ import { getTranslations } from "next-intl/server";
 import {
   fetchDefinitionByKey,
   fetchInstances,
+  fetchInstancesPage,
 } from "@/lib/workflow";
 import { fetchAuditLog } from "@/lib/auditlog";
 import CreateInstanceForm from "./CreateInstanceForm";
 import WorkflowInstanceList from "./WorkflowInstanceList";
 import WorkflowHistory from "./WorkflowHistory";
 
+// Page size for the instance list below - not user-configurable (no UI
+// for it), just the fixed page size pagination pages through.
+const INSTANCES_PAGE_SIZE = 20;
+
 type Props = {
   sessionToken: string;
   firmId: string;
   workflowKey: string;
+  // From the page's own `searchParams` (Next.js's URL query param prop
+  // for a server component) - `page`/`q` drive server-side paging and
+  // search, not client state, so the URL stays the source of truth
+  // (shareable/bookmarkable, survives a refresh).
+  page?: number;
+  q?: string;
 };
 
 // The one generic page body every workflow definition's page renders -
@@ -35,6 +46,8 @@ export default async function WorkflowDefinitionView({
   sessionToken,
   firmId,
   workflowKey,
+  page = 1,
+  q = "",
 }: Props) {
   const t = await getTranslations("Workflow");
 
@@ -50,8 +63,13 @@ export default async function WorkflowDefinitionView({
     );
   }
 
-  const instances =
-    (await fetchInstances(sessionToken, firmId, definition.definitionId)) ?? [];
+  const safePage = Math.max(1, page);
+  const instancesPage = await fetchInstancesPage(
+    sessionToken,
+    firmId,
+    definition.definitionId,
+    { limit: INSTANCES_PAGE_SIZE, offset: (safePage - 1) * INSTANCES_PAGE_SIZE, q },
+  );
 
   // Sale/transaction history reuses the audit log's own data rather than
   // a parallel history mechanism. Not every member can read it:
@@ -59,6 +77,17 @@ export default async function WorkflowDefinitionView({
   // role by default - a null result here just means the section is
   // omitted below, not an error.
   const auditEntries = await fetchAuditLog(sessionToken, firmId);
+
+  // WorkflowHistory's own payload fallback (see history.ts) wants every
+  // instance's current payload, not just the current page's - a
+  // separate, unpaginated fetch, same as before pagination existed. Only
+  // fetched when there's actually a history section to render (i.e. the
+  // caller can read the audit log at all), so a listing-only caller
+  // doesn't pay for a second, unpaginated query on top of the paged one
+  // above.
+  const allInstances = auditEntries
+    ? ((await fetchInstances(sessionToken, firmId, definition.definitionId)) ?? [])
+    : [];
 
   return (
     <main className="flex flex-1 flex-col items-center gap-10 bg-zinc-50 px-6 py-16 dark:bg-black">
@@ -76,12 +105,19 @@ export default async function WorkflowDefinitionView({
           createPermissionKey={definition.createPermissionKey}
         />
 
-        <WorkflowInstanceList firmId={firmId} instances={instances} />
+        <WorkflowInstanceList
+          firmId={firmId}
+          instances={instancesPage?.instances ?? []}
+          total={instancesPage?.total ?? 0}
+          page={safePage}
+          pageSize={INSTANCES_PAGE_SIZE}
+          q={q}
+        />
       </div>
 
       {auditEntries && (
         <div className="w-full max-w-2xl">
-          <WorkflowHistory instances={instances} entries={auditEntries} />
+          <WorkflowHistory instances={allInstances} entries={auditEntries} />
         </div>
       )}
     </main>

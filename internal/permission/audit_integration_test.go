@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
+	"github.com/moonstreamtech/ZonaryOS/internal/workflow"
 )
 
 // These tests cover Permission Audit Mode's business logic
@@ -334,5 +335,126 @@ func TestRevokePermission_RejectsOwnerRoleTarget(t *testing.T) {
 	}
 	if !stillGranted {
 		t.Error("expected the owner role's grant to be untouched")
+	}
+}
+
+// TestGetFirmPermissionCatalog_ListsEveryKeyAcrossDefinitionsIncludingUngranted
+// covers item 3's core requirement: the full permission-management page
+// needs every permission key that exists for the firm - across every
+// workflow definition, not just one - including a key nobody's been
+// granted yet, which GetFirmPermissionAudit's role-keyed shape has no way
+// to represent (a key with zero holders has no role row to attach to).
+func TestGetFirmPermissionCatalog_ListsEveryKeyAcrossDefinitionsIncludingUngranted(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+	seedPermissionKey(ctx, t, adminPool, testPermissionKey)
+
+	var firmID uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm A') RETURNING id`).Scan(&firmID); err != nil {
+		t.Fatalf("seed firm: %v", err)
+	}
+
+	// A second, structurally different workflow definition, to prove
+	// "across all workflow definitions, not just one" isn't just true by
+	// coincidence for stock_to_sale - its own create/transition keys must
+	// show up in the catalog too.
+	purchaseOrderKey := "workflow.purchase_order.create"
+	purchaseOrderApproveKey := "workflow.purchase_order.approve"
+	purchaseOrderSpec := workflow.DefinitionSpec{
+		Key:  "purchase_order",
+		Name: "Purchase Order",
+		CreatePermission: workflow.PermissionSpec{
+			Key:         purchaseOrderKey,
+			Description: "Create a purchase order",
+		},
+		States: []workflow.StateSpec{
+			{Key: "draft", Name: "Draft", IsInitial: true},
+			{Key: "approved", Name: "Approved", IsTerminal: true},
+		},
+		Transitions: []workflow.TransitionSpec{
+			{
+				FromStateKey: "draft",
+				ToStateKey:   "approved",
+				ActionKey:    "approve",
+				Name:         "Approve",
+				Permission: workflow.PermissionSpec{
+					Key:         purchaseOrderApproveKey,
+					Description: "Approve a purchase order",
+				},
+			},
+		},
+	}
+
+	if _, err := workflow.SeedStockToSaleWorkflow(ctx, appPool, firmID); err != nil {
+		t.Fatalf("seed stock_to_sale workflow: %v", err)
+	}
+	if _, err := workflow.DefineWorkflow(ctx, appPool, firmID, purchaseOrderSpec); err != nil {
+		t.Fatalf("define purchase_order workflow: %v", err)
+	}
+
+	ownerRoleID := seedRole(ctx, t, adminPool, firmID, "owner", "Owner", true)
+	ownerUserID := seedUserWithRole(ctx, t, adminPool, firmID, ownerRoleID, "sub-owner-catalog")
+
+	salesRoleID := seedRole(ctx, t, adminPool, firmID, "sales", "Sales", false)
+	seedGrant(ctx, t, adminPool, firmID, salesRoleID, workflow.RecordSalePermission)
+	seedGrant(ctx, t, adminPool, firmID, salesRoleID, testPermissionKey)
+
+	catalog, err := permission.GetFirmPermissionCatalog(ctx, appPool, firmID, ownerUserID)
+	if err != nil {
+		t.Fatalf("GetFirmPermissionCatalog: %v", err)
+	}
+
+	byKey := make(map[string]permission.PermissionCatalogEntry, len(catalog.Entries))
+	for _, e := range catalog.Entries {
+		byKey[e.Key] = e
+	}
+
+	// AddStockPermission was never granted to anyone - must still appear,
+	// with zero role holders.
+	addStock, ok := byKey[workflow.AddStockPermission]
+	if !ok {
+		t.Fatalf("expected %q to be in the catalog even though nobody holds it, got %v", workflow.AddStockPermission, byKey)
+	}
+	if len(addStock.RoleKeys) != 0 {
+		t.Errorf("expected %q to have no role holders, got %v", workflow.AddStockPermission, addStock.RoleKeys)
+	}
+
+	// RecordSalePermission was granted to sales - must show sales as a
+	// holder.
+	recordSale, ok := byKey[workflow.RecordSalePermission]
+	if !ok || len(recordSale.RoleKeys) != 1 || recordSale.RoleKeys[0] != "sales" {
+		t.Errorf("expected %q to be held by exactly [sales], got %+v", workflow.RecordSalePermission, recordSale)
+	}
+
+	// The second workflow definition's own keys must appear too - proof
+	// this is genuinely "across every workflow definition, not just one".
+	if _, ok := byKey[purchaseOrderKey]; !ok {
+		t.Errorf("expected the purchase_order definition's create key %q to be in the catalog, got %v", purchaseOrderKey, byKey)
+	}
+	if _, ok := byKey[purchaseOrderApproveKey]; !ok {
+		t.Errorf("expected the purchase_order definition's approve key %q to be in the catalog, got %v", purchaseOrderApproveKey, byKey)
+	}
+
+	// A key granted directly (not tied to any workflow object at all,
+	// e.g. audit.log.read in production) must appear too.
+	generic, ok := byKey[testPermissionKey]
+	if !ok || len(generic.RoleKeys) != 1 || generic.RoleKeys[0] != "sales" {
+		t.Errorf("expected %q to be held by exactly [sales], got %+v", testPermissionKey, generic)
+	}
+}
+
+func TestGetFirmPermissionCatalog_RequiresOwner(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	var firmID uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm A') RETURNING id`).Scan(&firmID); err != nil {
+		t.Fatalf("seed firm: %v", err)
+	}
+	nonOwnerRoleID := seedRole(ctx, t, adminPool, firmID, "sales", "Sales", false)
+	nonOwnerUserID := seedUserWithRole(ctx, t, adminPool, firmID, nonOwnerRoleID, "sub-non-owner-catalog")
+
+	if _, err := permission.GetFirmPermissionCatalog(ctx, appPool, firmID, nonOwnerUserID); !errors.Is(err, permission.ErrNotOwner) {
+		t.Fatalf("expected ErrNotOwner, got: %v", err)
 	}
 }

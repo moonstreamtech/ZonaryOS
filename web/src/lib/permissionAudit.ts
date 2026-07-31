@@ -15,6 +15,16 @@ export type FirmPermissionAudit = {
   roles: RoleGrant[];
 };
 
+export type PermissionCatalogEntry = {
+  key: string;
+  description: string;
+  roleKeys: string[];
+};
+
+export type FirmPermissionCatalog = {
+  entries: PermissionCatalogEntry[];
+};
+
 function apiBase(): string {
   return process.env.ZONARYOS_API_BASE_URL ?? "http://localhost:8080";
 }
@@ -40,6 +50,34 @@ export async function fetchFirmPermissionAudit(
     );
     if (!res.ok) return null;
     return (await res.json()) as FirmPermissionAudit;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Calls the Go backend's `GET /api/firms/{firmId}/permission-catalog`
+ * (owner-only) - the full permission-management page's data source
+ * (`/settings/permissions`): every permission key that exists for the
+ * firm, across every workflow definition, and which roles hold each -
+ * including a key nobody's been granted yet, which
+ * fetchFirmPermissionAudit's role-keyed shape can't represent. Same
+ * null-on-failure convention as fetchFirmPermissionAudit.
+ */
+export async function fetchFirmPermissionCatalog(
+  token: string,
+  firmId: string,
+): Promise<FirmPermissionCatalog | null> {
+  try {
+    const res = await fetch(
+      `${apiBase()}/api/firms/${encodeURIComponent(firmId)}/permission-catalog`,
+      {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      },
+    );
+    if (!res.ok) return null;
+    return (await res.json()) as FirmPermissionCatalog;
   } catch {
     return null;
   }

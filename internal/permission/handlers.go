@@ -34,6 +34,7 @@ func RegisterRoutes(mux *http.ServeMux, verifier *identity.Verifier, pool *pgxpo
 	auth := identity.Middleware(verifier)
 
 	mux.Handle("GET /api/firms/{firmID}/permission-audit", auth(http.HandlerFunc(handleGetAudit(pool))))
+	mux.Handle("GET /api/firms/{firmID}/permission-catalog", auth(http.HandlerFunc(handleGetCatalog(pool))))
 	mux.Handle("PUT /api/firms/{firmID}/roles/{roleID}/permissions/{key}", auth(http.HandlerFunc(handleGrant(pool, broadcaster))))
 	mux.Handle("DELETE /api/firms/{firmID}/roles/{roleID}/permissions/{key}", auth(http.HandlerFunc(handleRevoke(pool, broadcaster))))
 	mux.Handle("GET /api/firms/{firmID}/permission-events", auth(http.HandlerFunc(handleEvents(pool, broadcaster))))
@@ -106,6 +107,65 @@ func handleGetAudit(pool *pgxpool.Pool) http.HandlerFunc {
 				RoleKey:        g.RoleKey,
 				RoleName:       g.RoleName,
 				PermissionKeys: g.PermissionKeys,
+			})
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}
+}
+
+type permissionCatalogEntryResponse struct {
+	Key         string   `json:"key"`
+	Description string   `json:"description"`
+	RoleKeys    []string `json:"roleKeys"`
+}
+
+type firmPermissionCatalogResponse struct {
+	Entries []permissionCatalogEntryResponse `json:"entries"`
+}
+
+// handleGetCatalog is the full permission-management page's read
+// endpoint (/settings/permissions) - every permission key that exists
+// for the firm and which non-owner roles currently hold each, as opposed
+// to handleGetAudit's role-keyed shape (Permission Audit Mode's live
+// overlay, which only ever needs to look up one already-rendered
+// element's key at a time). Same owner-only gate as handleGetAudit -
+// GetFirmPermissionCatalog delegates to GetFirmPermissionAudit for it.
+func handleGetCatalog(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := identity.FromContext(r.Context())
+		if !ok {
+			http.Error(w, "missing identity", http.StatusInternalServerError)
+			return
+		}
+
+		firmID, err := uuid.Parse(r.PathValue("firmID"))
+		if err != nil {
+			http.Error(w, "invalid firm id", http.StatusBadRequest)
+			return
+		}
+
+		userID, err := identity.ResolveOrCreateUser(r.Context(), pool, id)
+		if err != nil {
+			http.Error(w, "failed to resolve user", http.StatusInternalServerError)
+			return
+		}
+
+		catalog, err := GetFirmPermissionCatalog(r.Context(), pool, firmID, userID)
+		if err != nil {
+			writeAuditError(w, err)
+			return
+		}
+
+		resp := firmPermissionCatalogResponse{
+			Entries: make([]permissionCatalogEntryResponse, 0, len(catalog.Entries)),
+		}
+		for _, e := range catalog.Entries {
+			resp.Entries = append(resp.Entries, permissionCatalogEntryResponse{
+				Key:         e.Key,
+				Description: e.Description,
+				RoleKeys:    e.RoleKeys,
 			})
 		}
 

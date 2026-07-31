@@ -127,7 +127,7 @@ func TestList_ReportsWriteAndViewEntriesWithAttribution(t *testing.T) {
 		t.Fatalf("CreateInstance: %v", err)
 	}
 
-	if _, err := workflow.ListInstances(ctx, appPool, firm.FirmID, ownerUserID, firm.StockToSaleDefinitionID); err != nil {
+	if _, err := workflow.ListInstances(ctx, appPool, firm.FirmID, ownerUserID, firm.StockToSaleDefinitionID, workflow.ListInstancesOptions{}); err != nil {
 		t.Fatalf("ListInstances: %v", err)
 	}
 
