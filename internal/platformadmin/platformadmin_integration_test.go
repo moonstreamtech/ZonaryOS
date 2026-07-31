@@ -316,19 +316,19 @@ func TestListFirms_WritesAuditLogEntryPerAccessedFirm(t *testing.T) {
 		{"Firm Audit A", firmA.FirmID, ownerA},
 		{"Firm Audit B", firmB.FirmID, ownerB},
 	} {
-		entries, err := auditlog.List(ctx, appPool, firm.firmID, firm.owner)
+		result, err := auditlog.List(ctx, appPool, firm.firmID, firm.owner, auditlog.ListOptions{})
 		if err != nil {
 			t.Fatalf("List audit log for %s: %v", firm.name, err)
 		}
 		var found bool
-		for _, e := range entries {
+		for _, e := range result.Entries {
 			if e.EntityType == "firm" && e.Action == "platform_admin_metadata_view" &&
 				e.EntityID == firm.firmID && e.UserID == adminUserID {
 				found = true
 			}
 		}
 		if !found {
-			t.Errorf("%s: expected a platform_admin_metadata_view audit_log entry attributed to the platform admin, got entries: %+v", firm.name, entries)
+			t.Errorf("%s: expected a platform_admin_metadata_view audit_log entry attributed to the platform admin, got entries: %+v", firm.name, result.Entries)
 		}
 	}
 }

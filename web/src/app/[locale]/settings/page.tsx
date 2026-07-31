@@ -7,21 +7,23 @@ import { getTranslations, setRequestLocale } from "next-intl/server";
 import { requireFirmContext } from "@/lib/firmContext";
 import { fetchRoleInFirm } from "@/lib/me";
 import { fetchDefinitions } from "@/lib/workflow";
-import FirmNameEditor from "./FirmNameEditor";
+import { fetchFirmMetadata } from "@/lib/firm";
+import FirmMetadataEditor from "./FirmMetadataEditor";
 
 type PageProps = {
   params: Promise<{ locale: string }>;
 };
 
-// Item 3 (extended by item 4): a real firm settings page - application
-// settings, not build config. The `firms` table
-// (migrations/0001_core_schema.up.sql) has `name`/`attributes`/
-// `created_at`; only `name` is mutable today (internal/firm.UpdateName,
-// item 4 - a deliberately narrow, owner-gated PATCH, not a general firm-
-// settings endpoint). `attributes` still has no HTTP handler anywhere
-// touching it, so this page still shows everything else read-only rather
-// than promising editing the backend can't back - see the new Open
-// Points entry for the broader firm-metadata story this doesn't attempt.
+// Item 3 (extended by item 4, further extended by Open Points item 36): a
+// real firm settings page - application settings, not build config. The
+// `firms` table (migrations/0001_core_schema.up.sql, extended by
+// migrations/0006_firm_metadata.up.sql) has `name`/`address`/`tax_id`/
+// `default_locale`/`default_currency`/`logo_url`/`attributes`/
+// `created_at`; every field but `attributes` is mutable now
+// (internal/firm.Update, owner-gated). `attributes` still has no HTTP
+// handler anywhere touching it - see docs/OPEN_POINTS.md item 36's
+// remaining open questions on what that jsonb column should eventually
+// hold.
 export default async function SettingsPage({ params }: PageProps) {
   const { locale } = await params;
   setRequestLocale(locale);
@@ -30,6 +32,7 @@ export default async function SettingsPage({ params }: PageProps) {
   const { sessionToken, firm } = await requireFirmContext(locale);
   const role = await fetchRoleInFirm(sessionToken, firm.firmId);
   const definitions = await fetchDefinitions(sessionToken, firm.firmId);
+  const metadata = await fetchFirmMetadata(sessionToken, firm.firmId);
 
   return (
     <main className="flex flex-1 flex-col items-center gap-8 bg-zinc-50 px-6 py-16 dark:bg-black">
@@ -38,22 +41,70 @@ export default async function SettingsPage({ params }: PageProps) {
       </h1>
 
       <div className="w-full max-w-md rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
-        <dl className="flex flex-col gap-3 text-sm">
-          <div>
-            <dt className="text-zinc-500 dark:text-zinc-400">{t("firmNameLabel")}</dt>
+        {metadata === null ? (
+          <p className="text-red-600 dark:text-red-400">{t("metadataLoadError")}</p>
+        ) : (
+          <dl className="flex flex-col gap-3 text-sm">
             {role?.isOwner ? (
-              <FirmNameEditor firmId={firm.firmId} currentName={firm.firmName} />
+              <FirmMetadataEditor firmId={firm.firmId} metadata={metadata} />
             ) : (
-              <dd className="text-black dark:text-zinc-50">{firm.firmName}</dd>
+              <>
+                <div>
+                  <dt className="text-zinc-500 dark:text-zinc-400">{t("firmNameLabel")}</dt>
+                  <dd className="text-black dark:text-zinc-50">{metadata.name}</dd>
+                </div>
+                <div>
+                  <dt className="text-zinc-500 dark:text-zinc-400">{t("addressLabel")}</dt>
+                  <dd className="text-black dark:text-zinc-50">
+                    {metadata.address || (
+                      <span className="text-zinc-400 dark:text-zinc-600">{t("notSet")}</span>
+                    )}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-zinc-500 dark:text-zinc-400">{t("taxIdLabel")}</dt>
+                  <dd className="text-black dark:text-zinc-50">
+                    {metadata.taxId || (
+                      <span className="text-zinc-400 dark:text-zinc-600">{t("notSet")}</span>
+                    )}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-zinc-500 dark:text-zinc-400">{t("defaultLocaleLabel")}</dt>
+                  <dd className="text-black dark:text-zinc-50">
+                    {metadata.defaultLocale || (
+                      <span className="text-zinc-400 dark:text-zinc-600">{t("notSet")}</span>
+                    )}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-zinc-500 dark:text-zinc-400">
+                    {t("defaultCurrencyLabel")}
+                  </dt>
+                  <dd className="text-black dark:text-zinc-50">
+                    {metadata.defaultCurrency || (
+                      <span className="text-zinc-400 dark:text-zinc-600">{t("notSet")}</span>
+                    )}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-zinc-500 dark:text-zinc-400">{t("logoUrlLabel")}</dt>
+                  <dd className="text-black dark:text-zinc-50">
+                    {metadata.logoUrl || (
+                      <span className="text-zinc-400 dark:text-zinc-600">{t("notSet")}</span>
+                    )}
+                  </dd>
+                </div>
+              </>
             )}
-          </div>
-          <div>
-            <dt className="text-zinc-500 dark:text-zinc-400">{t("roleLabel")}</dt>
-            <dd className="text-black dark:text-zinc-50">
-              {role?.roleName ?? t("roleUnavailable")}
-            </dd>
-          </div>
-        </dl>
+            <div>
+              <dt className="text-zinc-500 dark:text-zinc-400">{t("roleLabel")}</dt>
+              <dd className="text-black dark:text-zinc-50">
+                {role?.roleName ?? t("roleUnavailable")}
+              </dd>
+            </div>
+          </dl>
+        )}
       </div>
 
       <div className="w-full max-w-md">
@@ -77,10 +128,6 @@ export default async function SettingsPage({ params }: PageProps) {
           </ul>
         )}
       </div>
-
-      <p className="max-w-md text-center text-xs text-zinc-500 dark:text-zinc-500">
-        {t("editingNotAvailable")}
-      </p>
     </main>
   );
 }

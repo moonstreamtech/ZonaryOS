@@ -78,16 +78,56 @@ paths:
           description: Caller has no membership in firmID
 
   /api/firms/{firmID}:
-    patch:
-      summary: Rename a firm (owner-only)
+    get:
+      summary: Read a firm's name and broader metadata (member-gated)
       description: >
-        Item 4's minimal, bounded firm mutation (internal/firm.UpdateName)
-        - name only, not a general firm-settings endpoint. Owner-gated
-        (internal/permission.IsOwner, after IsMember), same tier as
-        defining a new workflow or creating the firm itself. Broader firm
-        metadata editing (the `firms.attributes` jsonb column) is real,
-        undesigned future work - see docs/OPEN_POINTS.md item 36 - not
-        something this endpoint speculatively supports.
+        Open Points item 36's read counterpart to the PATCH below -
+        internal/firm.Get. Gated by plain membership
+        (internal/permission.IsMember), not IsOwner: viewing a firm's own
+        basic info doesn't need the stricter owner tier that editing it
+        does. Every metadata field is nullable - null means the firm never
+        set it (migrations/0006_firm_metadata.up.sql's no-backfill NULL
+        default), not that the field doesn't exist.
+      parameters:
+        - name: firmID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The firm's current name and metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FirmMetadata"
+        "400": { description: Invalid firmID }
+        "401": { description: Missing or invalid bearer token }
+        "404": { description: Caller isn't a member of firmID at all }
+    patch:
+      summary: Update a firm's name and broader metadata (owner-only)
+      description: >
+        Item 4's original minimal, bounded firm mutation
+        (internal/firm.UpdateName) - name only - extended by Open Points
+        item 36 to also accept five optional metadata fields
+        (address/taxId/defaultLocale/defaultCurrency/logoUrl,
+        internal/firm.Update/UpdateFields) at this same route, rather than
+        a second endpoint. Owner-gated (internal/permission.IsOwner, after
+        IsMember), same tier as defining a new workflow or creating the
+        firm itself. Every metadata field is optional and nullable: name
+        is required (as it always was), while address/taxId/defaultLocale/
+        defaultCurrency/logoUrl are each independently omittable (leave
+        the stored value alone), settable to an empty string (clear it
+        back to unset/null), or settable to a non-empty value (subject to
+        a basic sanity length cap - see the 400 response below) - a caller
+        that only wants to rename the firm can still send just `name`, and
+        that keeps behaving exactly as it did before this field set
+        existed. Storage-only for every new field: no fiscal/tax
+        calculation or validation tied to taxId/defaultCurrency
+        (docs/OPEN_POINTS.md item 24 stays open), no upload/storage system
+        behind logoUrl (a URL string only). Broader firm-settings-as-a-
+        real-module questions (the `firms.attributes` jsonb column, e.g.)
+        remain real, undesigned future work - see docs/OPEN_POINTS.md item
+        36's remaining open questions.
       parameters:
         - name: firmID
           in: path
@@ -101,19 +141,35 @@ paths:
               properties:
                 name:
                   type: string
+                address:
+                  type: string
+                  nullable: true
+                  description: Free text, up to 500 characters. No structured address model - see docs/OPEN_POINTS.md item 24.
+                taxId:
+                  type: string
+                  nullable: true
+                  description: Free text (VAT/tax ID), up to 100 characters. No country-specific format validation.
+                defaultLocale:
+                  type: string
+                  nullable: true
+                  description: Free text, up to 20 characters. Expected to be one of this deployment's actual locale codes ("en"/"tr" today, web/src/i18n/routing.ts), but not DB-constrained to that set.
+                defaultCurrency:
+                  type: string
+                  nullable: true
+                  description: Free text, up to 10 characters. Expected to look like an ISO 4217 code, but not validated against a real currency list and not wired into any calculation.
+                logoUrl:
+                  type: string
+                  nullable: true
+                  description: Free text URL, up to 2048 characters. No upload/storage system behind this - a link to an image hosted elsewhere, nothing else.
               required: [name]
       responses:
         "200":
-          description: The firm's new name
+          description: The firm's new name and metadata
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  firmId: { type: string, format: uuid }
-                  name: { type: string }
-                required: [firmId, name]
-        "400": { description: Invalid firmID, malformed body, or an empty/whitespace-only name }
+                $ref: "#/components/schemas/FirmMetadata"
+        "400": { description: Invalid firmID, malformed body, an empty/whitespace-only name, or a metadata field exceeding its maximum allowed length }
         "401": { description: Missing or invalid bearer token }
         "403": { description: Caller is a member of firmID but not an owner }
         "404": { description: Caller isn't a member of firmID at all }
@@ -805,27 +861,80 @@ paths:
         so a firm can later extend read access to an "Auditor Role" purely
         by granting this permission key via Permission Audit Mode.
         internal/wizard.CreateDefaultFirm grants it to a firm's own owner
-        role automatically. Returns every audit_log row for the firm, most
+        role automatically. Returns audit_log rows for the firm, most
         recent first, covering both data-change entries (action values like
         "create", "grant", "revoke", "record_sale", ...) and view/read
         entries (action "view") - see docs/DEVELOPMENT.md's Audit Trail
         section and docs/OPEN_POINTS.md item 33 for why view/read logging
-        is only wired into one representative read path so far.
+        is only wired into one representative read path so far. Supports
+        the same limit/offset paging shape as
+        /api/firms/{firmID}/workflow-definitions/{definitionID}/instances
+        (internal/workflow.ListInstances), plus date-range and workflow-
+        definition filtering - see the query params below. Omitting every
+        query param returns every entry, unpaged, the same response this
+        endpoint always returned before this - Never-Violate Rule 6, no
+        breaking change without a deprecation cycle.
       parameters:
         - name: firmID
           in: path
           required: true
           schema: { type: string, format: uuid }
+        - name: limit
+          in: query
+          required: false
+          description: >
+            Caps the number of entries returned, for paging. Omitted (or
+            0) means "no limit" - every matching entry, the same response
+            this endpoint always returned before pagination existed.
+            Capped server-side at 200; a larger value is a 400, not a
+            silently-clamped 200.
+          schema: { type: integer, minimum: 0, maximum: 200 }
+        - name: offset
+          in: query
+          required: false
+          description: Skips this many matching entries before applying limit. Ignored when limit is omitted.
+          schema: { type: integer, minimum: 0 }
+        - name: from
+          in: query
+          required: false
+          description: RFC3339 timestamp - keeps only entries with occurred_at >= from (inclusive).
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          description: RFC3339 timestamp - keeps only entries with occurred_at <= to (inclusive).
+          schema: { type: string, format: date-time }
+        - name: definitionId
+          in: query
+          required: false
+          description: >
+            Keeps only entries that resolve back to this workflow
+            definition - rows whose entity_type is "workflow_instance" and
+            whose entity_id is an instance of this definition, joined
+            through workflow_instances.workflow_definition_id
+            (internal/auditlog.List). audit_log rows unrelated to any
+            workflow instance (a firm rename, a permission grant, ...)
+            never match a definitionId filter, by design.
+          schema: { type: string, format: uuid }
       responses:
         "200":
-          description: The firm's audit log entries, most recent first
+          description: >
+            The matching entries (paged/filtered per the query params
+            above), most recent first. The total matching count before
+            paging is reported via the X-Total-Count response header, not
+            in the body - the body stays a plain array so this remains a
+            non-breaking change for any existing caller.
+          headers:
+            X-Total-Count:
+              description: Total entries matching firmID plus any from/to/definitionId filter, before limit/offset is applied.
+              schema: { type: integer }
           content:
             application/json:
               schema:
                 type: array
                 items:
                   $ref: "#/components/schemas/AuditLogEntry"
-        "400": { description: Invalid firmID }
+        "400": { description: Invalid firmID, or an invalid limit/offset/from/to/definitionId }
         "401": { description: Missing or invalid bearer token }
         "403": { description: Caller is a member of firmID but does not hold audit.log.read }
         "404": { description: Caller isn't a member of firmID at all }
@@ -1251,6 +1360,36 @@ components:
           type: string
           format: date-time
       required: [id, entityType, entityId, action, changes, userId, userEmail, userDisplayName, occurredAt]
+
+    FirmMetadata:
+      type: object
+      description: >
+        GET/PATCH /api/firms/{firmID}'s response shape (Open Points item
+        36). address/taxId/defaultLocale/defaultCurrency/logoUrl are all
+        nullable - null means the firm never set that field, matching
+        migrations/0006_firm_metadata.up.sql's no-backfill NULL default.
+      properties:
+        firmId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        address:
+          type: string
+          nullable: true
+        taxId:
+          type: string
+          nullable: true
+        defaultLocale:
+          type: string
+          nullable: true
+        defaultCurrency:
+          type: string
+          nullable: true
+        logoUrl:
+          type: string
+          nullable: true
+      required: [firmId, name, address, taxId, defaultLocale, defaultCurrency, logoUrl]
 
     PlatformAdminFirm:
       type: object

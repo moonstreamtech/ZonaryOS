@@ -24,4 +24,12 @@ var (
 	// whitespace) - firms.name is NOT NULL with no other constraint, but
 	// an empty firm name is never a real firm's name.
 	ErrInvalidName = errors.New("firm name must not be empty")
+
+	// ErrMetadataTooLong means one of the optional broader-metadata
+	// fields (Open Points item 36: address/tax_id/logo_url) exceeds its
+	// sanity length bound (see the maxAddressLen/maxTaxIDLen/maxLogoURLLen
+	// constants in firm.go). This is a basic garbage-input guard, not
+	// fiscal-format validation - see firm.go's Update doc comment and
+	// Open Points item 24, which stays open.
+	ErrMetadataTooLong = errors.New("a firm metadata field exceeds its maximum allowed length")
 )
