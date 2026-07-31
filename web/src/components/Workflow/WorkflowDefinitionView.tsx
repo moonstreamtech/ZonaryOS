@@ -103,6 +103,7 @@ export default async function WorkflowDefinitionView({
           firmId={firmId}
           definitionId={definition.definitionId}
           createPermissionKey={definition.createPermissionKey}
+          fields={definition.fields}
         />
 
         <WorkflowInstanceList

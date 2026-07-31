@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -36,6 +37,125 @@ const workflowInstanceListEntityType = "workflow_instance_list"
 // transition and has no action_key of its own to reuse (see
 // CreateInstance).
 const createInstanceAction = "create"
+
+// payloadDateLayout is the layout validatePayload parses a FieldTypeDate
+// value against - a plain calendar date (no time-of-day, no timezone),
+// matching an HTML <input type="date"> value verbatim (CreateInstanceForm
+// on the frontend renders exactly that input for a date field). Kept as
+// its own named constant rather than inlined so the engine and any future
+// caller (e.g. a date-typed field in a different form) parse the same way.
+const payloadDateLayout = "2006-01-02"
+
+// payloadFieldRow is FieldSpec's jsonb wire shape for the
+// workflow_definitions.payload_schema column - kept separate from
+// FieldSpec itself (spec.go), the same way defineStateRequest/
+// defineTransitionRequest in handlers.go stay separate from StateSpec/
+// TransitionSpec: FieldSpec is this package's Go-side spec type, this is
+// specifically the on-disk JSON encoding of it.
+type payloadFieldRow struct {
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	Required bool   `json:"required"`
+}
+
+// marshalPayloadSchema encodes fields for storage in
+// workflow_definitions.payload_schema. A nil/empty fields returns a nil
+// []byte, which pgx sends as SQL NULL - not the JSON literal `null` and
+// not `[]` - so a schema-less definition's row reads back with
+// payload_schema IS NULL, the unambiguous "no schema was ever set" signal
+// unmarshalPayloadSchema below relies on to skip validation entirely.
+func marshalPayloadSchema(fields []FieldSpec) ([]byte, error) {
+	if len(fields) == 0 {
+		return nil, nil
+	}
+	rows := make([]payloadFieldRow, 0, len(fields))
+	for _, f := range fields {
+		rows = append(rows, payloadFieldRow{Name: f.Name, Type: string(f.Type), Required: f.Required})
+	}
+	return json.Marshal(rows)
+}
+
+// unmarshalPayloadSchema decodes workflow_definitions.payload_schema back
+// into []FieldSpec. A nil/empty data (the column was SQL NULL, i.e. this
+// definition has no schema) returns a nil slice and no error - the same
+// "no schema" state marshalPayloadSchema produces for an empty Fields.
+func unmarshalPayloadSchema(data []byte) ([]FieldSpec, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var rows []payloadFieldRow
+	if err := json.Unmarshal(data, &rows); err != nil {
+		return nil, fmt.Errorf("unmarshal payload schema: %w", err)
+	}
+	fields := make([]FieldSpec, 0, len(rows))
+	for _, r := range rows {
+		fields = append(fields, FieldSpec{Name: r.Name, Type: FieldType(r.Type), Required: r.Required})
+	}
+	return fields, nil
+}
+
+// validatePayload checks payload against fields - CreateInstance's server
+// side of Open Points item 35: every required field present, and a
+// best-effort type check of whatever fields are present (a JSON body
+// decodes numbers as float64, so this accepts any Go numeric kind for
+// FieldTypeNumber, not just float64, so direct Go-side callers like this
+// package's own tests aren't forced to write float64(...) everywhere). A
+// nil/empty fields (the overwhelmingly common case today - every
+// DefinitionSpec that predates item 35) is a no-op: this function isn't
+// even called in that case, see CreateInstance below, but it also
+// tolerates being called with nil for that reason.
+func validatePayload(fields []FieldSpec, payload map[string]any) error {
+	for _, f := range fields {
+		v, present := payload[f.Name]
+		if !present || v == nil {
+			if f.Required {
+				return fmt.Errorf("%w: missing required field %q", ErrPayloadValidation, f.Name)
+			}
+			continue
+		}
+		if err := checkFieldType(f, v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkFieldType is validatePayload's single-field type check - one
+// switch arm per FieldType (spec.go), matching FieldType's own "exactly
+// these four, no more elaborate type system" scope.
+func checkFieldType(f FieldSpec, v any) error {
+	switch f.Type {
+	case FieldTypeString:
+		if _, ok := v.(string); !ok {
+			return fmt.Errorf("%w: field %q must be a string", ErrPayloadValidation, f.Name)
+		}
+	case FieldTypeNumber:
+		switch v.(type) {
+		case float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+			// valid
+		default:
+			return fmt.Errorf("%w: field %q must be a number", ErrPayloadValidation, f.Name)
+		}
+	case FieldTypeBoolean:
+		if _, ok := v.(bool); !ok {
+			return fmt.Errorf("%w: field %q must be a boolean", ErrPayloadValidation, f.Name)
+		}
+	case FieldTypeDate:
+		s, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("%w: field %q must be a date string (YYYY-MM-DD)", ErrPayloadValidation, f.Name)
+		}
+		if _, err := time.Parse(payloadDateLayout, s); err != nil {
+			return fmt.Errorf("%w: field %q must be a valid date (YYYY-MM-DD)", ErrPayloadValidation, f.Name)
+		}
+	default:
+		// Unreachable for any spec that passed DefinitionSpec.Validate,
+		// which rejects an unknown FieldType before it can ever be
+		// persisted - defensive only.
+		return fmt.Errorf("%w: field %q has unknown type %q", ErrPayloadValidation, f.Name, f.Type)
+	}
+	return nil
+}
 
 // DefineWorkflow writes spec as rows in workflow_definitions/states/
 // transitions, all in one WithFirmContext transaction, upserting any
@@ -105,12 +225,17 @@ func DefineWorkflowTx(ctx context.Context, tx pgx.Tx, firmID, granteeRoleID uuid
 		}
 	}
 
+	payloadSchemaJSON, err := marshalPayloadSchema(spec.Fields)
+	if err != nil {
+		return uuid.UUID{}, fmt.Errorf("marshal payload schema: %w", err)
+	}
+
 	var definitionID uuid.UUID
 	if err := tx.QueryRow(ctx, `
-		INSERT INTO workflow_definitions (firm_id, key, name, create_permission_key)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO workflow_definitions (firm_id, key, name, create_permission_key, payload_schema)
+		VALUES ($1, $2, $3, $4, $5)
 		RETURNING id
-	`, firmID, spec.Key, spec.Name, spec.CreatePermission.Key).Scan(&definitionID); err != nil {
+	`, firmID, spec.Key, spec.Name, spec.CreatePermission.Key, payloadSchemaJSON).Scan(&definitionID); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == postgresUniqueViolation {
 			return uuid.UUID{}, ErrDefinitionKeyExists
@@ -244,6 +369,20 @@ func DefineWorkflowForFirm(ctx context.Context, pool *pgxpool.Pool, firmID, user
 // creation has no from-state, so it is deliberately not modeled as a
 // transition - but it is enforced and audited identically to one.
 //
+// If definitionID's own payload_schema (Open Points item 35,
+// spec.go's DefinitionSpec.Fields) is set, payload is validated against
+// it before anything is written - a missing required field or a
+// wrong-typed field is rejected with ErrPayloadValidation, and no
+// instance/audit row is created. A definition with no schema (the
+// StockToSaleSpec/CustomerPipelineSpec case today) skips this check
+// entirely, exactly as before item 35 existed - see validatePayload's own
+// doc comment. This is deliberately a create-time-only gate: it never
+// runs against an already-created instance's stored payload (CurrentState/
+// ListInstances/ExecuteTransition never call validatePayload), so adding a
+// schema to a definition after instances already exist can never make an
+// existing row "invalid" - it only changes what a *new* CreateInstance
+// call accepts going forward (item 35's question 4).
+//
 // The permission.IsMember check up front (Open Points item 37's audit)
 // is not strictly required for correctness here - permission.Has already
 // fails for a non-member, since it needs a real user_firm_roles row - but
@@ -283,9 +422,10 @@ func CreateInstance(ctx context.Context, pool *pgxpool.Pool, firmID, userID, def
 		}
 
 		var createPermissionKey string
+		var payloadSchemaJSON []byte
 		err = tx.QueryRow(ctx, `
-			SELECT create_permission_key FROM workflow_definitions WHERE id = $1
-		`, definitionID).Scan(&createPermissionKey)
+			SELECT create_permission_key, payload_schema FROM workflow_definitions WHERE id = $1
+		`, definitionID).Scan(&createPermissionKey, &payloadSchemaJSON)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrDefinitionNotFound
 		}
@@ -299,6 +439,16 @@ func CreateInstance(ctx context.Context, pool *pgxpool.Pool, firmID, userID, def
 		}
 		if !allowed {
 			return ErrPermissionDenied
+		}
+
+		fields, err := unmarshalPayloadSchema(payloadSchemaJSON)
+		if err != nil {
+			return err
+		}
+		if len(fields) > 0 {
+			if err := validatePayload(fields, payload); err != nil {
+				return err
+			}
 		}
 
 		var initialStateID uuid.UUID
@@ -676,6 +826,14 @@ type DefinitionInfo struct {
 	Key                 string
 	Name                string
 	CreatePermissionKey string
+	// Fields is this definition's OPTIONAL payload schema (Open Points
+	// item 35) - nil for a schema-less definition (StockToSaleSpec/
+	// CustomerPipelineSpec today), exactly the same "field absent means
+	// freeform" contract DefinitionSpec.Fields itself documents. Included
+	// here so a caller resolving a definition (e.g. the frontend's
+	// CreateInstanceForm) can render typed fields instead of the freeform
+	// key/value editor without a second round trip.
+	Fields []FieldSpec
 }
 
 // LookupDefinitionByKey resolves firmID's workflow_definitions row by its
@@ -695,12 +853,17 @@ func LookupDefinitionByKey(ctx context.Context, pool *pgxpool.Pool, firmID, user
 			return ErrDefinitionNotFound
 		}
 
+		var payloadSchemaJSON []byte
 		err = tx.QueryRow(ctx, `
-			SELECT id, key, name, create_permission_key FROM workflow_definitions WHERE key = $1
-		`, key).Scan(&info.ID, &info.Key, &info.Name, &info.CreatePermissionKey)
+			SELECT id, key, name, create_permission_key, payload_schema FROM workflow_definitions WHERE key = $1
+		`, key).Scan(&info.ID, &info.Key, &info.Name, &info.CreatePermissionKey, &payloadSchemaJSON)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrDefinitionNotFound
 		}
+		if err != nil {
+			return err
+		}
+		info.Fields, err = unmarshalPayloadSchema(payloadSchemaJSON)
 		return err
 	})
 	if err != nil {
@@ -731,7 +894,7 @@ func ListDefinitions(ctx context.Context, pool *pgxpool.Pool, firmID, userID uui
 		}
 
 		rows, err := tx.Query(ctx, `
-			SELECT id, key, name, create_permission_key
+			SELECT id, key, name, create_permission_key, payload_schema
 			FROM workflow_definitions
 			ORDER BY name
 		`)
@@ -741,7 +904,11 @@ func ListDefinitions(ctx context.Context, pool *pgxpool.Pool, firmID, userID uui
 		defer rows.Close()
 		for rows.Next() {
 			var d DefinitionInfo
-			if err := rows.Scan(&d.ID, &d.Key, &d.Name, &d.CreatePermissionKey); err != nil {
+			var payloadSchemaJSON []byte
+			if err := rows.Scan(&d.ID, &d.Key, &d.Name, &d.CreatePermissionKey, &payloadSchemaJSON); err != nil {
+				return err
+			}
+			if d.Fields, err = unmarshalPayloadSchema(payloadSchemaJSON); err != nil {
 				return err
 			}
 			results = append(results, d)

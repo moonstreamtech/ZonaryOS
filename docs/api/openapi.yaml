@@ -213,7 +213,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WorkflowDefinition"
-        "400": { description: Invalid firmID, malformed request body, or a structurally invalid spec (DefinitionSpec.Validate - no initial state, a transition referencing an unknown state, ...) }
+        "400": { description: Invalid firmID, malformed request body, or a structurally invalid spec (DefinitionSpec.Validate - no initial state, a transition referencing an unknown state, an OPTIONAL `fields` entry with an empty/duplicate name or a type outside string/number/boolean/date, ...) }
         "401": { description: Missing or invalid bearer token }
         "403": { description: Caller is a member of firmID but not an owner }
         "404": { description: Caller isn't a member of firmID at all }
@@ -227,6 +227,16 @@ paths:
         state. Not modeled as a transition (creation has no from-state),
         but enforced and audited identically: gated by the definition's
         create_permission_key, and recorded in audit_log.
+
+        If the target definition has an OPTIONAL payload schema
+        (`fields` on WorkflowDefinition/DefinitionSpec - Open Points item
+        35), payload is validated against it before the instance is
+        created: every required field must be present, and a present
+        field's value must match its declared type
+        (internal/workflow.ErrPayloadValidation, surfaced as 400 below).
+        A definition with no schema (every definition that predates item
+        35, e.g. stock_to_sale/customer_pipeline today) skips this
+        entirely - payload stays accepted exactly as before.
       parameters:
         - name: firmID
           in: path
@@ -252,7 +262,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/InstanceState"
-        "400": { description: Invalid firmID/definitionID, or malformed body }
+        "400": { description: Invalid firmID/definitionID, malformed body, or (when the definition has a payload schema) a missing required field/wrong-typed field - internal/workflow.ErrPayloadValidation's message, same plain-text error body shape every other 4xx in this API already uses }
         "401": { description: Missing or invalid bearer token }
         "403": { description: Caller lacks the definition's create permission }
         "404": { description: No such workflow definition in this firm }
@@ -923,6 +933,28 @@ components:
           type: string
           description: The permission ExecuteTransition checks for this action - included so a UI can carry the Never-Violate Rule 7 permission tag without hardcoding a duplicate of it.
       required: [actionKey, name, toState, permissionKey]
+    FieldSpec:
+      type: object
+      description: >
+        One declared field in a workflow definition's OPTIONAL instance
+        payload schema (internal/workflow.FieldSpec, Open Points item 35).
+        Deliberately just these four types (see the `type` property) - no
+        nested objects, no arrays, no enum/pattern constraints.
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [string, number, boolean, date]
+          description: >
+            "date" is a plain calendar date, no time-of-day/timezone -
+            matched against `YYYY-MM-DD` server-side
+            (internal/workflow's payloadDateLayout), the same value an
+            HTML `<input type="date">` produces.
+        required:
+          type: boolean
+          description: Whether CreateInstance must see this field present in the payload.
+      required: [name, type, required]
     WorkflowDefinition:
       type: object
       properties:
@@ -940,6 +972,18 @@ components:
             .../instances) on this definition - lets a UI carry the real
             Never-Violate Rule 7 permission tag on its "add" action instead
             of hardcoding a duplicate of it.
+        fields:
+          type: array
+          items:
+            $ref: "#/components/schemas/FieldSpec"
+          description: >
+            OPTIONAL (Open Points item 35). Omitted entirely for a
+            schema-less definition (stock_to_sale/customer_pipeline
+            today) - a purely additive response field, so an existing API
+            consumer sees no change at all for those. When present, a
+            frontend resolving this definition (e.g. CreateInstanceForm)
+            can render typed inputs for POST .../instances instead of a
+            free-form key/value editor.
       required: [definitionId, key, name, createPermissionKey]
     PermissionSpec:
       type: object
@@ -1004,6 +1048,21 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/TransitionSpec"
+        fields:
+          type: array
+          items:
+            $ref: "#/components/schemas/FieldSpec"
+          description: >
+            OPTIONAL (Open Points item 35) - an OPTIONAL payload schema
+            for this definition's instances. Omitted (or an empty array)
+            means exactly today's behavior: CreateInstance's payload
+            stays a completely freeform object, nothing required, no type
+            checked. When given, CreateInstance validates every new
+            instance's payload against it (400 with a
+            PayloadValidationError-shaped body - see POST
+            .../instances below - for a missing required field or a
+            wrong-typed one); reads of already-existing instances are
+            never affected either way.
       required: [key, name, createPermission, states, transitions]
     InstanceState:
       type: object

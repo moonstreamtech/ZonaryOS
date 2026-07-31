@@ -38,6 +38,76 @@ func TestValidate_AcceptsCustomerPipelineSpec(t *testing.T) {
 	}
 }
 
+// TestValidate_AcceptsNoFieldSchema is Open Points item 35's direct
+// regression proof at the spec.Validate level: a DefinitionSpec with a
+// nil Fields - every DefinitionSpec that predates item 35, including the
+// two real specs above - must keep validating with no new requirement
+// introduced by the Fields addition.
+func TestValidate_AcceptsNoFieldSchema(t *testing.T) {
+	if err := validStockToSaleSpec().Validate(); err != nil {
+		t.Fatalf("a schema-less spec should still validate cleanly, got: %v", err)
+	}
+}
+
+// TestValidate_AcceptsWellFormedFieldSchema covers Validate's new Fields
+// branch on the accepting side: one field per FieldType, a mix of
+// required/optional, must not be rejected.
+func TestValidate_AcceptsWellFormedFieldSchema(t *testing.T) {
+	spec := validStockToSaleSpec()
+	spec.Fields = []workflow.FieldSpec{
+		{Name: "item", Type: workflow.FieldTypeString, Required: true},
+		{Name: "quantity", Type: workflow.FieldTypeNumber, Required: true},
+		{Name: "rush", Type: workflow.FieldTypeBoolean, Required: false},
+		{Name: "dueDate", Type: workflow.FieldTypeDate, Required: false},
+	}
+	if err := spec.Validate(); err != nil {
+		t.Fatalf("expected a well-formed four-type field schema to validate, got: %v", err)
+	}
+}
+
+// TestValidate_RejectsUnknownFieldType covers Validate's new Fields
+// branch on the rejecting side: a FieldType outside the fixed four
+// (string/number/boolean/date - see spec.go's own doc comment on why
+// there are only four) must fail structurally, before ever reaching the
+// database.
+func TestValidate_RejectsUnknownFieldType(t *testing.T) {
+	spec := validStockToSaleSpec()
+	spec.Fields = []workflow.FieldSpec{
+		{Name: "weird", Type: workflow.FieldType("object"), Required: false},
+	}
+	if err := spec.Validate(); err == nil {
+		t.Fatal("expected Validate to reject an unknown FieldType, got nil error")
+	}
+}
+
+// TestValidate_RejectsDuplicateFieldName covers Validate's new Fields
+// branch's uniqueness check - two fields declaring the same Name is
+// structurally ambiguous (which declaration governs?), same category of
+// rejection as a duplicate state key.
+func TestValidate_RejectsDuplicateFieldName(t *testing.T) {
+	spec := validStockToSaleSpec()
+	spec.Fields = []workflow.FieldSpec{
+		{Name: "item", Type: workflow.FieldTypeString, Required: true},
+		{Name: "item", Type: workflow.FieldTypeNumber, Required: false},
+	}
+	if err := spec.Validate(); err == nil {
+		t.Fatal("expected Validate to reject a duplicate field name, got nil error")
+	}
+}
+
+// TestValidate_RejectsEmptyFieldName covers Validate's new Fields
+// branch's non-empty-name check, mirroring the existing empty-state-key
+// rejection.
+func TestValidate_RejectsEmptyFieldName(t *testing.T) {
+	spec := validStockToSaleSpec()
+	spec.Fields = []workflow.FieldSpec{
+		{Name: "", Type: workflow.FieldTypeString, Required: true},
+	}
+	if err := spec.Validate(); err == nil {
+		t.Fatal("expected Validate to reject an empty field name, got nil error")
+	}
+}
+
 func TestCustomerPipelineSpec_PermissionKeysIncludesEveryTransitionOnce(t *testing.T) {
 	keys := workflow.CustomerPipelineSpec.PermissionKeys()
 	// CreatePermission + 4 transitions (qualify, convert, mark_lost x2) =

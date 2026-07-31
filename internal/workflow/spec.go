@@ -41,16 +41,61 @@ type TransitionSpec struct {
 	Permission   PermissionSpec
 }
 
+// FieldType is a payload field's declared value type - deliberately just
+// these four (Open Points item 35's resolution): no nested objects, no
+// arrays, no enum/pattern constraints. A workflow whose payload needs
+// something richer than "a string/number/boolean/date, required or not"
+// is out of this mechanism's scope for now - see docs/OPEN_POINTS.md item
+// 35's remaining note on a richer type system.
+type FieldType string
+
+const (
+	FieldTypeString  FieldType = "string"
+	FieldTypeNumber  FieldType = "number"
+	FieldTypeBoolean FieldType = "boolean"
+	FieldTypeDate    FieldType = "date"
+)
+
+// FieldSpec is one declared field in a workflow definition's instance
+// payload schema (Open Points item 35): a name, a declared FieldType, and
+// whether CreateInstance must see it present. This is deliberately a flat
+// Go struct slice, not a JSON-Schema-shaped or DSL-based structure -
+// item 35's question 2 resolved in favor of "defined the same way the
+// rest of a workflow definition is defined today", i.e. as another field
+// on DefinitionSpec, going through the exact same DefineWorkflow/
+// DefineWorkflowForFirm path as States/Transitions already do, not a
+// separate mechanism or a wizard-only concept (item 12's wizard question
+// tree remains a separate, still-undesigned thing).
+type FieldSpec struct {
+	Name     string
+	Type     FieldType
+	Required bool
+}
+
 // DefinitionSpec is a full workflow definition: its states, the
 // transitions between them, and the permission required to create a new
 // instance of it (instance creation has no from-state, so it isn't a
 // transition - see internal/workflow's package docs).
+//
+// Fields is OPTIONAL and additive: a DefinitionSpec with a nil or empty
+// Fields (every DefinitionSpec that existed before Open Points item 35,
+// including StockToSaleSpec/CustomerPipelineSpec today) keeps behaving
+// exactly as it always has - CreateInstance's payload stays a completely
+// freeform map[string]any, no field is required, no type is checked. Only
+// a definition that deliberately sets Fields opts into CreateInstance
+// validating new instances' payloads against it (see engine.go's
+// CreateInstance and validatePayload) - existing instances are never
+// re-validated against a schema added after they were created (item 35's
+// question 4): CurrentState/ListInstances/every other read path in this
+// package never consults Fields at all, only CreateInstance does, and
+// only at the moment a new instance is created.
 type DefinitionSpec struct {
 	Key              string
 	Name             string
 	CreatePermission PermissionSpec
 	States           []StateSpec
 	Transitions      []TransitionSpec
+	Fields           []FieldSpec
 }
 
 // Validate checks the spec is structurally sound before anything is
@@ -109,6 +154,25 @@ func (d DefinitionSpec) Validate() error {
 			return fmt.Errorf("workflow definition %q: duplicate transition action %q from state %q", d.Key, t.ActionKey, t.FromStateKey)
 		}
 		transitionKeys[dedupeKey] = struct{}{}
+	}
+
+	if len(d.Fields) > 0 {
+		fieldNames := make(map[string]struct{}, len(d.Fields))
+		for _, f := range d.Fields {
+			if f.Name == "" {
+				return fmt.Errorf("workflow definition %q: field name must not be empty", d.Key)
+			}
+			if _, exists := fieldNames[f.Name]; exists {
+				return fmt.Errorf("workflow definition %q: duplicate field name %q", d.Key, f.Name)
+			}
+			fieldNames[f.Name] = struct{}{}
+			switch f.Type {
+			case FieldTypeString, FieldTypeNumber, FieldTypeBoolean, FieldTypeDate:
+				// valid
+			default:
+				return fmt.Errorf("workflow definition %q: field %q has unknown type %q (must be one of string/number/boolean/date)", d.Key, f.Name, f.Type)
+			}
+		}
 	}
 
 	return nil
