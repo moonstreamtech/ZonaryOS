@@ -38,6 +38,10 @@ func RegisterRoutes(mux *http.ServeMux, verifier *identity.Verifier, pool *pgxpo
 	mux.Handle("PUT /api/firms/{firmID}/roles/{roleID}/permissions/{key}", auth(http.HandlerFunc(handleGrant(pool, broadcaster))))
 	mux.Handle("DELETE /api/firms/{firmID}/roles/{roleID}/permissions/{key}", auth(http.HandlerFunc(handleRevoke(pool, broadcaster))))
 	mux.Handle("GET /api/firms/{firmID}/permission-events", auth(http.HandlerFunc(handleEvents(pool, broadcaster))))
+	mux.Handle("POST /api/firms/{firmID}/roles", auth(http.HandlerFunc(handleCreateRole(pool, broadcaster))))
+	mux.Handle("PATCH /api/firms/{firmID}/roles/{roleID}", auth(http.HandlerFunc(handleRenameRole(pool, broadcaster))))
+	mux.Handle("DELETE /api/firms/{firmID}/roles/{roleID}", auth(http.HandlerFunc(handleDeleteRole(pool, broadcaster))))
+	mux.Handle("GET /api/firms/{firmID}/members", auth(http.HandlerFunc(handleListMembers(pool))))
 }
 
 // writeAuditError maps this package's sentinel errors to the HTTP status
@@ -52,8 +56,11 @@ func writeAuditError(w http.ResponseWriter, err error) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 	case errors.Is(err, ErrNotOwner):
 		http.Error(w, err.Error(), http.StatusForbidden)
-	case errors.Is(err, ErrOwnerRoleImmutable), errors.Is(err, ErrPermissionKeyNotFound):
+	case errors.Is(err, ErrOwnerRoleImmutable), errors.Is(err, ErrPermissionKeyNotFound),
+		errors.Is(err, ErrInvalidRoleKey), errors.Is(err, ErrInvalidRoleName):
 		http.Error(w, err.Error(), http.StatusBadRequest)
+	case errors.Is(err, ErrRoleKeyExists), errors.Is(err, ErrRoleHasMembers):
+		http.Error(w, err.Error(), http.StatusConflict)
 	default:
 		http.Error(w, "internal error", http.StatusInternalServerError)
 	}
@@ -333,5 +340,205 @@ func handleEvents(pool *pgxpool.Pool, broadcaster *Broadcaster) http.HandlerFunc
 				flusher.Flush()
 			}
 		}
+	}
+}
+
+type createRoleRequest struct {
+	Key  string `json:"key"`
+	Name string `json:"name"`
+}
+
+type createRoleResponse struct {
+	RoleID string `json:"roleId"`
+	Key    string `json:"key"`
+	Name   string `json:"name"`
+}
+
+// handleCreateRole is item 5's "the missing role-creation mechanism":
+// exposes permission.CreateRole over HTTP, owner-only, the same
+// structural-firm-decision tier as defining a new workflow
+// (internal/workflow.DefineWorkflowForFirm) or renaming the firm
+// (internal/firm.UpdateName).
+func handleCreateRole(pool *pgxpool.Pool, broadcaster *Broadcaster) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := identity.FromContext(r.Context())
+		if !ok {
+			http.Error(w, "missing identity", http.StatusInternalServerError)
+			return
+		}
+
+		firmID, err := uuid.Parse(r.PathValue("firmID"))
+		if err != nil {
+			http.Error(w, "invalid firm id", http.StatusBadRequest)
+			return
+		}
+
+		var req createRoleRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		userID, err := identity.ResolveOrCreateUser(r.Context(), pool, id)
+		if err != nil {
+			http.Error(w, "failed to resolve user", http.StatusInternalServerError)
+			return
+		}
+
+		roleID, err := CreateRole(r.Context(), pool, firmID, userID, req.Key, req.Name)
+		if err != nil {
+			writeAuditError(w, err)
+			return
+		}
+
+		broadcaster.Publish(firmID)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(createRoleResponse{RoleID: roleID.String(), Key: req.Key, Name: req.Name})
+	}
+}
+
+type renameRoleRequest struct {
+	Name string `json:"name"`
+}
+
+// handleRenameRole exposes permission.RenameRole - PATCH, not PUT,
+// since it changes only the role's name (roles.key is immutable through
+// this surface - see RenameRole's doc comment), the same "partial update"
+// semantics internal/firm.UpdateName's own PATCH /api/firms/{firmID} uses.
+func handleRenameRole(pool *pgxpool.Pool, broadcaster *Broadcaster) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := identity.FromContext(r.Context())
+		if !ok {
+			http.Error(w, "missing identity", http.StatusInternalServerError)
+			return
+		}
+
+		firmID, err := uuid.Parse(r.PathValue("firmID"))
+		if err != nil {
+			http.Error(w, "invalid firm id", http.StatusBadRequest)
+			return
+		}
+		roleID, err := uuid.Parse(r.PathValue("roleID"))
+		if err != nil {
+			http.Error(w, "invalid role id", http.StatusBadRequest)
+			return
+		}
+
+		var req renameRoleRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		userID, err := identity.ResolveOrCreateUser(r.Context(), pool, id)
+		if err != nil {
+			http.Error(w, "failed to resolve user", http.StatusInternalServerError)
+			return
+		}
+
+		if err := RenameRole(r.Context(), pool, firmID, userID, roleID, req.Name); err != nil {
+			writeAuditError(w, err)
+			return
+		}
+
+		broadcaster.Publish(firmID)
+
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// handleDeleteRole exposes permission.DeleteRole - see its doc comment
+// for why a role with members is blocked (409, ErrRoleHasMembers) rather
+// than cascade-unassigned.
+func handleDeleteRole(pool *pgxpool.Pool, broadcaster *Broadcaster) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := identity.FromContext(r.Context())
+		if !ok {
+			http.Error(w, "missing identity", http.StatusInternalServerError)
+			return
+		}
+
+		firmID, err := uuid.Parse(r.PathValue("firmID"))
+		if err != nil {
+			http.Error(w, "invalid firm id", http.StatusBadRequest)
+			return
+		}
+		roleID, err := uuid.Parse(r.PathValue("roleID"))
+		if err != nil {
+			http.Error(w, "invalid role id", http.StatusBadRequest)
+			return
+		}
+
+		userID, err := identity.ResolveOrCreateUser(r.Context(), pool, id)
+		if err != nil {
+			http.Error(w, "failed to resolve user", http.StatusInternalServerError)
+			return
+		}
+
+		if err := DeleteRole(r.Context(), pool, firmID, userID, roleID); err != nil {
+			writeAuditError(w, err)
+			return
+		}
+
+		broadcaster.Publish(firmID)
+
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+type firmMemberResponse struct {
+	UserID      string `json:"userId"`
+	Email       string `json:"email"`
+	DisplayName string `json:"displayName"`
+	RoleID      string `json:"roleId"`
+	RoleKey     string `json:"roleKey"`
+	RoleName    string `json:"roleName"`
+}
+
+// handleListMembers exposes permission.ListMembers - item 3's firm
+// roster. Membership-gated only, not owner-only - see ListMembers's doc
+// comment for why.
+func handleListMembers(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := identity.FromContext(r.Context())
+		if !ok {
+			http.Error(w, "missing identity", http.StatusInternalServerError)
+			return
+		}
+
+		firmID, err := uuid.Parse(r.PathValue("firmID"))
+		if err != nil {
+			http.Error(w, "invalid firm id", http.StatusBadRequest)
+			return
+		}
+
+		userID, err := identity.ResolveOrCreateUser(r.Context(), pool, id)
+		if err != nil {
+			http.Error(w, "failed to resolve user", http.StatusInternalServerError)
+			return
+		}
+
+		members, err := ListMembers(r.Context(), pool, firmID, userID)
+		if err != nil {
+			writeAuditError(w, err)
+			return
+		}
+
+		resp := make([]firmMemberResponse, 0, len(members))
+		for _, m := range members {
+			resp = append(resp, firmMemberResponse{
+				UserID:      m.UserID.String(),
+				Email:       m.Email,
+				DisplayName: m.DisplayName,
+				RoleID:      m.RoleID.String(),
+				RoleKey:     m.RoleKey,
+				RoleName:    m.RoleName,
+			})
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
 	}
 }

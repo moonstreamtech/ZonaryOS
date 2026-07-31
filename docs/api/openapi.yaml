@@ -601,6 +601,155 @@ paths:
         "401": { description: Missing or invalid bearer token }
         "404": { description: Caller isn't a member of firmID }
 
+  /api/firms/{firmID}/roles:
+    post:
+      summary: Create a new, non-owner role for the firm (owner-only)
+      description: >
+        Item 5's role-creation mechanism: internal/wizard.CreateDefaultFirm's
+        own doc comment already says the firm owner is expected to
+        configure roles for others via Permission Audit Mode, but until
+        this endpoint existed there was no way to create a role at all -
+        every firm was permanently stuck with exactly the one is_owner
+        role the wizard seeds. The new role always starts with zero
+        permission grants (is_owner is never settable here - only firm
+        creation sets it) and shows up in GET .../permission-audit and
+        GET .../permission-catalog immediately, the same read paths every
+        other role already appears in.
+      parameters:
+        - name: firmID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                key:
+                  type: string
+                  description: Machine-readable role identifier, unique within the firm.
+                name:
+                  type: string
+                  description: Display name.
+              required: [key, name]
+      responses:
+        "201":
+          description: The new role
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  roleId: { type: string, format: uuid }
+                  key: { type: string }
+                  name: { type: string }
+                required: [roleId, key, name]
+        "400": { description: Invalid firmID, malformed body, or an empty/whitespace-only key/name }
+        "401": { description: Missing or invalid bearer token }
+        "403": { description: Caller is a member of firmID but not an owner }
+        "404": { description: Caller isn't a member of firmID at all }
+        "409": { description: A role with this key already exists for this firm }
+
+  /api/firms/{firmID}/roles/{roleID}:
+    patch:
+      summary: Rename a role (owner-only)
+      description: >
+        Changes only the role's display name - roles.key (the
+        machine-readable identifier role_permissions/user_firm_roles
+        reference) is immutable through this endpoint, unlike a display
+        name a key change would be a breaking identity change for
+        anything already referencing the role. Rejects an owner-flagged
+        target (400) the same way the grant/revoke endpoints above do -
+        the is_owner role can never be renamed through this surface.
+      parameters:
+        - name: firmID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: roleID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+              required: [name]
+      responses:
+        "204": { description: Renamed }
+        "400": { description: Invalid IDs, an empty/whitespace-only name, or the role is owner-flagged }
+        "401": { description: Missing or invalid bearer token }
+        "403": { description: Caller is a member of firmID but not an owner }
+        "404": { description: Caller isn't a member of firmID, or roleID doesn't exist in it }
+    delete:
+      summary: Delete a role (owner-only)
+      description: >
+        Rejects an owner-flagged target the same way rename does - the
+        is_owner role can never be deleted through this surface, even by
+        the owner themself. Blocked (409) while the role still has at
+        least one member (user_firm_roles row) rather than
+        cascade-unassigning them - user_firm_roles has no "reassign to a
+        default role" concept in this schema, so a cascading delete would
+        silently remove those members' firm membership entirely, not
+        just their role. Reassign or remove the role's members first.
+        role_permissions rows for the deleted role are cleaned up via
+        their own ON DELETE CASCADE.
+      parameters:
+        - name: firmID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: roleID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: Deleted }
+        "400": { description: Invalid IDs, or the role is owner-flagged }
+        "401": { description: Missing or invalid bearer token }
+        "403": { description: Caller is a member of firmID but not an owner }
+        "404": { description: Caller isn't a member of firmID, or roleID doesn't exist in it }
+        "409": { description: The role still has at least one member }
+
+  /api/firms/{firmID}/members:
+    get:
+      summary: List every (user, role) pairing in the firm - item 3's firm roster
+      description: >
+        Membership-gated only (any member can see their own firm's
+        roster), not owner-only like permission-audit/permission-catalog
+        above - "who's on my team and what's their role" isn't treated as
+        owner-only sensitive information in this codebase, the same
+        visibility level as the generic workflow instance list. With no
+        invite/email flow yet (docs/OPEN_POINTS.md item 17, still
+        deferred), this will only ever return the one row for whoever ran
+        the firm-creation wizard today - forward-compatible groundwork,
+        not a claim that onboarding a second user already works. A user
+        holding more than one role in the same firm (user_firm_roles
+        allows this) appears once per (user, role) pairing, not collapsed
+        into a single row.
+      parameters:
+        - name: firmID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The firm's roster
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/FirmMember"
+        "400": { description: Invalid firmID }
+        "401": { description: Missing or invalid bearer token }
+        "404": { description: Caller is not a member of firmID at all }
+
   /api/firms/{firmID}/audit-log:
     get:
       summary: Read this firm's audit trail (Vision §3 Audit Trail Infrastructure)
@@ -900,6 +1049,24 @@ components:
           items:
             $ref: "#/components/schemas/PermissionCatalogEntry"
       required: [entries]
+    FirmMember:
+      type: object
+      properties:
+        userId:
+          type: string
+          format: uuid
+        email:
+          type: string
+        displayName:
+          type: string
+        roleId:
+          type: string
+          format: uuid
+        roleKey:
+          type: string
+        roleName:
+          type: string
+      required: [userId, email, displayName, roleId, roleKey, roleName]
     AuditLogEntry:
       type: object
       properties:

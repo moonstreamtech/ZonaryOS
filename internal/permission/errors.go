@@ -37,4 +37,24 @@ var (
 	// checked first for a clean error instead of a raw constraint
 	// violation.
 	ErrPermissionKeyNotFound = errors.New("permission key not found in the global catalog")
+
+	// ErrInvalidRoleKey/ErrInvalidRoleName mean CreateRole/RenameRole was
+	// given an empty (after trimming) key/name - same "empty after
+	// trimming" convention as internal/firm.ErrInvalidName.
+	ErrInvalidRoleKey  = errors.New("role key must not be empty")
+	ErrInvalidRoleName = errors.New("role name must not be empty")
+
+	// ErrRoleKeyExists means firmID already has a role with this key
+	// (roles' (firm_id, key) UNIQUE constraint, migrations/0001_core_
+	// schema.up.sql) - the role-CRUD counterpart to internal/workflow's
+	// ErrDefinitionKeyExists.
+	ErrRoleKeyExists = errors.New("a role with this key already exists for this firm")
+
+	// ErrRoleHasMembers means DeleteRole's target role still has at
+	// least one user_firm_roles row - the delete is blocked rather than
+	// cascade-unassigning those members (see DeleteRole's doc comment
+	// for why: user_firm_roles has no "reassign to a default role"
+	// concept, so cascading would silently remove those members' firm
+	// membership entirely, not just their role).
+	ErrRoleHasMembers = errors.New("cannot delete a role that still has members - reassign or remove its members first")
 )

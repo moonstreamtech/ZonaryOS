@@ -8,7 +8,8 @@ import { redirect } from "next/navigation";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import { fetchMe, fetchRoleInFirm } from "@/lib/me";
 import { resolveActiveFirm } from "@/lib/activeFirm";
-import { fetchFirmPermissionCatalog } from "@/lib/permissionAudit";
+import { fetchFirmPermissionAudit, fetchFirmPermissionCatalog } from "@/lib/permissionAudit";
+import RoleManager from "@/components/AuditMode/RoleManager";
 
 type PageProps = {
   params: Promise<{ locale: string }>;
@@ -22,10 +23,20 @@ type PageProps = {
 // "authorized" means is_owner in this codebase), and reads from
 // internal/permission.GetFirmPermissionCatalog, which itself is built on
 // top of GetFirmPermissionAudit - Audit Mode's own grant/revoke popup's
-// data source - rather than a second, parallel query path. Read-only:
-// granting/revoking still happens through Audit Mode's live popup
-// (PermissionPopup.tsx), which already covers that; this page is the
-// browsable index, not a second editing surface.
+// data source - rather than a second, parallel query path. The
+// permission-key table below is still read-only: granting/revoking still
+// happens through Audit Mode's live popup (PermissionPopup.tsx), which
+// already covers that.
+//
+// Item 5 extends this same page with role create/rename/delete
+// (RoleManager, below) rather than a separate page - a firm's roles and
+// its permission grants are the same underlying concept (Vision §3's
+// Parametric Permission/Role System), and RoleManager deliberately
+// doesn't render each role's own grants itself: the permission-key table
+// it sits above already shows, for every key, which role keys hold it -
+// a newly created role simply not appearing in any row yet *is* "starts
+// with zero grants," reusing that existing render path instead of
+// duplicating it.
 export default async function PermissionsSettingsPage({ params }: PageProps) {
   const { locale } = await params;
   setRequestLocale(locale);
@@ -55,16 +66,27 @@ export default async function PermissionsSettingsPage({ params }: PageProps) {
     );
   }
 
-  const catalog = await fetchFirmPermissionCatalog(sessionToken!, firm.firmId);
+  const [catalog, audit] = await Promise.all([
+    fetchFirmPermissionCatalog(sessionToken!, firm.firmId),
+    fetchFirmPermissionAudit(sessionToken!, firm.firmId),
+  ]);
 
   return (
-    <main className="flex flex-1 flex-col items-center gap-6 bg-zinc-50 px-6 py-16 dark:bg-black">
-      <h1 className="text-3xl font-semibold tracking-tight text-black dark:text-zinc-50">
-        {t("title")}
-      </h1>
-      <p className="max-w-2xl text-center text-sm text-zinc-600 dark:text-zinc-400">
-        {t("description")}
-      </p>
+    <main className="flex flex-1 flex-col items-center gap-10 bg-zinc-50 px-6 py-16 dark:bg-black">
+      <div className="flex w-full max-w-4xl flex-col items-center gap-2">
+        <h1 className="text-3xl font-semibold tracking-tight text-black dark:text-zinc-50">
+          {t("title")}
+        </h1>
+        <p className="max-w-2xl text-center text-sm text-zinc-600 dark:text-zinc-400">
+          {t("description")}
+        </p>
+      </div>
+
+      {audit === null ? (
+        <p className="text-red-600 dark:text-red-400">{t("rolesLoadError")}</p>
+      ) : (
+        <RoleManager firmId={firm.firmId} roles={audit.roles} />
+      )}
 
       {catalog === null ? (
         <p className="text-red-600 dark:text-red-400">{t("loadError")}</p>
