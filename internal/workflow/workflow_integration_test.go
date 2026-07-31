@@ -912,6 +912,20 @@ func TestDefineWorkflowForFirm_OwnerCanDefineANewWorkflow(t *testing.T) {
 	if grantedCount != 3 {
 		t.Errorf("expected all 3 purchase_order permissions granted to the owner role, got %d", grantedCount)
 	}
+
+	// Audit trail completeness (Open Points item 41 batch's audit-trail
+	// audit): defining a new workflow is a structural, owner-only mutation
+	// and must leave an audit_log row, same as every other mutating path
+	// in this package.
+	var auditAction string
+	if err := adminPool.QueryRow(ctx, `
+		SELECT action FROM audit_log WHERE entity_id = $1 AND entity_type = 'workflow_definition'
+	`, definitionID).Scan(&auditAction); err != nil {
+		t.Fatalf("expected an audit_log row for the newly defined workflow: %v", err)
+	}
+	if auditAction != "create" {
+		t.Errorf("expected audit_log action 'create', got %q", auditAction)
+	}
 }
 
 func TestDefineWorkflowForFirm_NonOwnerIsDenied(t *testing.T) {

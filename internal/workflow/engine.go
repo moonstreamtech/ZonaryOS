@@ -38,6 +38,23 @@ const workflowInstanceListEntityType = "workflow_instance_list"
 // CreateInstance).
 const createInstanceAction = "create"
 
+// workflowDefinitionEntityType/defineWorkflowAuditAction are the
+// audit_log.entity_type/action DefineWorkflowForFirm records under - a
+// gap found and closed during the Open Points item 41 batch's audit-trail
+// completeness check (docs/OPEN_POINTS.md): every other mutating path in
+// this package (CreateInstance/ExecuteTransition, both below) already
+// wrote an audit_log entry, but the owner-only "define a new workflow"
+// action - itself a structural, permission-catalog-mutating operation,
+// the same tier as firm creation - did not. DefineWorkflowTx itself stays
+// audit-free (it's also called from internal/wizard.CreateDefaultFirm,
+// which already writes its own single "firm create" entry covering the
+// whole provisioning transaction, including the two workflows it seeds -
+// a second, redundant entry per seeded workflow there would just be
+// noise); the write belongs in DefineWorkflowForFirm, the HTTP-reachable,
+// owner-gated caller, once IsMember/IsOwner have already been checked.
+const workflowDefinitionEntityType = "workflow_definition"
+const defineWorkflowAuditAction = "create"
+
 // payloadDateLayout is the layout validatePayload parses a FieldTypeDate
 // value against - a plain calendar date (no time-of-day, no timezone),
 // matching an HTML <input type="date"> value verbatim (CreateInstanceForm
@@ -355,8 +372,17 @@ func DefineWorkflowForFirm(ctx context.Context, pool *pgxpool.Pool, firmID, user
 		}
 
 		id, err := DefineWorkflowTx(ctx, tx, firmID, granteeRoleID, spec)
+		if err != nil {
+			return err
+		}
 		definitionID = id
-		return err
+
+		changes := map[string]any{
+			"key":                 spec.Key,
+			"name":                spec.Name,
+			"createPermissionKey": spec.CreatePermission.Key,
+		}
+		return auditlog.Write(ctx, tx, firmID, userID, definitionID, workflowDefinitionEntityType, defineWorkflowAuditAction, changes)
 	})
 	if err != nil {
 		return uuid.UUID{}, err
