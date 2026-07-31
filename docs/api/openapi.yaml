@@ -820,6 +820,36 @@ paths:
         "403": { description: Caller is a member of firmID but does not hold audit.log.read }
         "404": { description: Caller isn't a member of firmID at all }
 
+  /api/platform-admin/firms:
+    get:
+      summary: Read-only firm metadata across every firm (ZonaryOS platform staff only)
+      description: >
+        internal/platformadmin - a narrow, cross-firm read distinct from
+        every other endpoint in this API (which are all scoped to one
+        firm the caller belongs to). Gated by a hardcoded,
+        env-var-driven allowlist of platform-operator staff emails
+        (internal/platformadmin.Allowlist), checked against the caller's
+        already-verified Keycloak identity - not firm membership or any
+        role/permission grant. Returns only firm name, created_at, a
+        workflow-definition count, and a member count per firm - never
+        tenant business data. Every access is logged into each returned
+        firm's own audit_log (action "platform_admin_metadata_view").
+        A non-allowlisted (but otherwise authenticated) caller gets 404,
+        not 403 - this endpoint is designed to look like it doesn't exist
+        to anyone off the allowlist, matching the frontend route's
+        next/navigation notFound() behavior at /platform-admin.
+      responses:
+        "200":
+          description: Firm metadata for every firm in the system
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PlatformAdminFirm"
+        "401": { description: Missing or invalid bearer token }
+        "404": { description: Caller is authenticated but not on the platform-admin allowlist }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -1162,3 +1192,24 @@ components:
           type: string
           format: date-time
       required: [id, entityType, entityId, action, changes, userId, userEmail, userDisplayName, occurredAt]
+
+    PlatformAdminFirm:
+      type: object
+      description: >
+        The entire metadata surface internal/platformadmin exposes about
+        one firm - nothing beyond these five fields (see that package's
+        doc comment on the tenant-data boundary).
+      properties:
+        firmId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        workflowDefinitionCount:
+          type: integer
+        memberCount:
+          type: integer
+      required: [firmId, name, createdAt, workflowDefinitionCount, memberCount]

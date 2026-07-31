@@ -232,5 +232,14 @@
     "columnEmail": "Email",
     "columnRole": "Role",
     "onlyMemberNote": "You're the only member of this firm so far - inviting others isn't available yet."
+  },
+  "PlatformAdmin": {
+    "title": "Platform Admin",
+    "description": "Read-only firm metadata across every firm on this ZonaryOS deployment. Visible only to ZonaryOS platform staff.",
+    "empty": "No firms yet.",
+    "columnName": "Firm name",
+    "columnCreatedAt": "Created",
+    "columnWorkflowDefinitionCount": "Workflow definitions",
+    "columnMemberCount": "Members"
   }
 }

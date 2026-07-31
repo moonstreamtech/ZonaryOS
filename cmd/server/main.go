@@ -19,6 +19,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/config"
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/db"
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/httpapi"
+	"github.com/moonstreamtech/ZonaryOS/internal/platformadmin"
 	"github.com/moonstreamtech/ZonaryOS/internal/wizard"
 	"github.com/moonstreamtech/ZonaryOS/internal/workflow"
 )
@@ -51,6 +52,7 @@ func main() {
 	permission.RegisterRoutes(mux, verifier, pool, broadcaster)
 	auditlog.RegisterRoutes(mux, verifier, pool)
 	firm.RegisterRoutes(mux, verifier, pool)
+	platformadmin.RegisterRoutes(mux, verifier, pool, platformadmin.NewAllowlist(cfg.PlatformAdminEmails))
 
 	// An explicit http.Server (not the bare http.ListenAndServe function)
 	// so ReadHeaderTimeout can be set - a slowloris mitigation (CI
