@@ -826,11 +826,10 @@ paths:
         roster), not owner-only like permission-audit/permission-catalog
         above - "who's on my team and what's their role" isn't treated as
         owner-only sensitive information in this codebase, the same
-        visibility level as the generic workflow instance list. With no
-        invite/email flow yet (docs/OPEN_POINTS.md item 17, still
-        deferred), this will only ever return the one row for whoever ran
-        the firm-creation wizard today - forward-compatible groundwork,
-        not a claim that onboarding a second user already works. A user
+        visibility level as the generic workflow instance list. See
+        /api/firms/{firmID}/invites below for how a second real user now
+        gets into a firm (Open Points item 17's email integration itself
+        stays deferred - this is a shareable link, never an email). A user
         holding more than one role in the same firm (user_firm_roles
         allows this) appears once per (user, role) pairing, not collapsed
         into a single row.
@@ -851,6 +850,163 @@ paths:
         "400": { description: Invalid firmID }
         "401": { description: Missing or invalid bearer token }
         "404": { description: Caller is not a member of firmID at all }
+
+  /api/firms/{firmID}/invites:
+    post:
+      summary: Generate a new invite link for the firm (owner-only)
+      description: >
+        Open Points item 17's companion gap ("no way to get a second real
+        user into a firm") resolved without any email infrastructure -
+        item 17 itself (email integration) stays fully deferred. Returns
+        an opaque, unguessable token (see internal/invite.generateToken);
+        the frontend builds a shareable link out of it
+        (/invite/{token}, a public Next.js route) that the owner copies
+        and shares by whatever channel they already use. roleID must
+        belong to firmID - a role ID from a different firm is
+        structurally invisible to this endpoint's own RLS-scoped query
+        (roles.roles_tenant_isolation, migrations/0001_core_schema.up.sql),
+        not merely application-checked, so it is rejected the same way a
+        genuinely nonexistent role ID would be (400). Expires
+        DefaultExpiry (7 days) from creation; not configurable per-invite.
+      parameters:
+        - name: firmID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                roleId: { type: string, format: uuid }
+              required: [roleId]
+      responses:
+        "201":
+          description: The new invite, including its one-time-visible token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Invite"
+        "400": { description: Invalid firmID/roleID, malformed body, or roleID doesn't belong to firmID }
+        "401": { description: Missing or invalid bearer token }
+        "403": { description: Caller is a member of firmID but not an owner }
+        "404": { description: Caller isn't a member of firmID at all }
+    get:
+      summary: List every invite this firm has ever generated (owner-only)
+      description: >
+        Most recent first. The token itself is never included here -
+        only the POST response above ever carries it, since the owner is
+        expected to have already copied the link out at creation time.
+      parameters:
+        - name: firmID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: This firm's invites
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Invite"
+        "400": { description: Invalid firmID }
+        "401": { description: Missing or invalid bearer token }
+        "403": { description: Caller is a member of firmID but not an owner }
+        "404": { description: Caller isn't a member of firmID at all }
+
+  /api/firms/{firmID}/invites/{inviteID}/revoke:
+    post:
+      summary: Revoke a pending invite (owner-only)
+      description: >
+        Marks the invite revoked - the row is never deleted, matching
+        this codebase's general soft-state preference (e.g.
+        internal/permission.DeleteRole's own precedent), so a revoked
+        invite stays visible in GET .../invites as its own record of what
+        was revoked and by/when. Only a currently-pending invite can be
+        revoked (409 otherwise - already used or already revoked).
+      parameters:
+        - name: firmID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: inviteID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: Revoked }
+        "400": { description: Invalid IDs }
+        "401": { description: Missing or invalid bearer token }
+        "403": { description: Caller is a member of firmID but not an owner }
+        "404": { description: Caller isn't a member of firmID, or the invite doesn't exist in it }
+        "409": { description: The invite is already used or already revoked }
+
+  /api/invites/{token}:
+    get:
+      summary: Look up an invite by its token (public - no bearer token)
+      description: >
+        Genuinely public: the whole point is to let an unauthenticated
+        visitor see what they were invited to (firm name, role name)
+        before they sign in at all - see internal/invite's package doc
+        comment and migrations/0007_firm_invites.up.sql's RLS read
+        carve-out (app_current_invite_token()). A token that never
+        existed at all is 404; every other non-happy-path (used, revoked,
+        pending-but-expired) is a successful 200 response whose body
+        describes exactly which one, so the frontend can show a specific,
+        correct message instead of one generic error.
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The invite's current state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InviteInfo"
+        "404": { description: No invite exists for this token at all }
+
+  /api/invites/{token}/accept:
+    post:
+      summary: Accept an invite, granting the caller its role in its firm
+      description: >
+        Requires a valid bearer token (some authenticated ZonaryOS
+        identity to grant the role to) but deliberately NOT firm
+        membership - this is the one endpoint in this system that must
+        work for a caller who is not yet a member of the target firm at
+        all; the firm itself is derived entirely from the token, never
+        supplied by the caller. Single-use: a second accept attempt on an
+        already-used token fails with 409. Re-accepting the exact same
+        role you already hold (e.g. a duplicate click) is a harmless
+        no-op for the membership row, but the invite is still marked used
+        either way.
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The firm/role the caller was just granted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  firmId: { type: string, format: uuid }
+                  roleId: { type: string, format: uuid }
+                  roleName: { type: string }
+                required: [firmId, roleId, roleName]
+        "400": { description: Invalid/empty token }
+        "401": { description: Missing or invalid bearer token }
+        "404": { description: No invite exists for this token at all }
+        "409": { description: The invite has already been used, or has been revoked }
+        "410": { description: The invite has expired }
 
   /api/firms/{firmID}/audit-log:
     get:
@@ -1331,6 +1487,66 @@ components:
         roleName:
           type: string
       required: [userId, email, displayName, roleId, roleKey, roleName]
+    Invite:
+      type: object
+      description: >
+        One firm_invites row (migrations/0007_firm_invites.up.sql), as
+        returned by POST/GET .../invites. token is only ever present on
+        the POST response, right after creation - GET .../invites never
+        re-serializes it.
+      properties:
+        inviteId:
+          type: string
+          format: uuid
+        roleId:
+          type: string
+          format: uuid
+        roleName:
+          type: string
+        token:
+          type: string
+          description: Only present on the POST (create) response.
+        status:
+          type: string
+          enum: [pending, used, revoked]
+        expired:
+          type: boolean
+          description: >
+            True when status is still "pending" but expiresAt has
+            passed - expiry is derived at read time, never persisted as
+            its own status value.
+        expiresAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        usedAt:
+          type: string
+          format: date-time
+      required: [inviteId, roleId, roleName, status, expired, expiresAt, createdAt]
+    InviteInfo:
+      type: object
+      description: >
+        What GET /api/invites/{token} returns - enough for the public
+        /invite/{token} page to render "You've been invited to join
+        <firmName> as <roleName>" or a specific reason it can't be
+        accepted, with no firm context or authentication required from
+        the caller.
+      properties:
+        firmName:
+          type: string
+        roleName:
+          type: string
+        status:
+          type: string
+          enum: [pending, used, revoked]
+        expired:
+          type: boolean
+        expiresAt:
+          type: string
+          format: date-time
+      required: [firmName, roleName, status, expired, expiresAt]
     AuditLogEntry:
       type: object
       properties:

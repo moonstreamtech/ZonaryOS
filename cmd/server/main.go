@@ -15,6 +15,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
 	"github.com/moonstreamtech/ZonaryOS/internal/firm"
 	"github.com/moonstreamtech/ZonaryOS/internal/identity"
+	"github.com/moonstreamtech/ZonaryOS/internal/invite"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/config"
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/db"
@@ -52,6 +53,7 @@ func main() {
 	permission.RegisterRoutes(mux, verifier, pool, broadcaster)
 	auditlog.RegisterRoutes(mux, verifier, pool)
 	firm.RegisterRoutes(mux, verifier, pool)
+	invite.RegisterRoutes(mux, verifier, pool)
 	platformadmin.RegisterRoutes(mux, verifier, pool, platformadmin.NewAllowlist(cfg.PlatformAdminEmails))
 
 	// An explicit http.Server (not the bare http.ListenAndServe function)

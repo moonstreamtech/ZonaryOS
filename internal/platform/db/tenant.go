@@ -42,6 +42,42 @@ func WithUserContext(ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID, 
 	return withSessionContext(ctx, pool, "app.current_user_id", userID, fn)
 }
 
+// WithInviteTokenContext runs fn inside a transaction scoped to token via
+// the `app.current_invite_token` session setting - the read-side RLS
+// carve-out migrations/0007_firm_invites.up.sql adds to firm_invites,
+// mirroring WithUserContext's own bootstrap reasoning: it lets a caller
+// look up their own invite (by the unguessable token they were given, the
+// caller's real credential here) before any firm_id is known at all,
+// exactly the chicken-and-egg gap WithUserContext solves for firm
+// discovery. Only firm_invites' policy consults this setting - every
+// other tenant-scoped table's isolation is untouched. Write access to
+// firm_invites is NOT widened the same way (see that migration's WITH
+// CHECK clause): a caller inside this transaction can still only
+// INSERT/UPDATE firm_invites once it has also set app.current_firm_id
+// itself, the same manual two-step sequencing internal/wizard.CreateDefaultFirm
+// uses once its own firmID becomes known mid-transaction - see
+// internal/invite.Accept for exactly that sequencing on this table.
+func WithInviteTokenContext(ctx context.Context, pool *pgxpool.Pool, token string, fn func(ctx context.Context, tx pgx.Tx) error) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.current_invite_token', $1, true)", token); err != nil {
+		return fmt.Errorf("set app.current_invite_token: %w", err)
+	}
+
+	if err := fn(ctx, tx); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+	return nil
+}
+
 // withSessionContext sets the given Postgres session setting to id.String()
 // for the lifetime of one transaction, then runs fn. set_config(..., true)
 // (equivalent to `SET LOCAL`) is used instead of string-interpolating a SQL
