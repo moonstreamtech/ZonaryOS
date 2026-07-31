@@ -1,0 +1,16 @@
+-- Open Points item 35 (Workflow Instance Payload Schema): an OPTIONAL,
+-- per-definition schema for what fields a workflow instance's payload is
+-- expected to have (name, type, required/optional - see
+-- internal/workflow/spec.go's FieldSpec). Additive-only, per this
+-- migration's own conventions and Never-Violate Rule 6: a single new
+-- nullable column on the existing workflow_definitions table, not a new
+-- table and not a change to any existing column. NULL means "no schema" -
+-- exactly the state every row this table already has (stock_to_sale,
+-- customer_pipeline, and anything else defined before this migration ran)
+-- is left in after this migration applies, so CreateInstance's payload
+-- validation (internal/workflow/engine.go) never activates for a single
+-- existing definition. No backfill, no data migration - item 35's
+-- question 4 ("what happens to existing instances") is answered by this
+-- column being schema-optional from day one, not by touching any existing
+-- row.
+ALTER TABLE workflow_definitions ADD COLUMN payload_schema jsonb;

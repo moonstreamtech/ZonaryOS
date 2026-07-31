@@ -116,7 +116,7 @@ func writeEngineError(w http.ResponseWriter, err error) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 	case errors.Is(err, ErrPermissionDenied):
 		http.Error(w, err.Error(), http.StatusForbidden)
-	case errors.Is(err, ErrNoSuchTransition), errors.Is(err, ErrInvalidSpec):
+	case errors.Is(err, ErrNoSuchTransition), errors.Is(err, ErrInvalidSpec), errors.Is(err, ErrPayloadValidation):
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	case errors.Is(err, ErrDefinitionKeyExists):
 		http.Error(w, err.Error(), http.StatusConflict)
@@ -125,11 +125,36 @@ func writeEngineError(w http.ResponseWriter, err error) {
 	}
 }
 
+// fieldSpecResponse is FieldSpec's (spec.go) JSON wire shape - included on
+// definitionInfoResponse so a frontend resolving a definition (e.g.
+// CreateInstanceForm) can render typed fields when a schema is present,
+// without a second round trip. Omitted entirely (via omitempty) for a
+// schema-less definition, so an existing API consumer that doesn't know
+// about item 35 sees no new field at all on stock_to_sale/
+// customer_pipeline's responses - purely additive, Never-Violate Rule 6.
+type fieldSpecResponse struct {
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	Required bool   `json:"required"`
+}
+
+func toFieldSpecResponses(fields []FieldSpec) []fieldSpecResponse {
+	if len(fields) == 0 {
+		return nil
+	}
+	resp := make([]fieldSpecResponse, 0, len(fields))
+	for _, f := range fields {
+		resp = append(resp, fieldSpecResponse{Name: f.Name, Type: string(f.Type), Required: f.Required})
+	}
+	return resp
+}
+
 type definitionInfoResponse struct {
-	DefinitionID        string `json:"definitionId"`
-	Key                 string `json:"key"`
-	Name                string `json:"name"`
-	CreatePermissionKey string `json:"createPermissionKey"`
+	DefinitionID        string              `json:"definitionId"`
+	Key                 string              `json:"key"`
+	Name                string              `json:"name"`
+	CreatePermissionKey string              `json:"createPermissionKey"`
+	Fields              []fieldSpecResponse `json:"fields,omitempty"`
 }
 
 func toDefinitionInfoResponse(info DefinitionInfo) definitionInfoResponse {
@@ -138,6 +163,7 @@ func toDefinitionInfoResponse(info DefinitionInfo) definitionInfoResponse {
 		Key:                 info.Key,
 		Name:                info.Name,
 		CreatePermissionKey: info.CreatePermissionKey,
+		Fields:              toFieldSpecResponses(info.Fields),
 	}
 }
 
@@ -295,6 +321,21 @@ type defineTransitionRequest struct {
 	Permission   definePermissionRequest `json:"permission"`
 }
 
+// defineFieldRequest is FieldSpec's (spec.go) JSON wire shape for the
+// request side - mirrors fieldSpecResponse's shape (this file's response
+// side) so the wire format round-trips, but stays a separate type the
+// same way defineStateRequest/StateSpec stay separate from
+// stateInfoResponse/StateInfo elsewhere in this file. Omitting `fields`
+// entirely from the request body (or sending an empty array) is exactly
+// DefinitionSpec.Fields' own "nil/empty means no schema" contract -
+// nothing about this field is required for handleDefineWorkflow's caller
+// to keep working exactly as before item 35.
+type defineFieldRequest struct {
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	Required bool   `json:"required"`
+}
+
 // defineWorkflowRequest is DefinitionSpec's JSON wire shape (see spec.go)
 // - a 1:1 mapping, not a reduced/simplified one, since the whole point of
 // this endpoint is to let a firm's owner define exactly the same kind of
@@ -305,6 +346,10 @@ type defineWorkflowRequest struct {
 	CreatePermission definePermissionRequest   `json:"createPermission"`
 	States           []defineStateRequest      `json:"states"`
 	Transitions      []defineTransitionRequest `json:"transitions"`
+	// Fields is OPTIONAL (Open Points item 35) - an owner defining a new
+	// workflow via DefinitionBuilder.tsx who never adds a field here gets
+	// exactly today's freeform-payload workflow, unchanged.
+	Fields []defineFieldRequest `json:"fields"`
 }
 
 // handleDefineWorkflow lets a firm's owner define a new workflow (item 1
@@ -369,6 +414,14 @@ func handleDefineWorkflow(pool *pgxpool.Pool) http.HandlerFunc {
 				},
 			})
 		}
+		if len(req.Fields) > 0 {
+			spec.Fields = make([]FieldSpec, 0, len(req.Fields))
+			for _, f := range req.Fields {
+				spec.Fields = append(spec.Fields, FieldSpec{
+					Name: f.Name, Type: FieldType(f.Type), Required: f.Required,
+				})
+			}
+		}
 
 		definitionID, err := DefineWorkflowForFirm(r.Context(), pool, firmID, userID, spec)
 		if err != nil {
@@ -383,6 +436,7 @@ func handleDefineWorkflow(pool *pgxpool.Pool) http.HandlerFunc {
 			Key:                 spec.Key,
 			Name:                spec.Name,
 			CreatePermissionKey: spec.CreatePermission.Key,
+			Fields:              spec.Fields,
 		}))
 	}
 }

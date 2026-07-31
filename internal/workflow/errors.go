@@ -38,4 +38,14 @@ var (
 	// migrations/0003_workflow_engine.up.sql) - including the well-known
 	// keys this codebase itself seeds (e.g. "stock_to_sale").
 	ErrDefinitionKeyExists = errors.New("a workflow definition with this key already exists for this firm")
+
+	// ErrPayloadValidation means a CreateInstance payload was rejected
+	// against its definition's OPTIONAL payload schema (Open Points item
+	// 35, spec.go's DefinitionSpec.Fields) - a required field was missing,
+	// or a present field's value didn't match its declared FieldType. Only
+	// ever returned for a definition that actually has a schema; a
+	// schema-less definition (nil/empty Fields, e.g. StockToSaleSpec/
+	// CustomerPipelineSpec today) never produces this error - see
+	// CreateInstance's own doc comment.
+	ErrPayloadValidation = errors.New("workflow instance payload failed schema validation")
 )

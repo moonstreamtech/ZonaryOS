@@ -160,16 +160,58 @@ type Entry struct {
 	OccurredAt      time.Time
 }
 
-// List returns every audit_log row for firmID, most recent first, gated by
+// ListOptions controls paging and filtering for List - same shape as
+// internal/workflow.ListInstancesOptions (limit/offset paging, the zero
+// value returns every entry unfiltered/unpaged, exactly List's original
+// behavior), reused here rather than inventing a new pagination shape
+// (Open Points item 36's sibling task, filed together).
+type ListOptions struct {
+	// Limit caps how many entries are returned. 0 means unlimited.
+	Limit int
+	// Offset skips this many entries (after filtering). Ignored when
+	// Limit is 0.
+	Offset int
+	// From/To, when non-nil, keep only entries with occurred_at >= *From
+	// and/or occurred_at <= *To - a plain inclusive date-range filter on
+	// the one timestamp every audit_log row actually has. nil means that
+	// bound isn't applied at all (as opposed to the zero time.Time,
+	// which would wrongly exclude everything before year 1).
+	From *time.Time
+	To   *time.Time
+	// DefinitionID, when non-nil, keeps only entries that resolve back to
+	// this workflow definition: rows whose entity_type is
+	// "workflow_instance" and whose entity_id is an instance of this
+	// definition (joined through workflow_instances.workflow_definition_id
+	// below). audit_log has no workflow_definition_id column of its own -
+	// this is the honest, practical way to filter by definition given
+	// Entry's real fields (entity_type/entity_id), not a fabricated
+	// filter: a firm-rename or permission-grant entry never matches any
+	// DefinitionID, which is correct, since those entries don't relate to
+	// any workflow definition at all.
+	DefinitionID *uuid.UUID
+}
+
+// ListResult is List's return shape: the (possibly paged/filtered)
+// entries themselves, plus Total - the count that would match the
+// filters with no Limit/Offset applied, mirroring
+// internal/workflow.ListInstancesResult.
+type ListResult struct {
+	Entries []Entry
+	Total   int
+}
+
+// List returns audit_log rows for firmID, most recent first, gated by
 // ReadPermission - not IsOwner - so this naturally extends to a future
 // Auditor Role (see ReadPermission's doc comment). IsMember is still
 // checked first, same discipline as every other firm-scoped read in this
 // codebase (docs/DEVELOPMENT.md's Authorization checklist): WithFirmContext's
 // RLS scoping alone only confines the query to rows whose firm_id matches
 // whatever firmID the caller passed in, it does not prove the caller
-// belongs to that firm at all.
-func List(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.UUID) ([]Entry, error) {
-	var results []Entry
+// belongs to that firm at all. opts controls paging/date-range/definition
+// filtering - see ListOptions; the zero value returns every entry, same
+// as this function's original unpaged behavior.
+func List(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.UUID, opts ListOptions) (ListResult, error) {
+	var result ListResult
 
 	err := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
 		isMember, err := permission.IsMember(ctx, tx, firmID, userID)
@@ -188,36 +230,54 @@ func List(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.UUID) ([]
 			return ErrPermissionDenied
 		}
 
+		// LEFT JOIN workflow_instances so a DefinitionID filter can match
+		// entity_type='workflow_instance' rows back to the definition
+		// they belong to, without dropping every other entity_type from
+		// the result set when DefinitionID isn't set ($4::uuid IS NULL
+		// short-circuits the join condition to true for every row when no
+		// definition filter was requested). $2/$3 IS NULL likewise makes
+		// an unset From/To bound match every row instead of wrongly
+		// excluding everything.
 		rows, err := tx.Query(ctx, `
 			SELECT al.id, al.entity_type, al.entity_id, al.action, al.changes,
-				al.user_id, u.email, u.display_name, al.occurred_at
+				al.user_id, u.email, u.display_name, al.occurred_at, COUNT(*) OVER()
 			FROM audit_log al
 			JOIN users u ON u.id = al.user_id
+			LEFT JOIN workflow_instances wi
+				ON al.entity_type = 'workflow_instance' AND al.entity_id = wi.id
 			WHERE al.firm_id = $1
+			  AND ($2::timestamptz IS NULL OR al.occurred_at >= $2)
+			  AND ($3::timestamptz IS NULL OR al.occurred_at <= $3)
+			  AND ($4::uuid IS NULL OR wi.workflow_definition_id = $4)
 			ORDER BY al.occurred_at DESC
-		`, firmID)
+			LIMIT NULLIF($5, 0) OFFSET $6
+		`, firmID, opts.From, opts.To, opts.DefinitionID, opts.Limit, opts.Offset)
 		if err != nil {
 			return fmt.Errorf("list audit log: %w", err)
 		}
 		defer rows.Close()
+		var entries []Entry
 		for rows.Next() {
 			var e Entry
 			var changesJSON []byte
+			var total int
 			if err := rows.Scan(
 				&e.ID, &e.EntityType, &e.EntityID, &e.Action, &changesJSON,
-				&e.UserID, &e.UserEmail, &e.UserDisplayName, &e.OccurredAt,
+				&e.UserID, &e.UserEmail, &e.UserDisplayName, &e.OccurredAt, &total,
 			); err != nil {
 				return err
 			}
 			if err := json.Unmarshal(changesJSON, &e.Changes); err != nil {
 				return fmt.Errorf("unmarshal audit changes: %w", err)
 			}
-			results = append(results, e)
+			entries = append(entries, e)
+			result.Total = total
 		}
+		result.Entries = entries
 		return rows.Err()
 	})
 	if err != nil {
-		return nil, err
+		return ListResult{}, err
 	}
-	return results, nil
+	return result, nil
 }

@@ -76,9 +76,11 @@ export default function QuickCreatePanel({ firmId, definitions }: Props) {
 
           {selected && (
             <CreateInstanceForm
+              key={selected.definitionId}
               firmId={firmId}
               definitionId={selected.definitionId}
               createPermissionKey={selected.createPermissionKey}
+              fields={selected.fields}
             />
           )}
         </div>

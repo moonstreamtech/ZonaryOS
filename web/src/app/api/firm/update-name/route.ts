@@ -4,12 +4,16 @@
 // docs/OPEN_POINTS.md item 20).
 
 import { NextRequest, NextResponse } from "next/server";
-import { updateFirmName } from "@/lib/firm";
+import { updateFirm } from "@/lib/firm";
 
-// Proxies the Go backend's PATCH /api/firms/{firmId} (item 4) - the
-// settings page's firm-name editor. No authorization decision is made
-// here: internal/firm.UpdateName is the sole place that checks the
-// caller is an owner.
+// Proxies the Go backend's PATCH /api/firms/{firmId} - item 4's original
+// name-only mutation, extended by Open Points item 36 to also forward the
+// five optional broader-metadata fields the settings page now edits. No
+// authorization decision is made here: internal/firm.Update is the sole
+// place that checks the caller is an owner. Kept at this same route
+// (rather than a new one) since it's the same PATCH, just carrying more
+// optional fields now - see internal/firm's own doc comment for why this
+// stays one endpoint.
 export async function PATCH(request: NextRequest) {
   const token = request.cookies.get("zonaryos_session")?.value;
   if (!token) {
@@ -19,12 +23,30 @@ export async function PATCH(request: NextRequest) {
   const body = (await request.json().catch(() => ({}))) as {
     firmId?: string;
     name?: string;
+    address?: string;
+    taxId?: string;
+    defaultLocale?: string;
+    defaultCurrency?: string;
+    logoUrl?: string;
   };
   if (!body.firmId || !body.name) {
     return NextResponse.json({ error: "missing firmId or name" }, { status: 400 });
   }
 
-  const result = await updateFirmName(token, body.firmId, body.name);
+  const fields: {
+    address?: string;
+    taxId?: string;
+    defaultLocale?: string;
+    defaultCurrency?: string;
+    logoUrl?: string;
+  } = {};
+  if (body.address !== undefined) fields.address = body.address;
+  if (body.taxId !== undefined) fields.taxId = body.taxId;
+  if (body.defaultLocale !== undefined) fields.defaultLocale = body.defaultLocale;
+  if (body.defaultCurrency !== undefined) fields.defaultCurrency = body.defaultCurrency;
+  if (body.logoUrl !== undefined) fields.logoUrl = body.logoUrl;
+
+  const result = await updateFirm(token, body.firmId, body.name, fields);
   if (!result.ok) {
     return NextResponse.json(
       { error: result.error },
@@ -32,5 +54,5 @@ export async function PATCH(request: NextRequest) {
     );
   }
 
-  return NextResponse.json({ name: result.name });
+  return NextResponse.json(result.metadata);
 }

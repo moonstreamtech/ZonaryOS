@@ -51,3 +51,59 @@ export async function fetchAuditLog(
     return null;
   }
 }
+
+export type AuditLogPage = {
+  entries: AuditLogEntry[];
+  total: number;
+};
+
+export type FetchAuditLogPageOptions = {
+  limit: number;
+  offset: number;
+  // RFC3339 timestamps - forwarded to the backend's ?from=/?to= exactly
+  // as given (see internal/auditlog.parseListOptions).
+  from?: string;
+  to?: string;
+  definitionId?: string;
+};
+
+/**
+ * Calls the Go backend's `GET .../audit-log` with `?limit=`/`?offset=`/
+ * `?from=`/`?to=`/`?definitionId=` - the paged, filterable read path the
+ * /audit-log page needs, as opposed to fetchAuditLog above (still
+ * unpaginated, used by WorkflowHistory's own correlation lookup, which
+ * wants every entry as a fallback, not just the current page's - same
+ * split as lib/workflow.ts's fetchInstances/fetchInstancesPage). The
+ * backend reports the filtered-but-unpaged total via the `X-Total-Count`
+ * response header rather than changing the array body shape (see
+ * internal/auditlog's handleList doc comment) - read here to compute
+ * page count. Returns null on failure, same convention as fetchAuditLog.
+ */
+export async function fetchAuditLogPage(
+  token: string,
+  firmId: string,
+  opts: FetchAuditLogPageOptions,
+): Promise<AuditLogPage | null> {
+  try {
+    const params = new URLSearchParams({
+      limit: String(opts.limit),
+      offset: String(opts.offset),
+    });
+    if (opts.from) params.set("from", opts.from);
+    if (opts.to) params.set("to", opts.to);
+    if (opts.definitionId) params.set("definitionId", opts.definitionId);
+    const res = await fetch(
+      `${apiBase()}/api/firms/${encodeURIComponent(firmId)}/audit-log?${params.toString()}`,
+      {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      },
+    );
+    if (!res.ok) return null;
+    const entries = (await res.json()) as AuditLogEntry[];
+    const total = Number(res.headers.get("X-Total-Count") ?? entries.length);
+    return { entries, total: Number.isFinite(total) ? total : entries.length };
+  } catch {
+    return null;
+  }
+}

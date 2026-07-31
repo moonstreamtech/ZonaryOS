@@ -10,9 +10,11 @@ import { useTranslations } from "next-intl";
 import type { DefinitionSpecInput } from "@/lib/workflow";
 import {
   validateBuilderSpec,
+  type BuilderFieldRow,
   type BuilderStateRow,
   type BuilderTransitionRow,
   type BuilderValidationError,
+  type FieldTypeValue,
 } from "./builderValidation";
 
 type Props = {
@@ -33,6 +35,9 @@ function emptyTransition(): BuilderTransitionRow {
     permissionKey: "",
     permissionDescription: "",
   };
+}
+function emptyField(): BuilderFieldRow {
+  return { id: nextRowId++, name: "", type: "string", required: false };
 }
 
 // Item 1's frontend half: lets a firm's owner actually use the workflow
@@ -65,6 +70,11 @@ export default function DefinitionBuilder({ firmId }: Props) {
   const [createPermissionDescription, setCreatePermissionDescription] = useState("");
   const [states, setStates] = useState<BuilderStateRow[]>([emptyState()]);
   const [transitions, setTransitions] = useState<BuilderTransitionRow[]>([]);
+  // Starts empty - Open Points item 35's schema step is genuinely
+  // optional: an owner who never clicks "add payload field" submits
+  // exactly the same request this form always sent, no new required
+  // section in their way.
+  const [fields, setFields] = useState<BuilderFieldRow[]>([]);
   const [errors, setErrors] = useState<BuilderValidationError[]>([]);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -82,6 +92,12 @@ export default function DefinitionBuilder({ firmId }: Props) {
   }
   function removeTransition(id: number) {
     setTransitions((prev) => prev.filter((tr) => tr.id !== id));
+  }
+  function updateField(id: number, patch: Partial<BuilderFieldRow>) {
+    setFields((prev) => prev.map((f) => (f.id === id ? { ...f, ...patch } : f)));
+  }
+  function removeField(id: number) {
+    setFields((prev) => prev.filter((f) => f.id !== id));
   }
 
   function errorMessage(error: BuilderValidationError): string {
@@ -113,6 +129,10 @@ export default function DefinitionBuilder({ firmId }: Props) {
           fromStateKey: error.fromStateKey,
           actionKey: error.actionKey,
         });
+      case "fieldNameRequired":
+        return t("builderErrorFieldNameRequired");
+      case "duplicateFieldName":
+        return t("builderErrorDuplicateFieldName", { name: error.name });
     }
   }
 
@@ -127,6 +147,7 @@ export default function DefinitionBuilder({ firmId }: Props) {
       createPermissionDescription,
       states,
       transitions,
+      fields,
     };
     const validationErrors = validateBuilderSpec(spec);
     setErrors(validationErrors);
@@ -149,6 +170,19 @@ export default function DefinitionBuilder({ firmId }: Props) {
         name: tr.name,
         permission: { key: tr.permissionKey, description: tr.permissionDescription },
       })),
+      // Omitted entirely when empty (rather than sent as `[]`) so a
+      // definition built with no payload fields round-trips as "no
+      // schema" the same way DefinitionSpec.Fields' own nil/empty
+      // contract works Go-side - see lib/workflow.ts's DefinitionSpecInput.
+      ...(fields.length > 0
+        ? {
+            fields: fields.map((f) => ({
+              name: f.name,
+              type: f.type,
+              required: f.required,
+            })),
+          }
+        : {}),
     };
 
     setSubmitting(true);
@@ -175,6 +209,7 @@ export default function DefinitionBuilder({ firmId }: Props) {
       setCreatePermissionDescription("");
       setStates([emptyState()]);
       setTransitions([]);
+      setFields([]);
       setErrors([]);
       router.refresh();
     } catch {
@@ -377,6 +412,61 @@ export default function DefinitionBuilder({ firmId }: Props) {
           className="self-start text-xs font-medium text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
         >
           {t("builderAddTransitionButton")}
+        </button>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <h3 className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
+          {t("builderFieldsTitle")}
+        </h3>
+        <p className="text-xs text-zinc-500 dark:text-zinc-500">{t("builderFieldsHint")}</p>
+        {fields.map((f) => (
+          <div key={f.id} className="flex flex-wrap items-end gap-2 border-t border-zinc-100 pt-2 dark:border-zinc-900">
+            <Field label={t("builderFieldNameLabel")}>
+              <input
+                type="text"
+                value={f.name}
+                onChange={(e) => updateField(f.id, { name: e.target.value })}
+                className={inputClass}
+              />
+            </Field>
+            <Field label={t("builderFieldTypeLabel")}>
+              <select
+                value={f.type}
+                onChange={(e) => updateField(f.id, { type: e.target.value as FieldTypeValue })}
+                className={inputClass}
+              >
+                <option value="string">{t("builderFieldTypeString")}</option>
+                <option value="number">{t("builderFieldTypeNumber")}</option>
+                <option value="boolean">{t("builderFieldTypeBoolean")}</option>
+                <option value="date">{t("builderFieldTypeDate")}</option>
+              </select>
+            </Field>
+            <label className="flex items-center gap-1 pb-1.5 text-xs text-zinc-600 dark:text-zinc-400">
+              <input
+                type="checkbox"
+                checked={f.required}
+                onChange={(e) => updateField(f.id, { required: e.target.checked })}
+              />
+              {t("builderFieldRequired")}
+            </label>
+            <button
+              type="button"
+              data-permission-public="true"
+              onClick={() => removeField(f.id)}
+              className="rounded-md border border-zinc-300 px-2 py-1.5 text-xs text-zinc-600 dark:border-zinc-700 dark:text-zinc-400"
+            >
+              {t("removeFieldButton")}
+            </button>
+          </div>
+        ))}
+        <button
+          type="button"
+          data-permission-public="true"
+          onClick={() => setFields((prev) => [...prev, emptyField()])}
+          className="self-start text-xs font-medium text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
+        >
+          {t("builderAddFieldButton")}
         </button>
       </div>
 

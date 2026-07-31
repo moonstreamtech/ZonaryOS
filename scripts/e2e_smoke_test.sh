@@ -316,5 +316,89 @@ echo "$SEARCH_HTML" | grep -q "E2E Smoke Lead" \
     || fail "expected /search?q=E2E Smoke Lead to render the matching lead's payload"
 log "global search (UI path) confirmed"
 
+# --- Invites: self-registration -> invite -> accept, a second real user
+# --- joins the firm, with no email infrastructure of any kind -----------
+#
+# Proves the whole flow this batch added, curl-driven end to end - not a
+# headless browser (Playwright would be a further infra addition, same
+# scope boundary docs/DEVELOPMENT.md's E2E section already documents for
+# login above), but a real interactive registration form submission
+# against the real Keycloak server, same as the manual verification this
+# batch's own investigation already did once by hand (see
+# docs/DEVELOPMENT.md's "Invites" section).
+
+log "invites: creating a non-owner role to invite someone into"
+ROLE_RESPONSE=$(auth -X POST "$BACKEND_URL/api/firms/$FIRM_ID/roles" \
+    -H "Content-Type: application/json" -d '{"key":"e2e-invitee","name":"E2E Invitee"}')
+ROLE_ID=$(echo "$ROLE_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['roleId'])")
+[ -n "$ROLE_ID" ] || fail "did not get a roleId back from role creation: $ROLE_RESPONSE"
+
+log "invites: the owner generates an invite for that role"
+INVITE_RESPONSE=$(auth -X POST "$BACKEND_URL/api/firms/$FIRM_ID/invites" \
+    -H "Content-Type: application/json" -d "{\"roleId\":\"$ROLE_ID\"}")
+INVITE_TOKEN=$(echo "$INVITE_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['token'])")
+[ -n "$INVITE_TOKEN" ] || fail "did not get a token back from invite generation: $INVITE_RESPONSE"
+log "invite generated, link would be $FRONTEND_URL/en/invite/$INVITE_TOKEN"
+
+log "invites: the public, unauthenticated lookup endpoint resolves it"
+LOOKUP_RESPONSE=$(curl -sS "$BACKEND_URL/api/invites/$INVITE_TOKEN")
+echo "$LOOKUP_RESPONSE" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['status'] == 'pending' and not d['expired'], d
+" || fail "expected the freshly generated invite to look up as pending/unexpired: $LOOKUP_RESPONSE"
+
+log "self-registration: creating a second real Keycloak user through the interactive registration form"
+COOKIEJAR=$(mktemp)
+REG_HEADERS=$(mktemp)
+CODE_VERIFIER=$(python3 -c "import secrets, base64; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b'=').decode())")
+CODE_CHALLENGE=$(python3 -c "
+import hashlib, base64
+print(base64.urlsafe_b64encode(hashlib.sha256('$CODE_VERIFIER'.encode()).digest()).rstrip(b'=').decode())
+")
+INVITEE_EMAIL="e2e-invitee-$(date +%s)@example.com"
+INVITEE_PASSWORD="E2eInviteePass123!"
+
+REG_PAGE=$(curl -sS -c "$COOKIEJAR" "$KEYCLOAK_ISSUER_URL/protocol/openid-connect/registrations?client_id=$KEYCLOAK_CLIENT_ID&response_type=code&redirect_uri=$FRONTEND_URL/api/auth/callback&scope=openid&state=e2e-invite&code_challenge=$CODE_CHALLENGE&code_challenge_method=S256")
+REG_ACTION=$(echo "$REG_PAGE" | grep -o 'action="[^"]*"' | head -1 | sed 's/action="//; s/"$//; s/&amp;/\&/g')
+[ -n "$REG_ACTION" ] || fail "could not find the Keycloak registration form's action URL - is registrationAllowed still true in deploy/keycloak/zonaryos-realm.json?"
+
+curl -sS -b "$COOKIEJAR" -c "$COOKIEJAR" -o /dev/null -D "$REG_HEADERS" "$REG_ACTION" \
+    --data-urlencode "firstName=E2E" \
+    --data-urlencode "lastName=Invitee" \
+    --data-urlencode "email=$INVITEE_EMAIL" \
+    --data-urlencode "password=$INVITEE_PASSWORD" \
+    --data-urlencode "password-confirm=$INVITEE_PASSWORD"
+grep -qi '^location:.*code=' "$REG_HEADERS" || fail "self-registration did not redirect back with an authorization code (no email-verification interstitial expected, since verifyEmail is off): $(cat "$REG_HEADERS")"
+log "self-registration succeeded ($INVITEE_EMAIL), no email verification required"
+rm -f "$COOKIEJAR" "$REG_HEADERS"
+
+log "invitee login: obtaining a real token for the newly self-registered user via Direct Access Grant"
+INVITEE_TOKEN_RESPONSE=$(curl -sS -X POST "$KEYCLOAK_ISSUER_URL/protocol/openid-connect/token" \
+    -d "grant_type=password" -d "client_id=$KEYCLOAK_CLIENT_ID" \
+    -d "username=$INVITEE_EMAIL" -d "password=$INVITEE_PASSWORD")
+INVITEE_TOKEN=$(echo "$INVITEE_TOKEN_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin).get('access_token', ''))")
+[ -n "$INVITEE_TOKEN" ] || fail "did not receive an access_token for the self-registered invitee: $INVITEE_TOKEN_RESPONSE"
+
+log "accept: the invitee accepts the invite, with no prior membership in any firm"
+ACCEPT_RESPONSE=$(curl -sS -X POST -H "Authorization: Bearer $INVITEE_TOKEN" "$BACKEND_URL/api/invites/$INVITE_TOKEN/accept")
+echo "$ACCEPT_RESPONSE" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['firmId'] == '$FIRM_ID' and d['roleId'] == '$ROLE_ID', d
+" || fail "expected the accept response to report firmId=$FIRM_ID roleId=$ROLE_ID: $ACCEPT_RESPONSE"
+log "invite accepted: $INVITEE_EMAIL is now a member of $FIRM_ID as role $ROLE_ID"
+
+log "accept: confirming single-use enforcement - a second accept attempt on the same token is rejected"
+SECOND_ACCEPT_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $INVITEE_TOKEN" "$BACKEND_URL/api/invites/$INVITE_TOKEN/accept")
+[ "$SECOND_ACCEPT_STATUS" = "409" ] || fail "expected 409 (already used) on a second accept attempt, got $SECOND_ACCEPT_STATUS"
+log "single-use enforcement confirmed (second accept -> 409)"
+
+log "members: confirming the roster now shows two people"
+MEMBERS_RESPONSE=$(auth "$BACKEND_URL/api/firms/$FIRM_ID/members")
+MEMBER_COUNT=$(echo "$MEMBERS_RESPONSE" | python3 -c "import sys, json; print(len(json.load(sys.stdin)))")
+[ "$MEMBER_COUNT" = "2" ] || fail "expected 2 members after the invite was accepted, got $MEMBER_COUNT: $MEMBERS_RESPONSE"
+log "invites: full self-registration -> invite -> accept flow verified end-to-end ($MEMBER_COUNT members now in the firm)"
+
 echo ""
-echo "E2E SMOKE TEST PASSED: login + wizard -> firm creation -> add stock -> sell, plus UI-path add stock, firm switch, audit log view, a real second workflow defined + rendered through the generic UI, the Customer Pipeline default workflow walked lead -> qualified -> customer, the dashboard's counts-by-state overview, quick-create, and global search, all against a real stack"
+echo "E2E SMOKE TEST PASSED: login + wizard -> firm creation -> add stock -> sell, plus UI-path add stock, firm switch, audit log view, a real second workflow defined + rendered through the generic UI, the Customer Pipeline default workflow walked lead -> qualified -> customer, the dashboard's counts-by-state overview, quick-create, global search, and (new) a full self-registration -> invite -> accept flow bringing a second real user into the firm with no email infrastructure, all against a real stack"

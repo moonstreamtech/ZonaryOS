@@ -131,13 +131,13 @@ func TestList_ReportsWriteAndViewEntriesWithAttribution(t *testing.T) {
 		t.Fatalf("ListInstances: %v", err)
 	}
 
-	entries, err := auditlog.List(ctx, appPool, firm.FirmID, ownerUserID)
+	result, err := auditlog.List(ctx, appPool, firm.FirmID, ownerUserID, auditlog.ListOptions{})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
 
 	var sawFirmCreate, sawInstanceCreate, sawListView bool
-	for _, e := range entries {
+	for _, e := range result.Entries {
 		if e.UserID != ownerUserID {
 			t.Errorf("expected every entry attributed to %v, got %v on entity_type %q", ownerUserID, e.UserID, e.EntityType)
 		}
@@ -183,12 +183,12 @@ func TestList_CrossFirmIsolation(t *testing.T) {
 	// ownerB is a real owner of firm B, but not a member of firm A at all -
 	// supplying firm A's genuine ID must not distinguish "real firm I'm not
 	// in" from "unknown firm".
-	if _, err := auditlog.List(ctx, appPool, firmA.FirmID, ownerB); !errors.Is(err, auditlog.ErrFirmNotFound) {
+	if _, err := auditlog.List(ctx, appPool, firmA.FirmID, ownerB, auditlog.ListOptions{}); !errors.Is(err, auditlog.ErrFirmNotFound) {
 		t.Fatalf("expected ErrFirmNotFound, got: %v", err)
 	}
 
 	// Sanity: ownerB can read firm B's own log.
-	if _, err := auditlog.List(ctx, appPool, firmB.FirmID, ownerB); err != nil {
+	if _, err := auditlog.List(ctx, appPool, firmB.FirmID, ownerB, auditlog.ListOptions{}); err != nil {
 		t.Fatalf("expected firm B's owner to read firm B's own audit log, got: %v", err)
 	}
 }
@@ -208,7 +208,7 @@ func TestList_RequiresReadPermission(t *testing.T) {
 
 	salesUserID := seedRoleWithoutAuditAccess(ctx, t, adminPool, firm.FirmID, "sales-c")
 
-	if _, err := auditlog.List(ctx, appPool, firm.FirmID, salesUserID); !errors.Is(err, auditlog.ErrPermissionDenied) {
+	if _, err := auditlog.List(ctx, appPool, firm.FirmID, salesUserID, auditlog.ListOptions{}); !errors.Is(err, auditlog.ErrPermissionDenied) {
 		t.Fatalf("expected ErrPermissionDenied, got: %v", err)
 	}
 }
@@ -306,5 +306,234 @@ func TestPurgeOlderThan_DeletesOnlyRowsOlderThanCutoff(t *testing.T) {
 	}
 	if remainingRecent != 1 {
 		t.Errorf("expected the recent firm-creation row to survive purging, got %d", remainingRecent)
+	}
+}
+
+// secondDefinitionSpec is a second, structurally different workflow
+// definition (mirrors internal/workflow's own purchaseOrderSpec test
+// fixture) - used below purely so a firm has two distinct
+// workflow_definitions to prove the ?definitionId= filter actually
+// distinguishes between them, not just "narrows to workflow entries in
+// general".
+var secondDefinitionSpec = workflow.DefinitionSpec{
+	Key:  "purchase_order",
+	Name: "Purchase Order",
+	CreatePermission: workflow.PermissionSpec{
+		Key:         "purchase_order.create",
+		Description: "Create a purchase order",
+	},
+	States: []workflow.StateSpec{
+		{Key: "draft", Name: "Draft", IsInitial: true},
+		{Key: "approved", Name: "Approved", IsTerminal: true},
+	},
+	Transitions: []workflow.TransitionSpec{
+		{
+			FromStateKey: "draft",
+			ToStateKey:   "approved",
+			ActionKey:    "approve",
+			Name:         "Approve",
+			Permission: workflow.PermissionSpec{
+				Key:         "purchase_order.approve",
+				Description: "Approve a purchase order",
+			},
+		},
+	},
+}
+
+// seedAuditLogEntries inserts count directly-crafted audit_log rows for
+// firmID/userID, one second apart starting at start, most recent last -
+// used by the pagination/filtering tests below, which need deterministic
+// occurred_at ordering rather than whatever timing CreateInstance calls
+// would produce.
+func seedAuditLogEntries(ctx context.Context, t *testing.T, adminPool *pgxpool.Pool, firmID, userID uuid.UUID, start time.Time, count int) []time.Time {
+	t.Helper()
+	// Postgres's timestamptz column only carries microsecond precision;
+	// Truncate here so the times this function returns (later reused
+	// directly as From/To filter bounds by callers) exactly match what
+	// comes back out of the database, rather than differing by whatever
+	// sub-microsecond remainder time.Now() happened to carry.
+	start = start.Truncate(time.Microsecond)
+	occurredTimes := make([]time.Time, count)
+	for i := 0; i < count; i++ {
+		occurredAt := start.Add(time.Duration(i) * time.Second)
+		occurredTimes[i] = occurredAt
+		if _, err := adminPool.Exec(ctx, `
+			INSERT INTO audit_log (firm_id, user_id, entity_type, entity_id, action, changes, occurred_at)
+			VALUES ($1, $2, 'test_entity', gen_random_uuid(), 'test', '{}'::jsonb, $3)
+		`, firmID, userID, occurredAt); err != nil {
+			t.Fatalf("seed audit_log row %d: %v", i, err)
+		}
+	}
+	return occurredTimes
+}
+
+// TestList_PaginatesInOccurredAtDescOrderWithCorrectBoundaries seeds a
+// firm with several audit_log entries spanning multiple pages and proves
+// Total reflects the full unpaged count, page boundaries don't overlap or
+// skip rows, and ordering stays most-recent-first across pages - the
+// same "prove page boundaries are correct" bar
+// internal/workflow's TestListInstances pagination tests set.
+func TestList_PaginatesInOccurredAtDescOrderWithCorrectBoundaries(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	owner := seedUser(ctx, t, adminPool, "owner-page")
+	firm, err := wizard.CreateDefaultFirm(ctx, appPool, owner, "Firm Page")
+	if err != nil {
+		t.Fatalf("CreateDefaultFirm: %v", err)
+	}
+	// CreateDefaultFirm itself writes one "firm create" entry; seed 5 more
+	// deterministically-timed entries on top of it, for 6 total.
+	base := time.Now().Add(-time.Hour)
+	seedAuditLogEntries(ctx, t, adminPool, firm.FirmID, owner, base, 5)
+
+	const total = 6
+	const pageSize = 2
+
+	var seenIDs []uuid.UUID
+	for offset := 0; offset < total; offset += pageSize {
+		page, err := auditlog.List(ctx, appPool, firm.FirmID, owner, auditlog.ListOptions{Limit: pageSize, Offset: offset})
+		if err != nil {
+			t.Fatalf("List page at offset %d: %v", offset, err)
+		}
+		if page.Total != total {
+			t.Errorf("offset %d: expected Total %d, got %d", offset, total, page.Total)
+		}
+		if len(page.Entries) != pageSize {
+			t.Errorf("offset %d: expected %d entries, got %d", offset, pageSize, len(page.Entries))
+		}
+		for i := 1; i < len(page.Entries); i++ {
+			if page.Entries[i].OccurredAt.After(page.Entries[i-1].OccurredAt) {
+				t.Errorf("offset %d: entries not in descending occurred_at order", offset)
+			}
+		}
+		for _, e := range page.Entries {
+			seenIDs = append(seenIDs, e.ID)
+		}
+	}
+
+	// Every page's rows together must equal exactly the full unpaged set,
+	// with no duplicate (overlapping boundary) or missing (skipped
+	// boundary) row.
+	full, err := auditlog.List(ctx, appPool, firm.FirmID, owner, auditlog.ListOptions{})
+	if err != nil {
+		t.Fatalf("List full: %v", err)
+	}
+	if len(full.Entries) != total {
+		t.Fatalf("expected %d entries unpaged, got %d", total, len(full.Entries))
+	}
+	seen := make(map[uuid.UUID]bool, len(seenIDs))
+	for _, id := range seenIDs {
+		if seen[id] {
+			t.Errorf("entry %v appeared on more than one page", id)
+		}
+		seen[id] = true
+	}
+	if len(seen) != total {
+		t.Errorf("expected %d distinct entries across all pages, got %d", total, len(seen))
+	}
+}
+
+// TestList_FiltersByDateRange proves ?from=/?to= actually narrows the
+// result set to the requested window, not just accepts the params.
+func TestList_FiltersByDateRange(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	owner := seedUser(ctx, t, adminPool, "owner-daterange")
+	firm, err := wizard.CreateDefaultFirm(ctx, appPool, owner, "Firm DateRange")
+	if err != nil {
+		t.Fatalf("CreateDefaultFirm: %v", err)
+	}
+
+	base := time.Now().Add(-24 * time.Hour)
+	occurredTimes := seedAuditLogEntries(ctx, t, adminPool, firm.FirmID, owner, base, 5)
+	// occurredTimes[0..4] are base, base+1s, base+2s, base+3s, base+4s.
+
+	from := occurredTimes[1]
+	to := occurredTimes[3]
+	result, err := auditlog.List(ctx, appPool, firm.FirmID, owner, auditlog.ListOptions{From: &from, To: &to})
+	if err != nil {
+		t.Fatalf("List with date range: %v", err)
+	}
+	// Expect exactly the 3 seeded rows at indices 1..3 (inclusive) - the
+	// firm-creation entry and the two seeded rows outside [from, to] must
+	// be excluded.
+	if result.Total != 3 {
+		t.Fatalf("expected 3 entries within [from, to], got %d (Total=%d)", len(result.Entries), result.Total)
+	}
+	for _, e := range result.Entries {
+		if e.OccurredAt.Before(from) || e.OccurredAt.After(to) {
+			t.Errorf("entry occurred_at %v outside requested range [%v, %v]", e.OccurredAt, from, to)
+		}
+	}
+
+	// Sanity: no filter returns more (at least the firm-creation entry
+	// plus all 5 seeded rows).
+	unfiltered, err := auditlog.List(ctx, appPool, firm.FirmID, owner, auditlog.ListOptions{})
+	if err != nil {
+		t.Fatalf("List unfiltered: %v", err)
+	}
+	if unfiltered.Total <= result.Total {
+		t.Errorf("expected the date-range filter to narrow results: unfiltered=%d, filtered=%d", unfiltered.Total, result.Total)
+	}
+}
+
+// TestList_FiltersByWorkflowDefinition proves ?definitionId= narrows
+// results to entries that resolve back to that specific workflow
+// definition (via workflow_instances.workflow_definition_id, see List's
+// doc comment) - not to "any workflow entry", and not to the other
+// definition's own entries.
+func TestList_FiltersByWorkflowDefinition(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	owner := seedUser(ctx, t, adminPool, "owner-defn-filter")
+	firm, err := wizard.CreateDefaultFirm(ctx, appPool, owner, "Firm DefnFilter")
+	if err != nil {
+		t.Fatalf("CreateDefaultFirm: %v", err)
+	}
+
+	poDefID, err := workflow.DefineWorkflowForFirm(ctx, appPool, firm.FirmID, owner, secondDefinitionSpec)
+	if err != nil {
+		t.Fatalf("DefineWorkflowForFirm: %v", err)
+	}
+
+	stockInstanceID, err := workflow.CreateInstance(ctx, appPool, firm.FirmID, owner, firm.StockToSaleDefinitionID, map[string]any{"item": "widget"})
+	if err != nil {
+		t.Fatalf("CreateInstance (stock): %v", err)
+	}
+	poInstanceID, err := workflow.CreateInstance(ctx, appPool, firm.FirmID, owner, poDefID, map[string]any{"vendor": "Acme Supplies"})
+	if err != nil {
+		t.Fatalf("CreateInstance (purchase order): %v", err)
+	}
+
+	filtered, err := auditlog.List(ctx, appPool, firm.FirmID, owner, auditlog.ListOptions{DefinitionID: &poDefID})
+	if err != nil {
+		t.Fatalf("List filtered by definition: %v", err)
+	}
+	if len(filtered.Entries) == 0 {
+		t.Fatal("expected at least one entry for the purchase-order definition")
+	}
+	for _, e := range filtered.Entries {
+		if e.EntityType != "workflow_instance" || e.EntityID != poInstanceID {
+			t.Errorf("expected only the purchase-order instance's entries, got entity_type=%q entity_id=%v", e.EntityType, e.EntityID)
+		}
+	}
+
+	// The stock instance's own creation entry must never appear when
+	// filtering by the purchase-order definition.
+	for _, e := range filtered.Entries {
+		if e.EntityID == stockInstanceID {
+			t.Errorf("stock instance entry %v leaked into the purchase-order definition filter", stockInstanceID)
+		}
+	}
+
+	unfiltered, err := auditlog.List(ctx, appPool, firm.FirmID, owner, auditlog.ListOptions{})
+	if err != nil {
+		t.Fatalf("List unfiltered: %v", err)
+	}
+	if unfiltered.Total <= filtered.Total {
+		t.Errorf("expected the definition filter to narrow results: unfiltered=%d, filtered=%d", unfiltered.Total, filtered.Total)
 	}
 }

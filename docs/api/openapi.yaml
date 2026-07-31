@@ -78,16 +78,56 @@ paths:
           description: Caller has no membership in firmID
 
   /api/firms/{firmID}:
-    patch:
-      summary: Rename a firm (owner-only)
+    get:
+      summary: Read a firm's name and broader metadata (member-gated)
       description: >
-        Item 4's minimal, bounded firm mutation (internal/firm.UpdateName)
-        - name only, not a general firm-settings endpoint. Owner-gated
-        (internal/permission.IsOwner, after IsMember), same tier as
-        defining a new workflow or creating the firm itself. Broader firm
-        metadata editing (the `firms.attributes` jsonb column) is real,
-        undesigned future work - see docs/OPEN_POINTS.md item 36 - not
-        something this endpoint speculatively supports.
+        Open Points item 36's read counterpart to the PATCH below -
+        internal/firm.Get. Gated by plain membership
+        (internal/permission.IsMember), not IsOwner: viewing a firm's own
+        basic info doesn't need the stricter owner tier that editing it
+        does. Every metadata field is nullable - null means the firm never
+        set it (migrations/0006_firm_metadata.up.sql's no-backfill NULL
+        default), not that the field doesn't exist.
+      parameters:
+        - name: firmID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The firm's current name and metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FirmMetadata"
+        "400": { description: Invalid firmID }
+        "401": { description: Missing or invalid bearer token }
+        "404": { description: Caller isn't a member of firmID at all }
+    patch:
+      summary: Update a firm's name and broader metadata (owner-only)
+      description: >
+        Item 4's original minimal, bounded firm mutation
+        (internal/firm.UpdateName) - name only - extended by Open Points
+        item 36 to also accept five optional metadata fields
+        (address/taxId/defaultLocale/defaultCurrency/logoUrl,
+        internal/firm.Update/UpdateFields) at this same route, rather than
+        a second endpoint. Owner-gated (internal/permission.IsOwner, after
+        IsMember), same tier as defining a new workflow or creating the
+        firm itself. Every metadata field is optional and nullable: name
+        is required (as it always was), while address/taxId/defaultLocale/
+        defaultCurrency/logoUrl are each independently omittable (leave
+        the stored value alone), settable to an empty string (clear it
+        back to unset/null), or settable to a non-empty value (subject to
+        a basic sanity length cap - see the 400 response below) - a caller
+        that only wants to rename the firm can still send just `name`, and
+        that keeps behaving exactly as it did before this field set
+        existed. Storage-only for every new field: no fiscal/tax
+        calculation or validation tied to taxId/defaultCurrency
+        (docs/OPEN_POINTS.md item 24 stays open), no upload/storage system
+        behind logoUrl (a URL string only). Broader firm-settings-as-a-
+        real-module questions (the `firms.attributes` jsonb column, e.g.)
+        remain real, undesigned future work - see docs/OPEN_POINTS.md item
+        36's remaining open questions.
       parameters:
         - name: firmID
           in: path
@@ -101,19 +141,35 @@ paths:
               properties:
                 name:
                   type: string
+                address:
+                  type: string
+                  nullable: true
+                  description: Free text, up to 500 characters. No structured address model - see docs/OPEN_POINTS.md item 24.
+                taxId:
+                  type: string
+                  nullable: true
+                  description: Free text (VAT/tax ID), up to 100 characters. No country-specific format validation.
+                defaultLocale:
+                  type: string
+                  nullable: true
+                  description: Free text, up to 20 characters. Expected to be one of this deployment's actual locale codes ("en"/"tr" today, web/src/i18n/routing.ts), but not DB-constrained to that set.
+                defaultCurrency:
+                  type: string
+                  nullable: true
+                  description: Free text, up to 10 characters. Expected to look like an ISO 4217 code, but not validated against a real currency list and not wired into any calculation.
+                logoUrl:
+                  type: string
+                  nullable: true
+                  description: Free text URL, up to 2048 characters. No upload/storage system behind this - a link to an image hosted elsewhere, nothing else.
               required: [name]
       responses:
         "200":
-          description: The firm's new name
+          description: The firm's new name and metadata
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  firmId: { type: string, format: uuid }
-                  name: { type: string }
-                required: [firmId, name]
-        "400": { description: Invalid firmID, malformed body, or an empty/whitespace-only name }
+                $ref: "#/components/schemas/FirmMetadata"
+        "400": { description: Invalid firmID, malformed body, an empty/whitespace-only name, or a metadata field exceeding its maximum allowed length }
         "401": { description: Missing or invalid bearer token }
         "403": { description: Caller is a member of firmID but not an owner }
         "404": { description: Caller isn't a member of firmID at all }
@@ -213,7 +269,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WorkflowDefinition"
-        "400": { description: Invalid firmID, malformed request body, or a structurally invalid spec (DefinitionSpec.Validate - no initial state, a transition referencing an unknown state, ...) }
+        "400": { description: Invalid firmID, malformed request body, or a structurally invalid spec (DefinitionSpec.Validate - no initial state, a transition referencing an unknown state, an OPTIONAL `fields` entry with an empty/duplicate name or a type outside string/number/boolean/date, ...) }
         "401": { description: Missing or invalid bearer token }
         "403": { description: Caller is a member of firmID but not an owner }
         "404": { description: Caller isn't a member of firmID at all }
@@ -227,6 +283,16 @@ paths:
         state. Not modeled as a transition (creation has no from-state),
         but enforced and audited identically: gated by the definition's
         create_permission_key, and recorded in audit_log.
+
+        If the target definition has an OPTIONAL payload schema
+        (`fields` on WorkflowDefinition/DefinitionSpec - Open Points item
+        35), payload is validated against it before the instance is
+        created: every required field must be present, and a present
+        field's value must match its declared type
+        (internal/workflow.ErrPayloadValidation, surfaced as 400 below).
+        A definition with no schema (every definition that predates item
+        35, e.g. stock_to_sale/customer_pipeline today) skips this
+        entirely - payload stays accepted exactly as before.
       parameters:
         - name: firmID
           in: path
@@ -252,7 +318,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/InstanceState"
-        "400": { description: Invalid firmID/definitionID, or malformed body }
+        "400": { description: Invalid firmID/definitionID, malformed body, or (when the definition has a payload schema) a missing required field/wrong-typed field - internal/workflow.ErrPayloadValidation's message, same plain-text error body shape every other 4xx in this API already uses }
         "401": { description: Missing or invalid bearer token }
         "403": { description: Caller lacks the definition's create permission }
         "404": { description: No such workflow definition in this firm }
@@ -760,11 +826,10 @@ paths:
         roster), not owner-only like permission-audit/permission-catalog
         above - "who's on my team and what's their role" isn't treated as
         owner-only sensitive information in this codebase, the same
-        visibility level as the generic workflow instance list. With no
-        invite/email flow yet (docs/OPEN_POINTS.md item 17, still
-        deferred), this will only ever return the one row for whoever ran
-        the firm-creation wizard today - forward-compatible groundwork,
-        not a claim that onboarding a second user already works. A user
+        visibility level as the generic workflow instance list. See
+        /api/firms/{firmID}/invites below for how a second real user now
+        gets into a firm (Open Points item 17's email integration itself
+        stays deferred - this is a shareable link, never an email). A user
         holding more than one role in the same firm (user_firm_roles
         allows this) appears once per (user, role) pairing, not collapsed
         into a single row.
@@ -786,6 +851,163 @@ paths:
         "401": { description: Missing or invalid bearer token }
         "404": { description: Caller is not a member of firmID at all }
 
+  /api/firms/{firmID}/invites:
+    post:
+      summary: Generate a new invite link for the firm (owner-only)
+      description: >
+        Open Points item 17's companion gap ("no way to get a second real
+        user into a firm") resolved without any email infrastructure -
+        item 17 itself (email integration) stays fully deferred. Returns
+        an opaque, unguessable token (see internal/invite.generateToken);
+        the frontend builds a shareable link out of it
+        (/invite/{token}, a public Next.js route) that the owner copies
+        and shares by whatever channel they already use. roleID must
+        belong to firmID - a role ID from a different firm is
+        structurally invisible to this endpoint's own RLS-scoped query
+        (roles.roles_tenant_isolation, migrations/0001_core_schema.up.sql),
+        not merely application-checked, so it is rejected the same way a
+        genuinely nonexistent role ID would be (400). Expires
+        DefaultExpiry (7 days) from creation; not configurable per-invite.
+      parameters:
+        - name: firmID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                roleId: { type: string, format: uuid }
+              required: [roleId]
+      responses:
+        "201":
+          description: The new invite, including its one-time-visible token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Invite"
+        "400": { description: Invalid firmID/roleID, malformed body, or roleID doesn't belong to firmID }
+        "401": { description: Missing or invalid bearer token }
+        "403": { description: Caller is a member of firmID but not an owner }
+        "404": { description: Caller isn't a member of firmID at all }
+    get:
+      summary: List every invite this firm has ever generated (owner-only)
+      description: >
+        Most recent first. The token itself is never included here -
+        only the POST response above ever carries it, since the owner is
+        expected to have already copied the link out at creation time.
+      parameters:
+        - name: firmID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: This firm's invites
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Invite"
+        "400": { description: Invalid firmID }
+        "401": { description: Missing or invalid bearer token }
+        "403": { description: Caller is a member of firmID but not an owner }
+        "404": { description: Caller isn't a member of firmID at all }
+
+  /api/firms/{firmID}/invites/{inviteID}/revoke:
+    post:
+      summary: Revoke a pending invite (owner-only)
+      description: >
+        Marks the invite revoked - the row is never deleted, matching
+        this codebase's general soft-state preference (e.g.
+        internal/permission.DeleteRole's own precedent), so a revoked
+        invite stays visible in GET .../invites as its own record of what
+        was revoked and by/when. Only a currently-pending invite can be
+        revoked (409 otherwise - already used or already revoked).
+      parameters:
+        - name: firmID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: inviteID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: Revoked }
+        "400": { description: Invalid IDs }
+        "401": { description: Missing or invalid bearer token }
+        "403": { description: Caller is a member of firmID but not an owner }
+        "404": { description: Caller isn't a member of firmID, or the invite doesn't exist in it }
+        "409": { description: The invite is already used or already revoked }
+
+  /api/invites/{token}:
+    get:
+      summary: Look up an invite by its token (public - no bearer token)
+      description: >
+        Genuinely public: the whole point is to let an unauthenticated
+        visitor see what they were invited to (firm name, role name)
+        before they sign in at all - see internal/invite's package doc
+        comment and migrations/0007_firm_invites.up.sql's RLS read
+        carve-out (app_current_invite_token()). A token that never
+        existed at all is 404; every other non-happy-path (used, revoked,
+        pending-but-expired) is a successful 200 response whose body
+        describes exactly which one, so the frontend can show a specific,
+        correct message instead of one generic error.
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The invite's current state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InviteInfo"
+        "404": { description: No invite exists for this token at all }
+
+  /api/invites/{token}/accept:
+    post:
+      summary: Accept an invite, granting the caller its role in its firm
+      description: >
+        Requires a valid bearer token (some authenticated ZonaryOS
+        identity to grant the role to) but deliberately NOT firm
+        membership - this is the one endpoint in this system that must
+        work for a caller who is not yet a member of the target firm at
+        all; the firm itself is derived entirely from the token, never
+        supplied by the caller. Single-use: a second accept attempt on an
+        already-used token fails with 409. Re-accepting the exact same
+        role you already hold (e.g. a duplicate click) is a harmless
+        no-op for the membership row, but the invite is still marked used
+        either way.
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The firm/role the caller was just granted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  firmId: { type: string, format: uuid }
+                  roleId: { type: string, format: uuid }
+                  roleName: { type: string }
+                required: [firmId, roleId, roleName]
+        "400": { description: Invalid/empty token }
+        "401": { description: Missing or invalid bearer token }
+        "404": { description: No invite exists for this token at all }
+        "409": { description: The invite has already been used, or has been revoked }
+        "410": { description: The invite has expired }
+
   /api/firms/{firmID}/audit-log:
     get:
       summary: Read this firm's audit trail (Vision §3 Audit Trail Infrastructure)
@@ -795,27 +1017,80 @@ paths:
         so a firm can later extend read access to an "Auditor Role" purely
         by granting this permission key via Permission Audit Mode.
         internal/wizard.CreateDefaultFirm grants it to a firm's own owner
-        role automatically. Returns every audit_log row for the firm, most
+        role automatically. Returns audit_log rows for the firm, most
         recent first, covering both data-change entries (action values like
         "create", "grant", "revoke", "record_sale", ...) and view/read
         entries (action "view") - see docs/DEVELOPMENT.md's Audit Trail
         section and docs/OPEN_POINTS.md item 33 for why view/read logging
-        is only wired into one representative read path so far.
+        is only wired into one representative read path so far. Supports
+        the same limit/offset paging shape as
+        /api/firms/{firmID}/workflow-definitions/{definitionID}/instances
+        (internal/workflow.ListInstances), plus date-range and workflow-
+        definition filtering - see the query params below. Omitting every
+        query param returns every entry, unpaged, the same response this
+        endpoint always returned before this - Never-Violate Rule 6, no
+        breaking change without a deprecation cycle.
       parameters:
         - name: firmID
           in: path
           required: true
           schema: { type: string, format: uuid }
+        - name: limit
+          in: query
+          required: false
+          description: >
+            Caps the number of entries returned, for paging. Omitted (or
+            0) means "no limit" - every matching entry, the same response
+            this endpoint always returned before pagination existed.
+            Capped server-side at 200; a larger value is a 400, not a
+            silently-clamped 200.
+          schema: { type: integer, minimum: 0, maximum: 200 }
+        - name: offset
+          in: query
+          required: false
+          description: Skips this many matching entries before applying limit. Ignored when limit is omitted.
+          schema: { type: integer, minimum: 0 }
+        - name: from
+          in: query
+          required: false
+          description: RFC3339 timestamp - keeps only entries with occurred_at >= from (inclusive).
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          description: RFC3339 timestamp - keeps only entries with occurred_at <= to (inclusive).
+          schema: { type: string, format: date-time }
+        - name: definitionId
+          in: query
+          required: false
+          description: >
+            Keeps only entries that resolve back to this workflow
+            definition - rows whose entity_type is "workflow_instance" and
+            whose entity_id is an instance of this definition, joined
+            through workflow_instances.workflow_definition_id
+            (internal/auditlog.List). audit_log rows unrelated to any
+            workflow instance (a firm rename, a permission grant, ...)
+            never match a definitionId filter, by design.
+          schema: { type: string, format: uuid }
       responses:
         "200":
-          description: The firm's audit log entries, most recent first
+          description: >
+            The matching entries (paged/filtered per the query params
+            above), most recent first. The total matching count before
+            paging is reported via the X-Total-Count response header, not
+            in the body - the body stays a plain array so this remains a
+            non-breaking change for any existing caller.
+          headers:
+            X-Total-Count:
+              description: Total entries matching firmID plus any from/to/definitionId filter, before limit/offset is applied.
+              schema: { type: integer }
           content:
             application/json:
               schema:
                 type: array
                 items:
                   $ref: "#/components/schemas/AuditLogEntry"
-        "400": { description: Invalid firmID }
+        "400": { description: Invalid firmID, or an invalid limit/offset/from/to/definitionId }
         "401": { description: Missing or invalid bearer token }
         "403": { description: Caller is a member of firmID but does not hold audit.log.read }
         "404": { description: Caller isn't a member of firmID at all }
@@ -923,6 +1198,28 @@ components:
           type: string
           description: The permission ExecuteTransition checks for this action - included so a UI can carry the Never-Violate Rule 7 permission tag without hardcoding a duplicate of it.
       required: [actionKey, name, toState, permissionKey]
+    FieldSpec:
+      type: object
+      description: >
+        One declared field in a workflow definition's OPTIONAL instance
+        payload schema (internal/workflow.FieldSpec, Open Points item 35).
+        Deliberately just these four types (see the `type` property) - no
+        nested objects, no arrays, no enum/pattern constraints.
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [string, number, boolean, date]
+          description: >
+            "date" is a plain calendar date, no time-of-day/timezone -
+            matched against `YYYY-MM-DD` server-side
+            (internal/workflow's payloadDateLayout), the same value an
+            HTML `<input type="date">` produces.
+        required:
+          type: boolean
+          description: Whether CreateInstance must see this field present in the payload.
+      required: [name, type, required]
     WorkflowDefinition:
       type: object
       properties:
@@ -940,6 +1237,18 @@ components:
             .../instances) on this definition - lets a UI carry the real
             Never-Violate Rule 7 permission tag on its "add" action instead
             of hardcoding a duplicate of it.
+        fields:
+          type: array
+          items:
+            $ref: "#/components/schemas/FieldSpec"
+          description: >
+            OPTIONAL (Open Points item 35). Omitted entirely for a
+            schema-less definition (stock_to_sale/customer_pipeline
+            today) - a purely additive response field, so an existing API
+            consumer sees no change at all for those. When present, a
+            frontend resolving this definition (e.g. CreateInstanceForm)
+            can render typed inputs for POST .../instances instead of a
+            free-form key/value editor.
       required: [definitionId, key, name, createPermissionKey]
     PermissionSpec:
       type: object
@@ -1004,6 +1313,21 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/TransitionSpec"
+        fields:
+          type: array
+          items:
+            $ref: "#/components/schemas/FieldSpec"
+          description: >
+            OPTIONAL (Open Points item 35) - an OPTIONAL payload schema
+            for this definition's instances. Omitted (or an empty array)
+            means exactly today's behavior: CreateInstance's payload
+            stays a completely freeform object, nothing required, no type
+            checked. When given, CreateInstance validates every new
+            instance's payload against it (400 with a
+            PayloadValidationError-shaped body - see POST
+            .../instances below - for a missing required field or a
+            wrong-typed one); reads of already-existing instances are
+            never affected either way.
       required: [key, name, createPermission, states, transitions]
     InstanceState:
       type: object
@@ -1163,6 +1487,66 @@ components:
         roleName:
           type: string
       required: [userId, email, displayName, roleId, roleKey, roleName]
+    Invite:
+      type: object
+      description: >
+        One firm_invites row (migrations/0007_firm_invites.up.sql), as
+        returned by POST/GET .../invites. token is only ever present on
+        the POST response, right after creation - GET .../invites never
+        re-serializes it.
+      properties:
+        inviteId:
+          type: string
+          format: uuid
+        roleId:
+          type: string
+          format: uuid
+        roleName:
+          type: string
+        token:
+          type: string
+          description: Only present on the POST (create) response.
+        status:
+          type: string
+          enum: [pending, used, revoked]
+        expired:
+          type: boolean
+          description: >
+            True when status is still "pending" but expiresAt has
+            passed - expiry is derived at read time, never persisted as
+            its own status value.
+        expiresAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        usedAt:
+          type: string
+          format: date-time
+      required: [inviteId, roleId, roleName, status, expired, expiresAt, createdAt]
+    InviteInfo:
+      type: object
+      description: >
+        What GET /api/invites/{token} returns - enough for the public
+        /invite/{token} page to render "You've been invited to join
+        <firmName> as <roleName>" or a specific reason it can't be
+        accepted, with no firm context or authentication required from
+        the caller.
+      properties:
+        firmName:
+          type: string
+        roleName:
+          type: string
+        status:
+          type: string
+          enum: [pending, used, revoked]
+        expired:
+          type: boolean
+        expiresAt:
+          type: string
+          format: date-time
+      required: [firmName, roleName, status, expired, expiresAt]
     AuditLogEntry:
       type: object
       properties:
@@ -1192,6 +1576,36 @@ components:
           type: string
           format: date-time
       required: [id, entityType, entityId, action, changes, userId, userEmail, userDisplayName, occurredAt]
+
+    FirmMetadata:
+      type: object
+      description: >
+        GET/PATCH /api/firms/{firmID}'s response shape (Open Points item
+        36). address/taxId/defaultLocale/defaultCurrency/logoUrl are all
+        nullable - null means the firm never set that field, matching
+        migrations/0006_firm_metadata.up.sql's no-backfill NULL default.
+      properties:
+        firmId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        address:
+          type: string
+          nullable: true
+        taxId:
+          type: string
+          nullable: true
+        defaultLocale:
+          type: string
+          nullable: true
+        defaultCurrency:
+          type: string
+          nullable: true
+        logoUrl:
+          type: string
+          nullable: true
+      required: [firmId, name, address, taxId, defaultLocale, defaultCurrency, logoUrl]
 
     PlatformAdminFirm:
       type: object

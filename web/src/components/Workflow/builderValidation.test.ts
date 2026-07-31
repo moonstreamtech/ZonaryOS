@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 import {
   validateBuilderSpec,
+  type BuilderFieldRow,
   type BuilderSpec,
   type BuilderStateRow,
   type BuilderTransitionRow,
@@ -33,6 +34,10 @@ function transition(overrides: Partial<BuilderTransitionRow>): BuilderTransition
   };
 }
 
+function field(overrides: Partial<BuilderFieldRow>): BuilderFieldRow {
+  return { id: 1, name: "", type: "string", required: false, ...overrides };
+}
+
 function baseSpec(overrides: Partial<BuilderSpec>): BuilderSpec {
   return {
     key: "purchase_order",
@@ -41,6 +46,7 @@ function baseSpec(overrides: Partial<BuilderSpec>): BuilderSpec {
     createPermissionDescription: "",
     states: [],
     transitions: [],
+    fields: [],
     ...overrides,
   };
 }
@@ -213,5 +219,53 @@ describe("validateBuilderSpec", () => {
       fromStateKey: "draft",
       actionKey: "decide",
     });
+  });
+
+  // Open Points item 35's builder-side validation: an empty fields array
+  // (the default - see DefinitionBuilder.tsx's own useState) never
+  // produces a validation error, exactly the "optional, no new required
+  // section" contract the batch requires.
+  it("accepts an empty fields array (no payload schema defined)", () => {
+    const spec = baseSpec({
+      states: [state({ id: 1, key: "draft", isInitial: true })],
+      fields: [],
+    });
+    expect(validateBuilderSpec(spec)).toEqual([]);
+  });
+
+  it("accepts a well-formed multi-type field schema", () => {
+    const spec = baseSpec({
+      states: [state({ id: 1, key: "draft", isInitial: true })],
+      fields: [
+        field({ id: 1, name: "item", type: "string", required: true }),
+        field({ id: 2, name: "quantity", type: "number", required: true }),
+        field({ id: 3, name: "rush", type: "boolean", required: false }),
+        field({ id: 4, name: "dueDate", type: "date", required: false }),
+      ],
+    });
+    expect(validateBuilderSpec(spec)).toEqual([]);
+  });
+
+  it("flags a payload field with an empty name", () => {
+    const errors = validateBuilderSpec(
+      baseSpec({
+        states: [state({ id: 1, key: "draft", isInitial: true })],
+        fields: [field({ id: 1, name: "" })],
+      }),
+    );
+    expect(errors).toContainEqual({ code: "fieldNameRequired" });
+  });
+
+  it("flags two payload fields sharing the same name", () => {
+    const errors = validateBuilderSpec(
+      baseSpec({
+        states: [state({ id: 1, key: "draft", isInitial: true })],
+        fields: [
+          field({ id: 1, name: "item", type: "string" }),
+          field({ id: 2, name: "item", type: "number" }),
+        ],
+      }),
+    );
+    expect(errors).toContainEqual({ code: "duplicateFieldName", name: "item" });
   });
 });

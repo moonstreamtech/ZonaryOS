@@ -60,7 +60,20 @@ export async function GET(request: NextRequest) {
     expires_in?: number;
   };
 
-  const response = NextResponse.redirect(`${requestOrigin(request)}/`);
+  // src/app/api/auth/login sets this alongside the PKCE verifier/state
+  // when it was called with a `returnTo` query param (the invite-accept
+  // flow) - re-validated here with the same isSafeReturnTo rule as
+  // login's own check, since a cookie is still attacker-influenceable in
+  // principle (this app's own login route is the only writer, but
+  // defense in depth costs nothing here) before it's ever used as a
+  // redirect target.
+  const returnTo = request.cookies.get("zonaryos_oauth_return_to")?.value;
+  const redirectTarget =
+    returnTo && isSafeReturnTo(returnTo)
+      ? `${requestOrigin(request)}${returnTo}`
+      : `${requestOrigin(request)}/`;
+
+  const response = NextResponse.redirect(redirectTarget);
   // The access token is kept in an httpOnly cookie - never readable by
   // client-side JS - and forwarded as a Bearer token by server-side code
   // only (see src/app/api/me/route.ts and the homepage's server component).
@@ -73,5 +86,16 @@ export async function GET(request: NextRequest) {
   });
   response.cookies.delete("zonaryos_pkce_verifier");
   response.cookies.delete("zonaryos_oauth_state");
+  response.cookies.delete("zonaryos_oauth_return_to");
   return response;
+}
+
+// Same rule as src/app/api/auth/login's own isSafeReturnTo - kept as a
+// separate copy rather than a shared import specifically so each route
+// validates independently at its own trust boundary (the value crosses a
+// cookie in between), matching this codebase's general preference for an
+// explicit re-check over trusting a value some other layer already
+// validated once.
+function isSafeReturnTo(path: string): boolean {
+  return path.startsWith("/") && !path.startsWith("//") && !path.includes("://");
 }

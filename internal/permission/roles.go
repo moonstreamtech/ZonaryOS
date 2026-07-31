@@ -230,12 +230,12 @@ type FirmMember struct {
 // data, "who's on my team and what's their role" isn't treated as
 // owner-only sensitive information in this codebase; any member can see
 // their own firm's roster, the same visibility level as the generic
-// workflow instance list (internal/workflow.ListInstances). With no
-// invite/email flow yet (docs/OPEN_POINTS.md item 17, still deferred),
-// this will only ever return the one row for whoever ran the firm-
-// creation wizard - expected, not a bug: this is forward-compatible
-// groundwork for when a second real user can join a firm, not a claim
-// that onboarding already works.
+// workflow instance list (internal/workflow.ListInstances). A second real
+// user now has a path into a firm without any email infrastructure - see
+// internal/invite (docs/DEVELOPMENT.md's "Invites" section) - so this can
+// return more than the one row for whoever ran the firm-creation wizard;
+// Open Points item 17 (email integration) itself stays fully deferred
+// either way.
 func ListMembers(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.UUID) ([]FirmMember, error) {
 	var members []FirmMember
 	err := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {

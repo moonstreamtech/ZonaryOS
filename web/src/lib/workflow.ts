@@ -15,6 +15,23 @@ export type StateInfo = {
   name: string;
 };
 
+// FieldType is spec.go's FieldType wire value - deliberately just these
+// four (Open Points item 35's resolution), mirrored 1:1 on the frontend
+// rather than widened into something more elaborate.
+export type FieldType = "string" | "number" | "boolean" | "date";
+
+// FieldSpecInput is internal/workflow.FieldSpec's wire shape (see
+// handlers.go's fieldSpecResponse/defineFieldRequest) - one declared
+// payload field on a workflow definition's OPTIONAL payload schema.
+// Shared between DefinitionSpecInput (the builder's request body) and
+// WorkflowDefinition (a definition read back from the backend), the same
+// way PermissionSpecInput already is.
+export type FieldSpecInput = {
+  name: string;
+  type: FieldType;
+  required: boolean;
+};
+
 export type AvailableAction = {
   actionKey: string;
   name: string;
@@ -40,6 +57,13 @@ export type WorkflowDefinition = {
   key: string;
   name: string;
   createPermissionKey: string;
+  // Fields is OPTIONAL (Open Points item 35) - undefined/empty for a
+  // schema-less definition (stock_to_sale/customer_pipeline today, and
+  // every definition that existed before this field was added), matching
+  // the backend's own `fields,omitempty` on definitionInfoResponse.
+  // CreateInstanceForm branches on this: present -> typed fields, absent
+  // -> today's free-form key/value editor, unchanged.
+  fields?: FieldSpecInput[];
 };
 
 // The request body shape for POST .../workflow-definitions - a 1:1 wire
@@ -72,6 +96,11 @@ export type DefinitionSpecInput = {
   createPermission: PermissionSpecInput;
   states: StateSpecInput[];
   transitions: TransitionSpecInput[];
+  // Fields is OPTIONAL, mirroring internal/workflow.DefinitionSpec.Fields
+  // (Open Points item 35): omitted or empty means "no schema", exactly
+  // today's freeform-payload workflow. DefinitionBuilder.tsx only sets
+  // this when the owner actually added at least one payload field.
+  fields?: FieldSpecInput[];
 };
 
 // A firm's second default-seeded workflow (see
