@@ -232,5 +232,14 @@
     "columnEmail": "E-posta",
     "columnRole": "Rol",
     "onlyMemberNote": "Şimdilik bu firmanın tek üyesi sizsiniz - başkalarını davet etme özelliği henüz mevcut değil."
+  },
+  "PlatformAdmin": {
+    "title": "Platform Yönetimi",
+    "description": "Bu ZonaryOS dağıtımındaki tüm firmalara ait salt okunur firma meta verileri. Yalnızca ZonaryOS platform ekibi tarafından görülebilir.",
+    "empty": "Henüz firma yok.",
+    "columnName": "Firma adı",
+    "columnCreatedAt": "Oluşturulma",
+    "columnWorkflowDefinitionCount": "İş akışı tanımları",
+    "columnMemberCount": "Üyeler"
   }
 }

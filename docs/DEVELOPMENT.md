@@ -80,7 +80,7 @@ The imported realm (`zonaryos`) contains:
 
 Two HTTP endpoints exercise this end to end: `GET /api/me` (identity + firm memberships) and `GET /api/me/firms/{firmID}/role` (role within one firm - 403s if the caller isn't actually a member, enforced by RLS, not application logic).
 
-Running the backend now requires `ZONARYOS_DATABASE_URL` (the `zonaryos_app` DSN), `ZONARYOS_OIDC_ISSUER_URL` (e.g. `http://localhost:8081/realms/zonaryos`), and `ZONARYOS_OIDC_CLIENT_ID` (default `zonaryos-web`) - see `.env.example`.
+Running the backend now requires `ZONARYOS_DATABASE_URL` (the `zonaryos_app` DSN), `ZONARYOS_OIDC_ISSUER_URL` (e.g. `http://localhost:8081/realms/zonaryos`), and `ZONARYOS_OIDC_CLIENT_ID` (default `zonaryos-web`) - see `.env.example`. `ZONARYOS_PLATFORM_ADMIN_EMAILS` (comma-separated, optional, empty by default) is the platform-admin allowlist - see the "Platform Admin" section below.
 
 ### Frontend: login flow
 
@@ -357,6 +357,32 @@ export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5
 export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5433/zonaryos?sslmode=disable
 make migrate
 go test ./internal/auditlog/... -v
+```
+
+## Platform Admin
+
+`internal/platformadmin` is a narrow, read-only view for ZonaryOS-the-company staff (the platform operator) - distinct from everything else in this API, which is scoped to one firm the caller belongs to. It answers a different question ("is this caller ZonaryOS staff?") than `internal/permission`/`internal/firm` ("is this caller a member/permission-holder/owner *within one firm*?"), which is why it's kept as its own package rather than folded into either.
+
+- **Auth model**: a hardcoded allowlist of emails (`internal/platformadmin.Allowlist`), checked against the caller's already-verified Keycloak identity (`internal/identity.Identity.Email` - the same struct every handler reads from context after `internal/identity.Middleware` runs), not a new Keycloak realm/client or a parallel identity system. Populated from `ZONARYOS_PLATFORM_ADMIN_EMAILS` (comma-separated, case/whitespace-insensitive - see `internal/platform/config`), following this codebase's existing env-var config convention. Empty by default: nobody is a platform admin until this is explicitly set. A dedicated Keycloak client would buy self-service admin signup/delegation/per-admin scoping - none of which this batch needs; that's the concrete trigger to revisit this decision, not a default reached for casually.
+- **What it exposes**: for every firm, `name`/`created_at` (read directly from the `firms` table, which carries no RLS policy - see `migrations/0001_core_schema.up.sql`'s comment on it) plus a workflow-definition count and a member count. Nothing else - no tenant business data (no stock items, no CRM leads, no audit log contents), no user roster (member count only, not who).
+- **How the counts are obtained without any new database privilege**: this codebase's Postgres app role deliberately holds no `BYPASSRLS` (see `internal/platform/db.WithFirmContext`'s doc comment) and this package doesn't add one. Instead, `ListFirms` loops over every firm ID from the un-scoped `firms` read and opens one legitimate, firm-scoped transaction per firm via `zdb.WithFirmContext` - the exact mechanism `internal/wizard.CreateDefaultFirm` and every other tenant-scoped read in this codebase already uses - then runs `COUNT(*)` against `workflow_definitions` and `user_firm_roles` inside that RLS-scoped context. This is N legitimate, RLS-respecting per-firm reads, not a cross-firm bypass query; see `internal/platformadmin/platformadmin.go`'s doc comments (including its `ciaudit:ignore-firmid-check` suppression - the check is skipped for this one internal per-firm loop function precisely *because* the caller isn't a firm member at all, and Allowlist, not membership, is what already authorized the read one level up in `ListFirms`).
+- **Accountability**: every access writes one `audit_log` row (`action: "platform_admin_metadata_view"`) into *each firm's own* audit trail, attributed to the platform admin's resolved user ID - reusing `internal/auditlog.Write` rather than a parallel logging path. `audit_log.firm_id` is `NOT NULL` and RLS-scoped to one firm (`migrations/0003_workflow_engine.up.sql`), so there's no clean way to represent one firm-less "platform-level" event in it; logging per-firm-visited instead is a deliberate, and reasonably clean, resolution of that ambiguity - the read genuinely happened while scoped to that one firm, so its own audit_log is where accountability for it belongs. A firm's own owner can see this access the same way they see any other `audit_log` entry (`GET /api/firms/{firmID}/audit-log`).
+- **Ordering**: the allowlist check runs first, before `identity.ResolveOrCreateUser` or any query - a non-allowlisted caller never causes a query to run at all (see `internal/platformadmin/allowlist_test.go`'s `TestListFirms_RejectsNonAllowlistedBeforeAnyDatabaseAccess`, which proves this with a `nil` pool as a poison pill rather than just asserting the happy path is narrow).
+- **Frontend gate**: `web/src/app/[locale]/platform-admin/page.tsx` is reachable only at that distinct path, outside any firm namespace, with no in-app link to it. Unlike `settings/permissions`/`audit-log` (which render an inline "not authorized" message for a real but unauthorized firm member), this route calls `next/navigation`'s `notFound()` for anyone off the allowlist - the real 404 page, as if the route didn't exist. That's a deliberate, higher-sensitivity choice for this one route given its own task brief's explicit ask, not a pattern the other owner-gated pages need to adopt.
+
+HTTP surface:
+
+- `GET /api/platform-admin/firms` — firm metadata across every firm (allowlist-gated; 404, not 403, for a non-allowlisted caller)
+
+### Running the platform admin tests
+
+`internal/platformadmin/allowlist_test.go` is a pure unit test (no database - includes the poison-pill ordering test above). `internal/platformadmin/platformadmin_integration_test.go` needs a real Postgres, same convention as everywhere else above:
+
+```
+export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5433/zonaryos?sslmode=disable
+export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5433/zonaryos?sslmode=disable
+make migrate
+go test ./internal/platformadmin/... -v
 ```
 
 ### Running the workflow engine tests
