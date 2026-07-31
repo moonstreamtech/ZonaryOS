@@ -44,21 +44,26 @@ const createFirmAuditAction = "create"
 
 // CreateDefaultFirmResult is what CreateDefaultFirm produces on success.
 type CreateDefaultFirmResult struct {
-	FirmID                  uuid.UUID
-	FirmName                string
-	RoleID                  uuid.UUID
-	StockToSaleDefinitionID uuid.UUID
+	FirmID                       uuid.UUID
+	FirmName                     string
+	RoleID                       uuid.UUID
+	StockToSaleDefinitionID      uuid.UUID
+	CustomerPipelineDefinitionID uuid.UUID
 }
 
 // CreateDefaultFirm is the wizard's one implemented terminal action
 // (ActionCreateDefaultFirm): it creates a new firm, a default "owner"
 // role for it (flagged is_owner for Permission Audit Mode's UI, see
 // migrations/0004_role_owner_flag.up.sql), adds userID as that role's
-// holder, seeds the firm with the Stock In -> Sale workflow - granting
-// the owner role every permission that introduces along the way, via
-// workflow.SeedStockToSaleWorkflowTx's self-action auto-grant, not a
-// bespoke grant step here - and writes one audit_log entry, all inside a
-// single transaction, so a caller never ends up with a half-created firm.
+// holder, seeds the firm with the Stock In -> Sale and Customer Pipeline
+// workflows - granting the owner role every permission each one
+// introduces along the way, via workflow.SeedStockToSaleWorkflowTx's and
+// workflow.SeedCustomerPipelineWorkflowTx's shared self-action auto-grant,
+// not a bespoke grant step here - and writes one audit_log entry, all
+// inside a single transaction, so a caller never ends up with a
+// half-created firm. Both are seeded for every *new* firm from here on -
+// no retroactive seeding into firms that already existed before this
+// batch (see docs/VISION.md's note on Customer Pipeline).
 //
 // A plain WithFirmContext (internal/platform/db) can't be used here: it
 // requires a firmID up front to scope the transaction to, but the firm
@@ -119,13 +124,20 @@ func CreateDefaultFirm(ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID
 	}
 
 	// Granting the owner role every permission this seeds is
-	// SeedStockToSaleWorkflowTx's job, not this function's - see
-	// DefineWorkflowTx's self-action auto-grant.
-	definitionID, err := workflow.SeedStockToSaleWorkflowTx(ctx, tx, result.FirmID, result.RoleID)
+	// SeedStockToSaleWorkflowTx's/SeedCustomerPipelineWorkflowTx's job,
+	// not this function's - see DefineWorkflowTx's self-action
+	// auto-grant.
+	stockDefinitionID, err := workflow.SeedStockToSaleWorkflowTx(ctx, tx, result.FirmID, result.RoleID)
 	if err != nil {
 		return CreateDefaultFirmResult{}, fmt.Errorf("seed stock-to-sale workflow: %w", err)
 	}
-	result.StockToSaleDefinitionID = definitionID
+	result.StockToSaleDefinitionID = stockDefinitionID
+
+	customerPipelineDefinitionID, err := workflow.SeedCustomerPipelineWorkflowTx(ctx, tx, result.FirmID, result.RoleID)
+	if err != nil {
+		return CreateDefaultFirmResult{}, fmt.Errorf("seed customer pipeline workflow: %w", err)
+	}
+	result.CustomerPipelineDefinitionID = customerPipelineDefinitionID
 
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO user_firm_roles (firm_id, user_id, role_id) VALUES ($1, $2, $3)

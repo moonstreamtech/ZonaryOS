@@ -753,3 +753,93 @@ func ListDefinitions(ctx context.Context, pool *pgxpool.Pool, firmID, userID uui
 	}
 	return results, nil
 }
+
+// StateCount is one state's instance count within a single workflow
+// definition - one row of DefinitionInstanceCounts.Counts.
+type StateCount struct {
+	StateKey  string
+	StateName string
+	Count     int
+}
+
+// DefinitionInstanceCounts is InstanceCountsByDefinition's per-definition
+// result: which definition, and how many instances currently sit in each
+// of its states. Every state the definition has appears here, even ones
+// with zero instances (see InstanceCountsByDefinition's query) - a
+// dashboard rendering "0 sold" for a brand new firm is more honest than
+// silently omitting a row a caller might otherwise read as "state
+// doesn't exist."
+type DefinitionInstanceCounts struct {
+	DefinitionID uuid.UUID
+	Key          string
+	Name         string
+	Counts       []StateCount
+}
+
+// InstanceCountsByDefinition is the dashboard's data source (item 2 of
+// this batch): for every workflow definition in firmID, how many
+// instances currently sit in each state - "Stock: 12 in stock, 3 sold" /
+// "Customers: 5 leads, 2 customers, 1 lost" - computed as one grouped
+// COUNT query across every definition at once, not by fetching every
+// instance and counting client-side (ListInstances's own full-fetch path
+// is the wrong tool for a dashboard summary once a firm has thousands of
+// instances). A LEFT JOIN from workflow_states out to workflow_instances
+// means a state with zero instances still gets a zero-count row instead
+// of silently vanishing - see DefinitionInstanceCounts's doc comment.
+// Same IsMember-first treatment as every other read in this file.
+func InstanceCountsByDefinition(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.UUID) ([]DefinitionInstanceCounts, error) {
+	var results []DefinitionInstanceCounts
+	err := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		isMember, err := permission.IsMember(ctx, tx, firmID, userID)
+		if err != nil {
+			return err
+		}
+		if !isMember {
+			return ErrDefinitionNotFound
+		}
+
+		rows, err := tx.Query(ctx, `
+			SELECT wd.id, wd.key, wd.name, ws.key, ws.name, count(wi.id)
+			FROM workflow_definitions wd
+			JOIN workflow_states ws ON ws.workflow_definition_id = wd.id
+			LEFT JOIN workflow_instances wi ON wi.current_state_id = ws.id
+			GROUP BY wd.id, wd.key, wd.name, ws.key, ws.name
+			ORDER BY wd.name, ws.key
+		`)
+		if err != nil {
+			return fmt.Errorf("count workflow instances by state: %w", err)
+		}
+		defer rows.Close()
+
+		byDefinition := make(map[uuid.UUID]*DefinitionInstanceCounts)
+		var order []uuid.UUID
+		for rows.Next() {
+			var defID uuid.UUID
+			var defKey, defName string
+			var sc StateCount
+			if err := rows.Scan(&defID, &defKey, &defName, &sc.StateKey, &sc.StateName, &sc.Count); err != nil {
+				return err
+			}
+			entry, ok := byDefinition[defID]
+			if !ok {
+				entry = &DefinitionInstanceCounts{DefinitionID: defID, Key: defKey, Name: defName}
+				byDefinition[defID] = entry
+				order = append(order, defID)
+			}
+			entry.Counts = append(entry.Counts, sc)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+
+		results = make([]DefinitionInstanceCounts, 0, len(order))
+		for _, id := range order {
+			results = append(results, *byDefinition[id])
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return results, nil
+}

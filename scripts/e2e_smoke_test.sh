@@ -232,5 +232,89 @@ echo "$PO_VIEW_HTML" | grep -q "Approve" \
     || fail "expected /workflows/purchase_order to render the 'Approve' action button, labeled from the backend's own AvailableAction.Name"
 log "generic workflow view (UI path) confirmed - a second, structurally different workflow renders correctly with no new frontend code"
 
+# --- Customer Pipeline: the wizard's second default-seeded workflow -----
+#
+# internal/wizard.CreateDefaultFirm now seeds Customer Pipeline alongside
+# Stock In -> Sale for every new firm (this batch) - FIRM_ID (created
+# above) already has both. Walks a lead through create -> qualify ->
+# convert, the exact same generic engine path stock_to_sale exercised
+# above, then confirms the dashboard's new counts-by-state overview
+# (item 2) reflects it, both at the backend endpoint and through the
+# real frontend page.
+
+log "resolving the customer_pipeline workflow definition"
+CRM_DEFINITION_RESPONSE=$(auth "$BACKEND_URL/api/firms/$FIRM_ID/workflow-definitions?key=customer_pipeline")
+CRM_DEFINITION_ID=$(echo "$CRM_DEFINITION_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['definitionId'])")
+[ -n "$CRM_DEFINITION_ID" ] || fail "did not resolve the customer_pipeline definition: $CRM_DEFINITION_RESPONSE"
+log "customer_pipeline resolved: $CRM_DEFINITION_ID"
+
+log "create lead: creating a customer_pipeline instance"
+LEAD_RESPONSE=$(auth -X POST "$BACKEND_URL/api/firms/$FIRM_ID/workflow-definitions/$CRM_DEFINITION_ID/instances" \
+    -H "Content-Type: application/json" \
+    -d '{"payload":{"name":"E2E Smoke Lead","contact":"lead@example.com"}}')
+LEAD_ID=$(echo "$LEAD_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['instanceId'])")
+[ -n "$LEAD_ID" ] || fail "did not get an instanceId back from create-lead: $LEAD_RESPONSE"
+echo "$LEAD_RESPONSE" | python3 -c "import sys, json; d = json.load(sys.stdin); assert d['state']['key'] == 'lead', d" \
+    || fail "expected the new lead's state to be lead: $LEAD_RESPONSE"
+log "lead created: instance $LEAD_ID, state lead"
+
+log "qualify: executing the qualify transition"
+QUALIFY_RESPONSE=$(auth -X POST "$BACKEND_URL/api/firms/$FIRM_ID/workflow-instances/$LEAD_ID/transitions/qualify" \
+    -H "Content-Type: application/json" -d '{}')
+echo "$QUALIFY_RESPONSE" | python3 -c "import sys, json; d = json.load(sys.stdin); assert d['state']['key'] == 'qualified', d" \
+    || fail "expected the lead's state to be qualified after qualify: $QUALIFY_RESPONSE"
+log "lead qualified: instance $LEAD_ID is now qualified"
+
+log "convert: executing the convert transition"
+CONVERT_RESPONSE=$(auth -X POST "$BACKEND_URL/api/firms/$FIRM_ID/workflow-instances/$LEAD_ID/transitions/convert" \
+    -H "Content-Type: application/json" -d '{}')
+echo "$CONVERT_RESPONSE" | python3 -c "import sys, json; d = json.load(sys.stdin); assert d['state']['key'] == 'customer', d" \
+    || fail "expected the lead's state to be customer after convert: $CONVERT_RESPONSE"
+log "lead converted: instance $LEAD_ID is now a customer"
+
+log "dashboard overview (backend path): confirming GET .../workflow-instance-counts reports both workflows correctly"
+COUNTS_RESPONSE=$(auth "$BACKEND_URL/api/firms/$FIRM_ID/workflow-instance-counts")
+echo "$COUNTS_RESPONSE" | python3 -c "
+import sys, json
+defs = json.load(sys.stdin)
+assert isinstance(defs, list), defs
+stock = next((d for d in defs if d['key'] == 'stock_to_sale'), None)
+assert stock, defs
+stock_counts = {c['stateKey']: c['count'] for c in stock['counts']}
+assert stock_counts.get('sold', 0) >= 1, stock_counts
+crm = next((d for d in defs if d['key'] == 'customer_pipeline'), None)
+assert crm, defs
+crm_counts = {c['stateKey']: c['count'] for c in crm['counts']}
+assert crm_counts.get('customer', 0) >= 1, crm_counts
+# 'lost' must be reported even though nothing reached it yet - the
+# LEFT JOIN's whole point (see InstanceCountsByDefinition's doc comment).
+assert 'lost' in crm_counts, crm_counts
+" || fail "expected workflow-instance-counts to report accurate per-state counts for both workflows: $COUNTS_RESPONSE"
+log "dashboard overview (backend path) confirmed"
+
+log "dashboard overview (UI path): confirming the frontend's own dashboard page renders both workflows' overview cards"
+DASHBOARD_HTML=$(curl -sS -b "zonaryos_session=$TOKEN" "$FRONTEND_URL/en")
+echo "$DASHBOARD_HTML" | grep -q "Stock In -> Sale\|Stock In -&gt; Sale" \
+    || fail "expected the dashboard to render a Stock In -> Sale overview card"
+echo "$DASHBOARD_HTML" | grep -q "Customer Pipeline" \
+    || fail "expected the dashboard to render a Customer Pipeline overview card"
+log "dashboard overview (UI path) confirmed"
+
+log "quick create (UI path): creating a second lead directly through the dashboard's generic create route, same as any other workflow"
+QUICK_CREATE_RESPONSE=$(uiAuth -X POST "$FRONTEND_URL/api/workflow/instances" \
+    -H "Content-Type: application/json" \
+    -d "{\"firmId\":\"$FIRM_ID\",\"definitionId\":\"$CRM_DEFINITION_ID\",\"payload\":{\"name\":\"E2E Quick-Create Lead\"}}")
+echo "$QUICK_CREATE_RESPONSE" | python3 -c "import sys, json; d = json.load(sys.stdin); assert d['state']['key'] == 'lead', d" \
+    || fail "expected the quick-created lead's state to be lead: $QUICK_CREATE_RESPONSE"
+log "quick create (UI path) confirmed"
+
+log "global search (UI path): confirming /search finds the converted lead, grouped under Customer Pipeline"
+SEARCH_HTML=$(curl -sS -b "zonaryos_session=$TOKEN" "$FRONTEND_URL/en/search?q=E2E%20Smoke%20Lead")
+echo "$SEARCH_HTML" | grep -q "Customer Pipeline" \
+    || fail "expected /search?q=E2E Smoke Lead to render a Customer Pipeline results group"
+echo "$SEARCH_HTML" | grep -q "E2E Smoke Lead" \
+    || fail "expected /search?q=E2E Smoke Lead to render the matching lead's payload"
+log "global search (UI path) confirmed"
+
 echo ""
-echo "E2E SMOKE TEST PASSED: login + wizard -> firm creation -> add stock -> sell, plus UI-path add stock, firm switch, audit log view, and a real second workflow defined + rendered through the generic UI, all against a real stack"
+echo "E2E SMOKE TEST PASSED: login + wizard -> firm creation -> add stock -> sell, plus UI-path add stock, firm switch, audit log view, a real second workflow defined + rendered through the generic UI, the Customer Pipeline default workflow walked lead -> qualified -> customer, the dashboard's counts-by-state overview, quick-create, and global search, all against a real stack"

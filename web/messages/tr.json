@@ -26,14 +26,20 @@
     "welcome": "Tekrar hoş geldiniz, {name}.",
     "roleLabel": "Rolünüz",
     "roleUnavailable": "Kullanılamıyor",
-    "itemCountLabel": "Stoktaki ürün sayısı",
     "itemCountUnavailable": "—",
-    "goToStock": "Stoğa git",
     "workflowCountLabel": "İş akışları",
     "goToWorkflows": "Tüm iş akışlarını görüntüle",
     "auditLogCardTitle": "Denetim izi",
     "auditLogCardBody": "Bu firmada kimin ne zaman ne yaptığını inceleyin.",
-    "goToAuditLog": "Denetim kaydını görüntüle"
+    "goToAuditLog": "Denetim kaydını görüntüle",
+    "overviewTitle": "İş akışı genel bakışı",
+    "overviewLoadError": "Bu firmanın iş akışı genel bakışı yüklenemedi. Lütfen tekrar deneyin.",
+    "overviewEmpty": "Bu firma için henüz kurulmuş bir iş akışı yok.",
+    "quickCreateTitle": "Hızlı oluştur",
+    "quickCreateButton": "+ Hızlı oluştur",
+    "quickCreateClose": "Kapat",
+    "quickCreateSelectLabel": "İş akışı",
+    "quickCreateEmpty": "Henüz oluşturmak için kullanılabilir bir iş akışı yok."
   },
   "Wizard": {
     "title": "Firmanızı oluşturun",
@@ -207,6 +213,15 @@
     "rolesEmpty": "Sahip dışında henüz bir rol yok.",
     "rolesLoadError": "Bu firmanın rolleri yüklenemedi. Lütfen tekrar deneyin.",
     "permissionDenied": "Rolleri yalnızca firma sahibi yönetebilir."
+  },
+  "Search": {
+    "title": "Ara",
+    "placeholder": "Tüm iş akışlarında ara...",
+    "button": "Ara",
+    "prompt": "Bu firmadaki tüm iş akışlarında aramak için bir şeyler yazın.",
+    "empty": "Hiçbir iş akışında sonuç bulunamadı.",
+    "loadError": "Aramak için bu firmanın iş akışları yüklenemedi. Lütfen tekrar deneyin.",
+    "seeAllInWorkflow": "{name} içindeki {count} sonucun tümünü gör"
   },
   "Members": {
     "title": "Üyeler",

@@ -1222,3 +1222,155 @@ func TestListInstances_PaginationAndSearch(t *testing.T) {
 		t.Errorf("expected no matches for an unmatched search, got %+v (total %d)", noMatch.Instances, noMatch.Total)
 	}
 }
+
+// --- InstanceCountsByDefinition (dashboard overview, item 2) ----------
+
+// TestInstanceCountsByDefinition_CountsAcrossMultipleDefinitions is this
+// batch's core proof for the dashboard's overview data source: two
+// structurally different definitions in the same firm (Stock In -> Sale
+// and Customer Pipeline), each with instances moved into a mix of
+// states, and the aggregate query should report accurate per-state
+// counts for both - including a zero count for a state nothing has
+// reached yet (Customer Pipeline's "lost"), not an omitted row.
+func TestInstanceCountsByDefinition_CountsAcrossMultipleDefinitions(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	var firmID uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm A') RETURNING id`).Scan(&firmID); err != nil {
+		t.Fatalf("seed firm: %v", err)
+	}
+
+	stockDefID, err := workflow.SeedStockToSaleWorkflow(ctx, appPool, firmID)
+	if err != nil {
+		t.Fatalf("seed stock_to_sale workflow: %v", err)
+	}
+	crmDefID, err := workflow.SeedCustomerPipelineWorkflow(ctx, appPool, firmID)
+	if err != nil {
+		t.Fatalf("seed customer_pipeline workflow: %v", err)
+	}
+
+	userID, _ := seedUserInFirm(ctx, t, adminPool, appPool, firmID, "sub-counts",
+		workflow.AddStockPermission, workflow.RecordSalePermission,
+		workflow.CreateLeadPermission, workflow.QualifyLeadPermission, workflow.ConvertCustomerPermission, workflow.MarkLeadLostPermission,
+	)
+
+	// Stock In -> Sale: 2 in_stock, 1 sold.
+	if _, err := workflow.CreateInstance(ctx, appPool, firmID, userID, stockDefID, map[string]any{"item": "widget"}); err != nil {
+		t.Fatalf("CreateInstance (stock 1): %v", err)
+	}
+	if _, err := workflow.CreateInstance(ctx, appPool, firmID, userID, stockDefID, map[string]any{"item": "gadget"}); err != nil {
+		t.Fatalf("CreateInstance (stock 2): %v", err)
+	}
+	soldID, err := workflow.CreateInstance(ctx, appPool, firmID, userID, stockDefID, map[string]any{"item": "widget"})
+	if err != nil {
+		t.Fatalf("CreateInstance (stock 3, to sell): %v", err)
+	}
+	if err := workflow.ExecuteTransition(ctx, appPool, firmID, userID, soldID, "record_sale", nil); err != nil {
+		t.Fatalf("ExecuteTransition record_sale: %v", err)
+	}
+
+	// Customer Pipeline: 1 lead, 1 customer, 0 lost, 0 qualified.
+	if _, err := workflow.CreateInstance(ctx, appPool, firmID, userID, crmDefID, map[string]any{"name": "Acme Inc"}); err != nil {
+		t.Fatalf("CreateInstance (lead): %v", err)
+	}
+	convertedID, err := workflow.CreateInstance(ctx, appPool, firmID, userID, crmDefID, map[string]any{"name": "Beta LLC"})
+	if err != nil {
+		t.Fatalf("CreateInstance (to convert): %v", err)
+	}
+	if err := workflow.ExecuteTransition(ctx, appPool, firmID, userID, convertedID, "qualify", nil); err != nil {
+		t.Fatalf("ExecuteTransition qualify: %v", err)
+	}
+	if err := workflow.ExecuteTransition(ctx, appPool, firmID, userID, convertedID, "convert", nil); err != nil {
+		t.Fatalf("ExecuteTransition convert: %v", err)
+	}
+
+	results, err := workflow.InstanceCountsByDefinition(ctx, appPool, firmID, userID)
+	if err != nil {
+		t.Fatalf("InstanceCountsByDefinition: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected counts for 2 definitions, got %d: %+v", len(results), results)
+	}
+
+	byKey := make(map[string]workflow.DefinitionInstanceCounts, len(results))
+	for _, r := range results {
+		byKey[r.Key] = r
+	}
+
+	stock, ok := byKey[workflow.StockToSaleKey]
+	if !ok {
+		t.Fatalf("expected stock_to_sale counts in the result: %+v", results)
+	}
+	stockCounts := stateCountMap(stock.Counts)
+	if stockCounts["in_stock"] != 2 {
+		t.Errorf("expected 2 in_stock, got %d (%+v)", stockCounts["in_stock"], stock.Counts)
+	}
+	if stockCounts["sold"] != 1 {
+		t.Errorf("expected 1 sold, got %d (%+v)", stockCounts["sold"], stock.Counts)
+	}
+
+	crm, ok := byKey[workflow.CustomerPipelineKey]
+	if !ok {
+		t.Fatalf("expected customer_pipeline counts in the result: %+v", results)
+	}
+	crmCounts := stateCountMap(crm.Counts)
+	if crmCounts["lead"] != 1 {
+		t.Errorf("expected 1 lead, got %d (%+v)", crmCounts["lead"], crm.Counts)
+	}
+	if crmCounts["customer"] != 1 {
+		t.Errorf("expected 1 customer, got %d (%+v)", crmCounts["customer"], crm.Counts)
+	}
+	// "lost" and "qualified" have zero instances, but should still be
+	// reported (the LEFT JOIN's whole point) rather than omitted.
+	if count, ok := crmCounts["lost"]; !ok || count != 0 {
+		t.Errorf("expected an explicit 0 for 'lost', got %d (present: %v, %+v)", count, ok, crm.Counts)
+	}
+	if count, ok := crmCounts["qualified"]; !ok || count != 0 {
+		t.Errorf("expected an explicit 0 for 'qualified', got %d (present: %v, %+v)", count, ok, crm.Counts)
+	}
+}
+
+func stateCountMap(counts []workflow.StateCount) map[string]int {
+	m := make(map[string]int, len(counts))
+	for _, c := range counts {
+		m[c.StateKey] = c.Count
+	}
+	return m
+}
+
+// TestInstanceCountsByDefinition_RLS mirrors ListDefinitions_RLS: a
+// second firm's counts must never leak into the first firm's result, and
+// a non-member can't read them just by supplying a real firmID.
+func TestInstanceCountsByDefinition_RLS(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	var firmA, firmB uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm A') RETURNING id`).Scan(&firmA); err != nil {
+		t.Fatalf("seed firm A: %v", err)
+	}
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm B') RETURNING id`).Scan(&firmB); err != nil {
+		t.Fatalf("seed firm B: %v", err)
+	}
+	if _, err := workflow.SeedStockToSaleWorkflow(ctx, appPool, firmA); err != nil {
+		t.Fatalf("seed workflow A: %v", err)
+	}
+	crmDefIDB, err := workflow.SeedCustomerPipelineWorkflow(ctx, appPool, firmB)
+	if err != nil {
+		t.Fatalf("seed workflow B: %v", err)
+	}
+	userB, _ := seedUserInFirm(ctx, t, adminPool, appPool, firmB, "sub-counts-b")
+
+	resultsB, err := workflow.InstanceCountsByDefinition(ctx, appPool, firmB, userB)
+	if err != nil {
+		t.Fatalf("InstanceCountsByDefinition under firm B: %v", err)
+	}
+	if len(resultsB) != 1 || resultsB[0].DefinitionID != crmDefIDB {
+		t.Fatalf("expected firm B's counts to contain only its own definition %v, got: %+v", crmDefIDB, resultsB)
+	}
+
+	if _, err := workflow.InstanceCountsByDefinition(ctx, appPool, firmA, userB); !errors.Is(err, workflow.ErrDefinitionNotFound) {
+		t.Fatalf("expected ErrDefinitionNotFound when a non-member of firm A reads its counts by firm A's real ID, got: %v", err)
+	}
+}

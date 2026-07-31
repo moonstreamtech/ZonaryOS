@@ -26,14 +26,20 @@
     "welcome": "Welcome back, {name}.",
     "roleLabel": "Your role",
     "roleUnavailable": "Unavailable",
-    "itemCountLabel": "Items in stock",
     "itemCountUnavailable": "—",
-    "goToStock": "Go to stock",
     "workflowCountLabel": "Workflows",
     "goToWorkflows": "View all workflows",
     "auditLogCardTitle": "Audit trail",
     "auditLogCardBody": "Review who did what, when, across this firm.",
-    "goToAuditLog": "View audit log"
+    "goToAuditLog": "View audit log",
+    "overviewTitle": "Workflow overview",
+    "overviewLoadError": "Couldn't load this firm's workflow overview. Please try again.",
+    "overviewEmpty": "No workflows set up for this firm yet.",
+    "quickCreateTitle": "Quick create",
+    "quickCreateButton": "+ Quick create",
+    "quickCreateClose": "Close",
+    "quickCreateSelectLabel": "Workflow",
+    "quickCreateEmpty": "No workflows available to create from yet."
   },
   "Wizard": {
     "title": "Set up your firm",
@@ -207,6 +213,15 @@
     "rolesEmpty": "No roles other than Owner yet.",
     "rolesLoadError": "Couldn't load this firm's roles. Please try again.",
     "permissionDenied": "Only the firm owner can manage roles."
+  },
+  "Search": {
+    "title": "Search",
+    "placeholder": "Search across all workflows...",
+    "button": "Search",
+    "prompt": "Type something to search across every workflow in this firm.",
+    "empty": "No results found in any workflow.",
+    "loadError": "Couldn't load this firm's workflows to search. Please try again.",
+    "seeAllInWorkflow": "See all {count} results in {name}"
   },
   "Members": {
     "title": "Members",

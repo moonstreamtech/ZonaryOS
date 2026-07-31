@@ -7,6 +7,7 @@ import { getTranslations } from "next-intl/server";
 import { Link } from "@/i18n/navigation";
 import type { MeResponse } from "@/lib/me";
 import FirmSwitcher from "./FirmSwitcher";
+import GlobalSearchBox from "./GlobalSearchBox";
 import AuditModeClient from "@/components/AuditMode/AuditModeClient";
 
 type Props = {
@@ -101,6 +102,11 @@ export default async function NavShell({ me, activeFirmId, isOwner }: Props) {
             </nav>
           )}
         </div>
+
+        {/* Item 3's firm-wide search entry point - mounted here so it's
+            reachable from every authenticated page, not just /search
+            itself (see components/Nav/GlobalSearchBox.tsx). */}
+        {activeFirmId && <GlobalSearchBox />}
 
         {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- /api/auth/logout is a route handler, not a page: it must be a real navigation, not client-side routing */}
         <a

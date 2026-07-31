@@ -8,13 +8,9 @@ import { redirect } from "next/navigation";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import { fetchMe, fetchRoleInFirm } from "@/lib/me";
 import { resolveActiveFirm } from "@/lib/activeFirm";
-import {
-  fetchDefinitionByKey,
-  fetchDefinitions,
-  fetchInstances,
-  STOCK_TO_SALE_KEY,
-} from "@/lib/workflow";
+import { fetchDefinitions, fetchInstanceCounts } from "@/lib/workflow";
 import { Link } from "@/i18n/navigation";
+import QuickCreatePanel from "@/components/Workflow/QuickCreatePanel";
 
 type PageProps = {
   params: Promise<{ locale: string }>;
@@ -30,14 +26,24 @@ async function fetchBackendStatus(): Promise<boolean> {
   }
 }
 
-// Firm dashboard (item 2): the caller's firm, their role in it, and a
-// quick summary drawn from data the backend already exposes - no new
-// backend surface invented for this. In-stock item count comes from the
-// same Stock In -> Sale workflow instances the stock page lists (see
-// lib/workflow.ts); "in stock" is anything not yet in the workflow's
-// terminal "sold" state. definition === null (the workflow was never
-// seeded for this firm - possible for a firm created before PR 8) is
-// rendered as an explicit "not set up" summary state, not an error.
+// Firm dashboard (item 2 of this batch): the caller's firm, their role in
+// it, and a genuine cross-workflow overview - every workflow definition
+// the firm has, each broken down by how many instances currently sit in
+// each state ("Stock: 12 in stock, 3 sold" / "Customers: 5 leads, 2
+// customers, 1 lost") - computed by one grouped backend query
+// (internal/workflow.InstanceCountsByDefinition via
+// lib/workflow.fetchInstanceCounts), not by fetching every instance and
+// counting client-side. This replaces the old hardcoded single
+// stock-item-count card, which only ever worked for one firm's one
+// workflow and said nothing once a firm had a second definition (e.g.
+// Customer Pipeline, seeded alongside Stock In -> Sale for every firm
+// created from this batch on - see internal/wizard.CreateDefaultFirm).
+//
+// Server-rendered like every other firm-scoped page in this app: `counts
+// === null` is the explicit error state (backend unreachable/RLS denied
+// something unexpected), `counts.length === 0` is the explicit empty
+// state (no workflow definitions yet - possible for a firm predating any
+// seeding), otherwise one card per definition.
 export default async function Home({ params }: PageProps) {
   const { locale } = await params;
   setRequestLocale(locale);
@@ -85,17 +91,10 @@ export default async function Home({ params }: PageProps) {
   const firm = await resolveActiveFirm(me);
   const role = await fetchRoleInFirm(sessionToken!, firm.firmId);
 
-  const definition = await fetchDefinitionByKey(
-    sessionToken!,
-    firm.firmId,
-    STOCK_TO_SALE_KEY,
-  );
-  const instances = definition
-    ? await fetchInstances(sessionToken!, firm.firmId, definition.definitionId)
-    : null;
-  const inStockCount =
-    instances?.filter((i) => i.state.key !== "sold").length ?? null;
-  const definitions = await fetchDefinitions(sessionToken!, firm.firmId);
+  const [definitions, counts] = await Promise.all([
+    fetchDefinitions(sessionToken!, firm.firmId),
+    fetchInstanceCounts(sessionToken!, firm.firmId),
+  ]);
 
   return (
     <main className="flex flex-1 flex-col items-center gap-8 bg-zinc-50 px-6 py-16 dark:bg-black">
@@ -111,23 +110,50 @@ export default async function Home({ params }: PageProps) {
         </p>
       </div>
 
-      <div className="grid w-full max-w-2xl gap-4 sm:grid-cols-2">
-        <div className="rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
-          <h2 className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
-            {tDash("itemCountLabel")}
-          </h2>
-          <p className="mt-1 text-2xl font-semibold text-black dark:text-zinc-50">
-            {inStockCount === null ? tDash("itemCountUnavailable") : inStockCount}
-          </p>
-          <Link
-            href="/stock"
-            data-permission-public="true"
-            className="mt-3 inline-block text-sm font-medium text-zinc-950 underline dark:text-zinc-50"
-          >
-            {tDash("goToStock")}
-          </Link>
-        </div>
+      <div className="flex w-full max-w-2xl flex-col gap-3">
+        <h2 className="self-start text-sm font-medium text-zinc-500 dark:text-zinc-400">
+          {tDash("overviewTitle")}
+        </h2>
 
+        {counts === null ? (
+          <p className="text-red-600 dark:text-red-400">{tDash("overviewLoadError")}</p>
+        ) : counts.length === 0 ? (
+          <p className="text-zinc-600 dark:text-zinc-400">{tDash("overviewEmpty")}</p>
+        ) : (
+          <div className="grid w-full gap-4 sm:grid-cols-2">
+            {counts.map((definitionCounts) => (
+              <Link
+                key={definitionCounts.definitionId}
+                href={`/workflows/${definitionCounts.key}`}
+                data-permission-public="true"
+                className="rounded-lg border border-zinc-200 bg-white p-5 text-left transition-colors hover:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:border-zinc-600"
+              >
+                {/* definitionCounts.name/stateName are workflow_definitions
+                    /workflow_states.name from the backend - data, not UI
+                    copy, same convention as elsewhere in this component
+                    tree. */}
+                <h3 className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
+                  {definitionCounts.name}
+                </h3>
+                <p className="mt-1 text-lg font-semibold text-black dark:text-zinc-50">
+                  {definitionCounts.counts
+                    .map((c) => `${c.count} ${c.stateName}`)
+                    .join(", ")}
+                </p>
+              </Link>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="w-full max-w-2xl">
+        <h2 className="mb-3 text-sm font-medium text-zinc-500 dark:text-zinc-400">
+          {tDash("quickCreateTitle")}
+        </h2>
+        <QuickCreatePanel firmId={firm.firmId} definitions={definitions ?? []} />
+      </div>
+
+      <div className="grid w-full max-w-2xl gap-4 sm:grid-cols-2">
         <div className="rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
           <h2 className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
             {tDash("workflowCountLabel")}
