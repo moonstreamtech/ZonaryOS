@@ -30,6 +30,11 @@ export type InstanceState = {
   availableActions: AvailableAction[];
 };
 
+export type ListInstancesPage = {
+  instances: InstanceState[];
+  total: number;
+};
+
 export type WorkflowDefinition = {
   definitionId: string;
   key: string;
@@ -189,6 +194,45 @@ export async function fetchInstances(
     );
     if (!res.ok) return null;
     return (await res.json()) as InstanceState[];
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Calls the Go backend's `GET .../instances` with `?limit=`/`?offset=`/`?q=`
+ * - the paged, filterable read path a listing screen with real volume
+ * needs, as opposed to fetchInstances above (still unpaginated, used by
+ * WorkflowHistory's own correlation lookup, which wants every instance's
+ * current payload as a fallback, not just the current page's). The
+ * backend reports the filtered-but-unpaged total via the `X-Total-Count`
+ * response header rather than changing the array body shape (see
+ * handleListInstances's doc comment) - read here to compute page count.
+ * Returns null on failure, same convention as fetchInstances.
+ */
+export async function fetchInstancesPage(
+  token: string,
+  firmId: string,
+  definitionId: string,
+  opts: { limit: number; offset: number; q?: string },
+): Promise<ListInstancesPage | null> {
+  try {
+    const params = new URLSearchParams({
+      limit: String(opts.limit),
+      offset: String(opts.offset),
+    });
+    if (opts.q) params.set("q", opts.q);
+    const res = await fetch(
+      `${apiBase()}/api/firms/${encodeURIComponent(firmId)}/workflow-definitions/${encodeURIComponent(definitionId)}/instances?${params.toString()}`,
+      {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      },
+    );
+    if (!res.ok) return null;
+    const instances = (await res.json()) as InstanceState[];
+    const total = Number(res.headers.get("X-Total-Count") ?? instances.length);
+    return { instances, total: Number.isFinite(total) ? total : instances.length };
   } catch {
     return null;
   }

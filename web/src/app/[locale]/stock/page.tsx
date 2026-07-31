@@ -10,6 +10,7 @@ import WorkflowDefinitionView from "@/components/Workflow/WorkflowDefinitionView
 
 type PageProps = {
   params: Promise<{ locale: string }>;
+  searchParams: Promise<{ page?: string; q?: string }>;
 };
 
 // This route predates the generic /workflows/[key] view (item 1) and is
@@ -22,9 +23,10 @@ type PageProps = {
 // favor of this shared, generic component tree). /workflows/stock_to_sale
 // renders the identical page through the generic route; this file exists
 // only to preserve the shorter, already-known URL.
-export default async function StockPage({ params }: PageProps) {
+export default async function StockPage({ params, searchParams }: PageProps) {
   const { locale } = await params;
   setRequestLocale(locale);
+  const { page, q } = await searchParams;
 
   const { sessionToken, firm } = await requireFirmContext(locale);
 
@@ -33,6 +35,8 @@ export default async function StockPage({ params }: PageProps) {
       sessionToken={sessionToken}
       firmId={firm.firmId}
       workflowKey={STOCK_TO_SALE_KEY}
+      page={page ? Number(page) : undefined}
+      q={q}
     />
   );
 }

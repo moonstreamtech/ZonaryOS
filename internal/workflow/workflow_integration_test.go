@@ -1032,12 +1032,16 @@ func TestListInstances_ReturnsEachInstanceWithItsStateAndActions(t *testing.T) {
 		t.Fatalf("ExecuteTransition: %v", err)
 	}
 
-	instances, err := workflow.ListInstances(ctx, appPool, firmID, userID, definitionID)
+	listResult, err := workflow.ListInstances(ctx, appPool, firmID, userID, definitionID, workflow.ListInstancesOptions{})
 	if err != nil {
 		t.Fatalf("ListInstances: %v", err)
 	}
+	instances := listResult.Instances
 	if len(instances) != 2 {
 		t.Fatalf("expected 2 instances, got %d", len(instances))
+	}
+	if listResult.Total != 2 {
+		t.Errorf("expected Total to be 2, got %d", listResult.Total)
 	}
 
 	byID := make(map[uuid.UUID]workflow.InstanceState, len(instances))
@@ -1107,24 +1111,24 @@ func TestListInstances_RLS(t *testing.T) {
 	// Firm B has its own (empty) workflow definition but never touches
 	// firm A's stock - listing under firm B's context must come back
 	// empty, not leak firm A's instance.
-	instancesB, err := workflow.ListInstances(ctx, appPool, firmB, userB, definitionB)
+	resultB, err := workflow.ListInstances(ctx, appPool, firmB, userB, definitionB, workflow.ListInstancesOptions{})
 	if err != nil {
 		t.Fatalf("ListInstances under firm B: %v", err)
 	}
-	if len(instancesB) != 0 {
-		t.Errorf("expected firm B to see no instances, got %d", len(instancesB))
+	if len(resultB.Instances) != 0 {
+		t.Errorf("expected firm B to see no instances, got %d", len(resultB.Instances))
 	}
 
 	// Listing firm A's own definition ID under firm B's firm context
 	// (RLS scoping, not the definition ID) must also come back empty -
 	// the definition row itself isn't visible under the wrong firm
 	// context, so its instances aren't either.
-	instancesCrossFirm, err := workflow.ListInstances(ctx, appPool, firmB, userB, definitionA)
+	resultCrossFirm, err := workflow.ListInstances(ctx, appPool, firmB, userB, definitionA, workflow.ListInstancesOptions{})
 	if err != nil {
 		t.Fatalf("ListInstances with firm A's definition under firm B's context: %v", err)
 	}
-	if len(instancesCrossFirm) != 0 {
-		t.Errorf("expected no instances when listing firm A's definition under firm B's firm context, got %d", len(instancesCrossFirm))
+	if len(resultCrossFirm.Instances) != 0 {
+		t.Errorf("expected no instances when listing firm A's definition under firm B's firm context, got %d", len(resultCrossFirm.Instances))
 	}
 
 	// The membership-bypass regression: userB is not a member of firm A
@@ -1133,16 +1137,88 @@ func TestListInstances_RLS(t *testing.T) {
 	// (even with an empty result) just because both IDs happen to be
 	// genuine. Before permission.IsMember was added to ListInstances,
 	// this would have returned firm A's actual stock.
-	if _, err := workflow.ListInstances(ctx, appPool, firmA, userB, definitionA); !errors.Is(err, workflow.ErrDefinitionNotFound) {
+	if _, err := workflow.ListInstances(ctx, appPool, firmA, userB, definitionA, workflow.ListInstancesOptions{}); !errors.Is(err, workflow.ErrDefinitionNotFound) {
 		t.Fatalf("expected ErrDefinitionNotFound when a non-member of firm A lists its instances by real ID, got: %v", err)
 	}
 
 	// Listing under the correct firm context still finds it.
-	instancesA, err := workflow.ListInstances(ctx, appPool, firmA, userA, definitionA)
+	resultA, err := workflow.ListInstances(ctx, appPool, firmA, userA, definitionA, workflow.ListInstancesOptions{})
 	if err != nil {
 		t.Fatalf("ListInstances under firm A: %v", err)
 	}
-	if len(instancesA) != 1 {
-		t.Errorf("expected firm A to see exactly its 1 instance, got %d", len(instancesA))
+	if len(resultA.Instances) != 1 {
+		t.Errorf("expected firm A to see exactly its 1 instance, got %d", len(resultA.Instances))
+	}
+}
+
+// TestListInstances_PaginationAndSearch covers item 2: Limit/Offset page
+// through results in creation order, and Search filters by payload/state
+// content - generically, not any one definition's specific field names.
+func TestListInstances_PaginationAndSearch(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	var firmID uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm Paging') RETURNING id`).Scan(&firmID); err != nil {
+		t.Fatalf("seed firm: %v", err)
+	}
+	definitionID, err := workflow.SeedStockToSaleWorkflow(ctx, appPool, firmID)
+	if err != nil {
+		t.Fatalf("seed workflow: %v", err)
+	}
+	userID, _ := seedUserInFirm(ctx, t, adminPool, appPool, firmID, "sub-paging", workflow.AddStockPermission)
+
+	items := []string{"widget", "gadget", "gizmo"}
+	var ids []uuid.UUID
+	for _, item := range items {
+		id, err := workflow.CreateInstance(ctx, appPool, firmID, userID, definitionID, map[string]any{"item": item})
+		if err != nil {
+			t.Fatalf("CreateInstance(%q): %v", item, err)
+		}
+		ids = append(ids, id)
+	}
+
+	page1, err := workflow.ListInstances(ctx, appPool, firmID, userID, definitionID, workflow.ListInstancesOptions{Limit: 2})
+	if err != nil {
+		t.Fatalf("ListInstances page 1: %v", err)
+	}
+	if len(page1.Instances) != 2 {
+		t.Fatalf("expected page 1 to have 2 instances, got %d", len(page1.Instances))
+	}
+	if page1.Total != 3 {
+		t.Errorf("expected Total to be 3 regardless of Limit, got %d", page1.Total)
+	}
+	if page1.Instances[0].InstanceID != ids[0] || page1.Instances[1].InstanceID != ids[1] {
+		t.Errorf("expected page 1 to be the first 2 instances in creation order, got %+v", page1.Instances)
+	}
+
+	page2, err := workflow.ListInstances(ctx, appPool, firmID, userID, definitionID, workflow.ListInstancesOptions{Limit: 2, Offset: 2})
+	if err != nil {
+		t.Fatalf("ListInstances page 2: %v", err)
+	}
+	if len(page2.Instances) != 1 || page2.Instances[0].InstanceID != ids[2] {
+		t.Errorf("expected page 2 to be the remaining 1 instance, got %+v", page2.Instances)
+	}
+	if page2.Total != 3 {
+		t.Errorf("expected Total to be 3 on page 2 too, got %d", page2.Total)
+	}
+
+	searched, err := workflow.ListInstances(ctx, appPool, firmID, userID, definitionID, workflow.ListInstancesOptions{Search: "giz"})
+	if err != nil {
+		t.Fatalf("ListInstances search: %v", err)
+	}
+	if len(searched.Instances) != 1 || searched.Instances[0].InstanceID != ids[2] {
+		t.Errorf("expected search 'giz' to match only the gizmo instance, got %+v", searched.Instances)
+	}
+	if searched.Total != 1 {
+		t.Errorf("expected search Total to be 1, got %d", searched.Total)
+	}
+
+	noMatch, err := workflow.ListInstances(ctx, appPool, firmID, userID, definitionID, workflow.ListInstancesOptions{Search: "no-such-item"})
+	if err != nil {
+		t.Fatalf("ListInstances search with no match: %v", err)
+	}
+	if len(noMatch.Instances) != 0 || noMatch.Total != 0 {
+		t.Errorf("expected no matches for an unmatched search, got %+v (total %d)", noMatch.Instances, noMatch.Total)
 	}
 }

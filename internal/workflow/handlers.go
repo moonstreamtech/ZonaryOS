@@ -10,12 +10,19 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/moonstreamtech/ZonaryOS/internal/identity"
 )
+
+// maxListInstancesLimit caps the ?limit= query param on GET
+// .../instances - large enough for any reasonable page size, small
+// enough that a caller can't turn "paginated" into "everything" by
+// just asking for a huge page.
+const maxListInstancesLimit = 200
 
 // decodeJSONBody decodes r's body into v. A missing/empty body is treated
 // as "no payload given" (v is left at its zero value), not an error -
@@ -301,12 +308,23 @@ func handleDefineWorkflow(pool *pgxpool.Pool) http.HandlerFunc {
 	}
 }
 
-// handleListInstances lists every instance of one workflow definition
-// within the caller's firm (e.g. a stock list) - not filtered by the
-// caller's own *permissions* (same convention as handleCurrentState:
-// enforcement happens when an action is actually executed, not when
-// instances are merely listed), but it is filtered by *membership* -
-// see ListInstances's doc comment.
+// handleListInstances lists instances of one workflow definition within
+// the caller's firm (e.g. a stock list) - not filtered by the caller's
+// own *permissions* (same convention as handleCurrentState: enforcement
+// happens when an action is actually executed, not when instances are
+// merely listed), but it is filtered by *membership* - see
+// ListInstances's doc comment.
+//
+// Optional query params: ?limit= and ?offset= for paging (both default
+// to "off" - a request with neither returns every instance, unpaged,
+// same response shape as before this endpoint supported paging - see
+// ListInstancesOptions's zero value), and ?q= for a generic text filter
+// (matched against instance state and payload - see ListInstances). The
+// response body stays a plain array either way, so no existing caller
+// (WorkflowHistory's own correlation fetch, any external API consumer)
+// breaks; the total matching count (before paging) is reported via the
+// X-Total-Count response header instead of changing the body shape -
+// Never-Violate Rule 6, no breaking change without a deprecation cycle.
 func handleListInstances(pool *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := identity.FromContext(r.Context())
@@ -326,26 +344,58 @@ func handleListInstances(pool *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 
+		opts, err := parseListInstancesOptions(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
 		userID, err := identity.ResolveOrCreateUser(r.Context(), pool, id)
 		if err != nil {
 			http.Error(w, "failed to resolve user", http.StatusInternalServerError)
 			return
 		}
 
-		instances, err := ListInstances(r.Context(), pool, firmID, userID, definitionID)
+		result, err := ListInstances(r.Context(), pool, firmID, userID, definitionID, opts)
 		if err != nil {
 			writeEngineError(w, err)
 			return
 		}
 
-		resp := make([]instanceStateResponse, 0, len(instances))
-		for _, inst := range instances {
+		resp := make([]instanceStateResponse, 0, len(result.Instances))
+		for _, inst := range result.Instances {
 			resp = append(resp, toInstanceStateResponse(inst))
 		}
 
+		w.Header().Set("X-Total-Count", strconv.Itoa(result.Total))
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
 	}
+}
+
+// parseListInstancesOptions reads ?limit=/?offset=/?q= off r into
+// ListInstancesOptions, rejecting a negative or over-cap limit/offset
+// outright rather than silently clamping - a caller sending garbage
+// should see a 400, not a quietly "corrected" page.
+func parseListInstancesOptions(r *http.Request) (ListInstancesOptions, error) {
+	q := r.URL.Query()
+	opts := ListInstancesOptions{Search: q.Get("q")}
+
+	if raw := q.Get("limit"); raw != "" {
+		limit, err := strconv.Atoi(raw)
+		if err != nil || limit < 0 || limit > maxListInstancesLimit {
+			return ListInstancesOptions{}, errors.New("invalid limit")
+		}
+		opts.Limit = limit
+	}
+	if raw := q.Get("offset"); raw != "" {
+		offset, err := strconv.Atoi(raw)
+		if err != nil || offset < 0 {
+			return ListInstancesOptions{}, errors.New("invalid offset")
+		}
+		opts.Offset = offset
+	}
+	return opts, nil
 }
 
 type createInstanceRequest struct {

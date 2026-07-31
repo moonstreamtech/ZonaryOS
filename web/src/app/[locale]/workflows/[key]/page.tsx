@@ -9,6 +9,7 @@ import WorkflowDefinitionView from "@/components/Workflow/WorkflowDefinitionView
 
 type PageProps = {
   params: Promise<{ locale: string; key: string }>;
+  searchParams: Promise<{ page?: string; q?: string }>;
 };
 
 // Item 1's generic instance view: any workflow definition the firm has,
@@ -16,9 +17,10 @@ type PageProps = {
 // /workflows/purchase_order, ...), rendered through the same
 // WorkflowDefinitionView the /stock route's thin wrapper uses - no new
 // frontend code needed for a firm's second, third, ... workflow.
-export default async function WorkflowDefinitionPage({ params }: PageProps) {
+export default async function WorkflowDefinitionPage({ params, searchParams }: PageProps) {
   const { locale, key } = await params;
   setRequestLocale(locale);
+  const { page, q } = await searchParams;
 
   const { sessionToken, firm } = await requireFirmContext(locale);
 
@@ -27,6 +29,8 @@ export default async function WorkflowDefinitionPage({ params }: PageProps) {
       sessionToken={sessionToken}
       firmId={firm.firmId}
       workflowKey={key}
+      page={page ? Number(page) : undefined}
+      q={q}
     />
   );
 }

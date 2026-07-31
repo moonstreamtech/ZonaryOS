@@ -146,6 +146,99 @@ func GetFirmPermissionAudit(ctx context.Context, pool *pgxpool.Pool, firmID, use
 	return result, nil
 }
 
+// PermissionCatalogEntry is one permission key that exists for a firm -
+// referenced by at least one of its own workflow definitions/transitions,
+// or currently granted to at least one role - together with which
+// non-owner roles currently hold it.
+type PermissionCatalogEntry struct {
+	Key         string
+	Description string
+	// RoleKeys are the non-owner roles.key values currently holding this
+	// permission - empty for a key that exists (e.g. a transition was
+	// defined with it) but nobody's been granted it yet.
+	RoleKeys []string
+}
+
+// FirmPermissionCatalog is GetFirmPermissionCatalog's return shape: the
+// full permission-management page's data - see docs/DEVELOPMENT.md's
+// Permission Management Page section.
+type FirmPermissionCatalog struct {
+	Entries []PermissionCatalogEntry
+}
+
+// GetFirmPermissionCatalog is the full permission-management page's one
+// read call. It's built on top of GetFirmPermissionAudit - the same
+// owner-only-gated, is_owner-excluded role/grant data Permission Audit
+// Mode's own live overlay already reads - rather than a second,
+// parallel authorization or query path. What it adds on top: every
+// permission key that *exists* for the firm, including one referenced by
+// a workflow definition's create_permission_key or a transition's
+// permission_key but not yet granted to any role - a key with zero
+// holders has no role row to hang off in GetFirmPermissionAudit's
+// role-keyed shape, so Audit Mode's live overlay (which only ever
+// renders keys already tagged on a rendered element) never needed to
+// represent it, but a "browse everything" page does.
+//
+// ciaudit:ignore-firmid-check: delegates entirely to GetFirmPermissionAudit,
+// which already performs IsMember then IsOwner for this exact (firmID,
+// userID) pair before this function's own additional catalog query runs -
+// duplicating that check here would be redundant, not more correct.
+func GetFirmPermissionCatalog(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.UUID) (FirmPermissionCatalog, error) {
+	audit, err := GetFirmPermissionAudit(ctx, pool, firmID, userID)
+	if err != nil {
+		return FirmPermissionCatalog{}, err
+	}
+
+	heldBy := make(map[string][]string)
+	for _, role := range audit.Roles {
+		for _, key := range role.PermissionKeys {
+			heldBy[key] = append(heldBy[key], role.RoleKey)
+		}
+	}
+
+	var result FirmPermissionCatalog
+	err = zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		// Every key referenced by this firm's own workflow definitions/
+		// transitions, unioned with every key any non-owner role already
+		// holds (covers a key with no workflow-engine origin at all,
+		// e.g. audit.log.read) - firm-scoped throughout (every subquery
+		// filters by firm_id, not just relying on RLS), not the global
+		// permissions catalog, which also holds every other firm's keys.
+		rows, err := tx.Query(ctx, `
+			SELECT p.key, p.description
+			FROM permissions p
+			WHERE p.key IN (
+				SELECT create_permission_key FROM workflow_definitions WHERE firm_id = $1
+				UNION
+				SELECT permission_key FROM workflow_transitions WHERE firm_id = $1
+				UNION
+				SELECT permission_key FROM role_permissions WHERE firm_id = $1
+			)
+			ORDER BY p.key
+		`, firmID)
+		if err != nil {
+			return fmt.Errorf("list firm permission catalog: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var e PermissionCatalogEntry
+			if err := rows.Scan(&e.Key, &e.Description); err != nil {
+				return err
+			}
+			e.RoleKeys = heldBy[e.Key]
+			if e.RoleKeys == nil {
+				e.RoleKeys = []string{}
+			}
+			result.Entries = append(result.Entries, e)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return FirmPermissionCatalog{}, err
+	}
+	return result, nil
+}
+
 // checkRoleIsGrantable looks up roleID within firmID and rejects it if it
 // doesn't exist or is owner-flagged - the server-side half of "owner
 // roles don't appear in these lists" (the frontend never offers one as a
