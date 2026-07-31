@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
+	"github.com/moonstreamtech/ZonaryOS/internal/firm"
 	"github.com/moonstreamtech/ZonaryOS/internal/identity"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/config"
@@ -49,6 +50,7 @@ func main() {
 	wizard.RegisterRoutes(mux, verifier, pool)
 	permission.RegisterRoutes(mux, verifier, pool, broadcaster)
 	auditlog.RegisterRoutes(mux, verifier, pool)
+	firm.RegisterRoutes(mux, verifier, pool)
 
 	// An explicit http.Server (not the bare http.ListenAndServe function)
 	// so ReadHeaderTimeout can be set - a slowloris mitigation (CI

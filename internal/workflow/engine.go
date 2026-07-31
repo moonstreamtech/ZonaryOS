@@ -13,12 +13,19 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
 )
+
+// postgresUniqueViolation is the SQLSTATE code Postgres raises for a
+// UNIQUE constraint violation - used below to turn workflow_definitions'
+// (firm_id, key) collision into the specific ErrDefinitionKeyExists
+// instead of a generic 500.
+const postgresUniqueViolation = "23505"
 
 // workflowInstanceListEntityType is the audit_log.entity_type ListInstances
 // records its view-log entry under - see ListInstances's doc comment.
@@ -104,6 +111,10 @@ func DefineWorkflowTx(ctx context.Context, tx pgx.Tx, firmID, granteeRoleID uuid
 		VALUES ($1, $2, $3, $4)
 		RETURNING id
 	`, firmID, spec.Key, spec.Name, spec.CreatePermission.Key).Scan(&definitionID); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == postgresUniqueViolation {
+			return uuid.UUID{}, ErrDefinitionKeyExists
+		}
 		return uuid.UUID{}, fmt.Errorf("insert workflow definition: %w", err)
 	}
 
@@ -165,6 +176,67 @@ func upsertPermission(ctx context.Context, tx pgx.Tx, firmID, granteeRoleID uuid
 		return fmt.Errorf("grant permission %q to role %s: %w", p.Key, granteeRoleID, err)
 	}
 	return nil
+}
+
+// DefineWorkflowForFirm is DefineWorkflow's HTTP-reachable counterpart -
+// what lets a firm actually use the generic workflow engine (this
+// codebase's own DefineWorkflow/DefineWorkflowTx, already exercised by
+// SeedStockToSaleWorkflow) to define its own workflow, instead of only
+// ever getting the one hardcoded stock_to_sale definition every firm is
+// seeded with. Owner-gated: defining a new workflow type - a new
+// permission-gated action surface for the firm - is a structural firm
+// decision, the same tier as firm creation itself (see
+// internal/wizard.CreateDefaultFirm), not something every member can do.
+//
+// On success, every permission spec introduces (its create permission,
+// plus each transition's) is granted to the acting owner's own
+// owner-flagged role - DefineWorkflowTx's "self-action auto-grant"
+// (see its own doc comment), the same mechanism CreateDefaultFirm and
+// SeedStockToSaleWorkflowTx already rely on - so a firm isn't left
+// holding a freshly-defined workflow nobody can actually use yet. A firm
+// can extend access to other roles afterward via Permission Audit Mode,
+// same as any other permission.
+func DefineWorkflowForFirm(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.UUID, spec DefinitionSpec) (uuid.UUID, error) {
+	var definitionID uuid.UUID
+	err := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		isMember, err := permission.IsMember(ctx, tx, firmID, userID)
+		if err != nil {
+			return err
+		}
+		if !isMember {
+			return ErrDefinitionNotFound
+		}
+
+		isOwner, err := permission.IsOwner(ctx, tx, firmID, userID)
+		if err != nil {
+			return err
+		}
+		if !isOwner {
+			return ErrPermissionDenied
+		}
+
+		if err := spec.Validate(); err != nil {
+			return fmt.Errorf("%w: %s", ErrInvalidSpec, err)
+		}
+
+		var granteeRoleID uuid.UUID
+		if err := tx.QueryRow(ctx, `
+			SELECT r.id FROM user_firm_roles ufr
+			JOIN roles r ON r.id = ufr.role_id
+			WHERE ufr.user_id = $1 AND ufr.firm_id = $2 AND r.is_owner
+			LIMIT 1
+		`, userID, firmID).Scan(&granteeRoleID); err != nil {
+			return fmt.Errorf("look up acting owner's role: %w", err)
+		}
+
+		id, err := DefineWorkflowTx(ctx, tx, firmID, granteeRoleID, spec)
+		definitionID = id
+		return err
+	})
+	if err != nil {
+		return uuid.UUID{}, err
+	}
+	return definitionID, nil
 }
 
 // CreateInstance starts a new instance of definitionID in its designated
@@ -548,11 +620,16 @@ func ListInstances(ctx context.Context, pool *pgxpool.Pool, firmID, userID, defi
 // DefinitionInfo names one workflow_definitions row - just enough for a
 // caller (e.g. a frontend page that only knows the well-known key
 // "stock_to_sale") to resolve the UUID the rest of this package's
-// functions take.
+// functions take. CreatePermissionKey is included for the same reason
+// AvailableAction.PermissionKey is: a UI rendering the "create instance"
+// action (e.g. "add stock") needs the real key CreateInstance actually
+// checks to carry a Never-Violate Rule 7 permission tag, instead of
+// hardcoding a duplicate of it.
 type DefinitionInfo struct {
-	ID   uuid.UUID
-	Key  string
-	Name string
+	ID                  uuid.UUID
+	Key                 string
+	Name                string
+	CreatePermissionKey string
 }
 
 // LookupDefinitionByKey resolves firmID's workflow_definitions row by its
@@ -573,8 +650,8 @@ func LookupDefinitionByKey(ctx context.Context, pool *pgxpool.Pool, firmID, user
 		}
 
 		err = tx.QueryRow(ctx, `
-			SELECT id, key, name FROM workflow_definitions WHERE key = $1
-		`, key).Scan(&info.ID, &info.Key, &info.Name)
+			SELECT id, key, name, create_permission_key FROM workflow_definitions WHERE key = $1
+		`, key).Scan(&info.ID, &info.Key, &info.Name, &info.CreatePermissionKey)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrDefinitionNotFound
 		}
@@ -584,4 +661,49 @@ func LookupDefinitionByKey(ctx context.Context, pool *pgxpool.Pool, firmID, user
 		return DefinitionInfo{}, err
 	}
 	return info, nil
+}
+
+// ListDefinitions returns every workflow_definitions row for firmID,
+// ordered by name - the data source for a firm-level "Workflows" view
+// (a firm's second, third, ... workflow definition, whenever one exists,
+// should show up here automatically rather than needing a hardcoded
+// frontend card per workflow the way the Stock In -> Sale page originally
+// did). This complements LookupDefinitionByKey rather than replacing it:
+// a caller that already knows a well-known key (e.g. the stock page)
+// still resolves it directly, without listing everything first. Same
+// IsMember-first treatment as every other read in this file - see
+// CurrentState's doc comment for why RLS scoping alone isn't enough.
+func ListDefinitions(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.UUID) ([]DefinitionInfo, error) {
+	var results []DefinitionInfo
+	err := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		isMember, err := permission.IsMember(ctx, tx, firmID, userID)
+		if err != nil {
+			return err
+		}
+		if !isMember {
+			return ErrDefinitionNotFound
+		}
+
+		rows, err := tx.Query(ctx, `
+			SELECT id, key, name, create_permission_key
+			FROM workflow_definitions
+			ORDER BY name
+		`)
+		if err != nil {
+			return fmt.Errorf("list workflow definitions: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var d DefinitionInfo
+			if err := rows.Scan(&d.ID, &d.Key, &d.Name, &d.CreatePermissionKey); err != nil {
+				return err
+			}
+			results = append(results, d)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return results, nil
 }

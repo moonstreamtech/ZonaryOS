@@ -8,6 +8,8 @@ package main
 import (
 	"testing"
 
+	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
+	"github.com/moonstreamtech/ZonaryOS/internal/firm"
 	"github.com/moonstreamtech/ZonaryOS/internal/identity"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/httpapi"
@@ -36,4 +38,6 @@ func TestRegisterRoutes_DoesNotPanic(t *testing.T) {
 	workflow.RegisterRoutes(mux, verifier, nil)
 	wizard.RegisterRoutes(mux, verifier, nil)
 	permission.RegisterRoutes(mux, verifier, nil, permission.NewBroadcaster())
+	auditlog.RegisterRoutes(mux, verifier, nil)
+	firm.RegisterRoutes(mux, verifier, nil)
 }
