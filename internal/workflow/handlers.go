@@ -54,6 +54,12 @@ func RegisterRoutes(mux *http.ServeMux, verifier *identity.Verifier, pool *pgxpo
 	// mux never has to compare wildcard-vs-literal at the same segment.
 	mux.Handle("GET /api/firms/{firmID}/workflow-definitions", auth(http.HandlerFunc(handleWorkflowDefinitions(pool))))
 	mux.Handle("POST /api/firms/{firmID}/workflow-definitions", auth(http.HandlerFunc(handleDefineWorkflow(pool))))
+	// A separate top-level path, not nested under /workflow-definitions,
+	// deliberately: it aggregates across every definition in the firm at
+	// once (see InstanceCountsByDefinition), it isn't scoped to one
+	// {definitionID} the way the routes below are. Additive-only (Rule 6)
+	// - no existing route's shape or response changes.
+	mux.Handle("GET /api/firms/{firmID}/workflow-instance-counts", auth(http.HandlerFunc(handleInstanceCounts(pool))))
 	mux.Handle("POST /api/firms/{firmID}/workflow-definitions/{definitionID}/instances", auth(http.HandlerFunc(handleCreateInstance(pool))))
 	mux.Handle("GET /api/firms/{firmID}/workflow-definitions/{definitionID}/instances", auth(http.HandlerFunc(handleListInstances(pool))))
 	mux.Handle("GET /api/firms/{firmID}/workflow-instances/{instanceID}", auth(http.HandlerFunc(handleCurrentState(pool))))
@@ -193,6 +199,79 @@ func handleWorkflowDefinitions(pool *pgxpool.Pool) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(toDefinitionInfoResponse(info))
+	}
+}
+
+type stateCountResponse struct {
+	StateKey  string `json:"stateKey"`
+	StateName string `json:"stateName"`
+	Count     int    `json:"count"`
+}
+
+type definitionInstanceCountsResponse struct {
+	DefinitionID string               `json:"definitionId"`
+	Key          string               `json:"key"`
+	Name         string               `json:"name"`
+	Counts       []stateCountResponse `json:"counts"`
+}
+
+func toDefinitionInstanceCountsResponse(d DefinitionInstanceCounts) definitionInstanceCountsResponse {
+	resp := definitionInstanceCountsResponse{
+		DefinitionID: d.DefinitionID.String(),
+		Key:          d.Key,
+		Name:         d.Name,
+		Counts:       make([]stateCountResponse, 0, len(d.Counts)),
+	}
+	for _, c := range d.Counts {
+		resp.Counts = append(resp.Counts, stateCountResponse{
+			StateKey:  c.StateKey,
+			StateName: c.StateName,
+			Count:     c.Count,
+		})
+	}
+	return resp
+}
+
+// handleInstanceCounts serves GET /api/firms/{firmID}/workflow-instance-counts
+// (item 2 of this batch): the dashboard's overview data, every workflow
+// definition the firm has, each with its instance count broken down by
+// state - see InstanceCountsByDefinition. Not filtered by the caller's
+// own permissions, same convention as handleWorkflowDefinitions/
+// handleListInstances (enforcement happens at action time, not at read
+// time); it is filtered by membership.
+func handleInstanceCounts(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := identity.FromContext(r.Context())
+		if !ok {
+			http.Error(w, "missing identity", http.StatusInternalServerError)
+			return
+		}
+
+		firmID, err := uuid.Parse(r.PathValue("firmID"))
+		if err != nil {
+			http.Error(w, "invalid firm id", http.StatusBadRequest)
+			return
+		}
+
+		userID, err := identity.ResolveOrCreateUser(r.Context(), pool, id)
+		if err != nil {
+			http.Error(w, "failed to resolve user", http.StatusInternalServerError)
+			return
+		}
+
+		counts, err := InstanceCountsByDefinition(r.Context(), pool, firmID, userID)
+		if err != nil {
+			writeEngineError(w, err)
+			return
+		}
+
+		resp := make([]definitionInstanceCountsResponse, 0, len(counts))
+		for _, c := range counts {
+			resp = append(resp, toDefinitionInstanceCountsResponse(c))
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
 	}
 }
 

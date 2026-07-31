@@ -145,6 +145,86 @@ func TestCreateDefaultFirm_FlagsOwnerRoleAsOwner(t *testing.T) {
 	}
 }
 
+// TestCreateDefaultFirm_SeedsBothDefaultWorkflows is this batch's core
+// wizard-level proof: CreateDefaultFirm now seeds Stock In -> Sale *and*
+// Customer Pipeline for every new firm, side by side, both readable and
+// both structurally intact.
+func TestCreateDefaultFirm_SeedsBothDefaultWorkflows(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	userID := seedUser(ctx, t, adminPool, "wizard-user-both-workflows")
+
+	result, err := wizard.CreateDefaultFirm(ctx, appPool, userID, "Acme Trading Co.")
+	if err != nil {
+		t.Fatalf("CreateDefaultFirm: %v", err)
+	}
+	if result.StockToSaleDefinitionID == uuid.Nil {
+		t.Fatal("expected a non-nil StockToSaleDefinitionID")
+	}
+	if result.CustomerPipelineDefinitionID == uuid.Nil {
+		t.Fatal("expected a non-nil CustomerPipelineDefinitionID")
+	}
+	if result.StockToSaleDefinitionID == result.CustomerPipelineDefinitionID {
+		t.Fatal("expected the two seeded definitions to have distinct IDs")
+	}
+
+	err = zdb.WithFirmContext(ctx, appPool, result.FirmID, func(ctx context.Context, tx pgx.Tx) error {
+		var stockKey, crmKey string
+		if err := tx.QueryRow(ctx, `SELECT key FROM workflow_definitions WHERE id = $1`, result.StockToSaleDefinitionID).Scan(&stockKey); err != nil {
+			return err
+		}
+		if stockKey != workflow.StockToSaleKey {
+			t.Errorf("expected stock definition key %q, got %q", workflow.StockToSaleKey, stockKey)
+		}
+		if err := tx.QueryRow(ctx, `SELECT key FROM workflow_definitions WHERE id = $1`, result.CustomerPipelineDefinitionID).Scan(&crmKey); err != nil {
+			return err
+		}
+		if crmKey != workflow.CustomerPipelineKey {
+			t.Errorf("expected customer pipeline definition key %q, got %q", workflow.CustomerPipelineKey, crmKey)
+		}
+
+		var definitionCount int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM workflow_definitions`).Scan(&definitionCount); err != nil {
+			return err
+		}
+		if definitionCount != 2 {
+			t.Errorf("expected exactly 2 workflow definitions seeded for a new firm, got %d", definitionCount)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("check seeded definitions: %v", err)
+	}
+
+	// Every permission key both specs introduce should be granted to the
+	// founder's owner role - the same self-action auto-grant already
+	// covered for stock_to_sale alone below, now for both.
+	err = zdb.WithFirmContext(ctx, appPool, result.FirmID, func(ctx context.Context, tx pgx.Tx) error {
+		allKeys := append(
+			append([]string{}, workflow.StockToSaleSpec.PermissionKeys()...),
+			workflow.CustomerPipelineSpec.PermissionKeys()...,
+		)
+		for _, key := range allKeys {
+			var granted bool
+			if err := tx.QueryRow(ctx, `
+				SELECT EXISTS (
+					SELECT 1 FROM role_permissions WHERE firm_id = $1 AND role_id = $2 AND permission_key = $3
+				)
+			`, result.FirmID, result.RoleID, key).Scan(&granted); err != nil {
+				return err
+			}
+			if !granted {
+				t.Errorf("expected owner role to be granted permission %q", key)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("check role_permissions: %v", err)
+	}
+}
+
 func TestCreateDefaultFirm_GrantsStockToSalePermissionsToOwnerRole(t *testing.T) {
 	adminPool, appPool := setupTest(t)
 	ctx := context.Background()

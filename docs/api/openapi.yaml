@@ -323,6 +323,42 @@ paths:
         "401": { description: Missing or invalid bearer token }
         "404": { description: No such workflow definition, or the caller isn't a member of firmID }
 
+  /api/firms/{firmID}/workflow-instance-counts:
+    get:
+      summary: Instance counts by state, across every workflow definition in the firm (dashboard overview)
+      description: >
+        A later batch's addition: for every workflow definition the firm
+        has, how many instances currently sit in each state - one
+        grouped COUNT query server-side (internal/workflow.InstanceCountsByDefinition),
+        not the caller fetching every instance and counting client-side.
+        Every state appears, even one with zero instances (a LEFT JOIN
+        from workflow_states out to workflow_instances) - a dashboard
+        rendering "0 sold" is more honest than silently omitting a row.
+        A separate top-level path rather than nested under
+        /workflow-definitions, since this aggregates across every
+        definition at once rather than being scoped to one
+        {definitionID} - additive-only, no existing route's shape
+        changed (Never-Violate Rule 6). Not filtered by the caller's own
+        permissions (same convention as the instances-listing endpoint
+        above); membership-checked (internal/permission.IsMember).
+      parameters:
+        - name: firmID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Every workflow definition's instance counts, broken down by state
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DefinitionInstanceCounts"
+        "400": { description: Invalid firmID }
+        "401": { description: Missing or invalid bearer token }
+        "404": { description: The caller isn't a member of firmID }
+
   /api/firms/{firmID}/workflow-instances/{instanceID}:
     get:
       summary: Read a workflow instance's current state
@@ -958,6 +994,36 @@ components:
           items:
             $ref: "#/components/schemas/AvailableAction"
       required: [instanceId, workflowDefinitionId, state, payload, availableActions]
+    StateCount:
+      type: object
+      description: One state's instance count (internal/workflow.StateCount) - one row of DefinitionInstanceCounts.counts.
+      properties:
+        stateKey:
+          type: string
+        stateName:
+          type: string
+        count:
+          type: integer
+      required: [stateKey, stateName, count]
+    DefinitionInstanceCounts:
+      type: object
+      description: >
+        One workflow definition's instance counts, broken down by state
+        (internal/workflow.DefinitionInstanceCounts) - GET
+        .../workflow-instance-counts's per-item response shape.
+      properties:
+        definitionId:
+          type: string
+          format: uuid
+        key:
+          type: string
+        name:
+          type: string
+        counts:
+          type: array
+          items:
+            $ref: "#/components/schemas/StateCount"
+      required: [definitionId, key, name, counts]
     WizardAnswer:
       type: object
       properties:

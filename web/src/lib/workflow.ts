@@ -74,6 +74,26 @@ export type DefinitionSpecInput = {
   transitions: TransitionSpecInput[];
 };
 
+// A firm's second default-seeded workflow (see
+// internal/workflow/customer_pipeline.go's CustomerPipelineKey) -
+// exported the same way STOCK_TO_SALE_KEY is, for any page that wants to
+// address it directly by its well-known key rather than searching
+// fetchDefinitions() results for it.
+export const CUSTOMER_PIPELINE_KEY = "customer_pipeline";
+
+export type StateCount = {
+  stateKey: string;
+  stateName: string;
+  count: number;
+};
+
+export type DefinitionInstanceCounts = {
+  definitionId: string;
+  key: string;
+  name: string;
+  counts: StateCount[];
+};
+
 function apiBase(): string {
   return process.env.ZONARYOS_API_BASE_URL ?? "http://localhost:8080";
 }
@@ -127,6 +147,33 @@ export async function fetchDefinitions(
     );
     if (!res.ok) return null;
     return (await res.json()) as WorkflowDefinition[];
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Calls the Go backend's `GET /api/firms/{firmId}/workflow-instance-counts`
+ * (item 2: the dashboard's overview data source) - every workflow
+ * definition the firm has, each with its instance count broken down by
+ * state, computed as one grouped query server-side rather than derived
+ * from fetchInstances/fetchDefinitions client-side. Returns null on
+ * failure, same convention as fetchDefinitions/fetchInstances.
+ */
+export async function fetchInstanceCounts(
+  token: string,
+  firmId: string,
+): Promise<DefinitionInstanceCounts[] | null> {
+  try {
+    const res = await fetch(
+      `${apiBase()}/api/firms/${encodeURIComponent(firmId)}/workflow-instance-counts`,
+      {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      },
+    );
+    if (!res.ok) return null;
+    return (await res.json()) as DefinitionInstanceCounts[];
   } catch {
     return null;
   }
@@ -236,6 +283,48 @@ export async function fetchInstancesPage(
   } catch {
     return null;
   }
+}
+
+export type WorkflowSearchGroup = {
+  definition: WorkflowDefinition;
+  instances: InstanceState[];
+  total: number;
+};
+
+/**
+ * Item 3, firm-wide search: aggregates fetchInstancesPage's own
+ * per-definition search across every definition the firm has, in
+ * parallel. Deliberately a thin loop over the existing, already-tested
+ * per-definition search (same query param, same backend endpoint) rather
+ * than a new backend "search everything" query - see
+ * WorkflowDefinitionView/WorkflowInstanceList for the per-definition
+ * search this reuses. Definitions with zero matches are dropped from the
+ * result rather than returned as empty groups, so the global search
+ * page's "grouped by workflow" list only shows workflows that actually
+ * matched.
+ */
+export async function searchAcrossDefinitions(
+  token: string,
+  firmId: string,
+  definitions: WorkflowDefinition[],
+  q: string,
+  limitPerDefinition = 5,
+): Promise<WorkflowSearchGroup[]> {
+  const groups = await Promise.all(
+    definitions.map(async (definition) => {
+      const page = await fetchInstancesPage(token, firmId, definition.definitionId, {
+        limit: limitPerDefinition,
+        offset: 0,
+        q,
+      });
+      return {
+        definition,
+        instances: page?.instances ?? [],
+        total: page?.total ?? 0,
+      };
+    }),
+  );
+  return groups.filter((g) => g.total > 0);
 }
 
 /**

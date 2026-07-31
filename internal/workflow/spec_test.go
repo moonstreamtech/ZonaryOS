@@ -26,6 +26,27 @@ func TestValidate_AcceptsStockToSaleSpec(t *testing.T) {
 	}
 }
 
+// TestValidate_AcceptsCustomerPipelineSpec covers this batch's second
+// default workflow (customer_pipeline.go). In particular, its two
+// mark_lost transitions (lead->lost and qualified->lost) share both an
+// action key and a permission key but differ in from-state - proving
+// Validate's duplicate-transition check keys on (from-state, action),
+// not action alone.
+func TestValidate_AcceptsCustomerPipelineSpec(t *testing.T) {
+	if err := workflow.CustomerPipelineSpec.Validate(); err != nil {
+		t.Fatalf("expected the real Customer Pipeline spec to validate, got: %v", err)
+	}
+}
+
+func TestCustomerPipelineSpec_PermissionKeysIncludesEveryTransitionOnce(t *testing.T) {
+	keys := workflow.CustomerPipelineSpec.PermissionKeys()
+	// CreatePermission + 4 transitions (qualify, convert, mark_lost x2) =
+	// 5 entries, even though mark_lost's permission key repeats.
+	if len(keys) != 5 {
+		t.Fatalf("expected 5 permission key entries (1 create + 4 transitions), got %d: %v", len(keys), keys)
+	}
+}
+
 func TestValidate_RejectsMissingKey(t *testing.T) {
 	spec := validStockToSaleSpec()
 	spec.Key = ""
