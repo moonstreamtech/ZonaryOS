@@ -9,7 +9,8 @@
     "lint": "eslint",
     "test": "vitest run",
     "check:i18n": "node scripts/check-i18n-strings.mjs",
-    "check:audit": "node scripts/check-npm-audit.mjs"
+    "check:audit": "node scripts/check-npm-audit.mjs",
+    "check:permission-tags": "node scripts/check-permission-tags.mjs"
   },
   "dependencies": {
     "next": "16.2.12",

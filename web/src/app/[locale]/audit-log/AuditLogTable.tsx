@@ -101,6 +101,7 @@ export default function AuditLogTable({
     <div className="flex w-full max-w-4xl flex-col items-center gap-4">
       <form
         onSubmit={submitFilters}
+        data-permission-public="true"
         className="flex w-full flex-wrap items-end gap-3"
       >
         <label className="flex flex-col gap-1 text-xs text-zinc-600 dark:text-zinc-400">

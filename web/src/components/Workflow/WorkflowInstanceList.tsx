@@ -108,6 +108,7 @@ export default function WorkflowInstanceList({
       {(total > 0 || q) && (
         <form
           onSubmit={submitSearch}
+          data-permission-public="true"
           className="flex w-full gap-2"
           role="search"
         >
@@ -120,6 +121,7 @@ export default function WorkflowInstanceList({
           />
           <button
             type="submit"
+            data-permission-public="true"
             className="rounded-md bg-foreground px-4 py-1.5 text-xs font-medium text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc]"
           >
             {t("searchButton")}
@@ -197,6 +199,7 @@ export default function WorkflowInstanceList({
         <div className="flex w-full items-center justify-between gap-4 text-sm text-zinc-600 dark:text-zinc-400">
           <button
             type="button"
+            data-permission-public="true"
             disabled={page <= 1}
             onClick={() => navigate({ page: page - 1, q })}
             className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium disabled:opacity-50 dark:border-zinc-700"
@@ -208,6 +211,7 @@ export default function WorkflowInstanceList({
           </span>
           <button
             type="button"
+            data-permission-public="true"
             disabled={page >= totalPages}
             onClick={() => navigate({ page: page + 1, q })}
             className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium disabled:opacity-50 dark:border-zinc-700"

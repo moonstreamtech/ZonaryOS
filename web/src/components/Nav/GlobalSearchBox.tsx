@@ -37,7 +37,7 @@ export default function GlobalSearchBox({ initialQuery = "" }: Props) {
   }
 
   return (
-    <form onSubmit={handleSubmit} role="search" className="flex w-full max-w-md gap-2">
+    <form onSubmit={handleSubmit} role="search" data-permission-public="true" className="flex w-full max-w-md gap-2">
       <input
         type="text"
         value={value}

@@ -165,6 +165,7 @@ export default function RoleManager({ firmId, roles }: Props) {
       {creating && (
         <form
           onSubmit={submitCreate}
+          data-permission-public="true"
           className="mb-4 flex flex-col gap-3 rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950 sm:flex-row sm:items-end"
         >
           <div className="flex-1">
@@ -194,6 +195,7 @@ export default function RoleManager({ firmId, roles }: Props) {
           <div className="flex gap-2">
             <button
               type="submit"
+              data-permission-public="true"
               disabled={submitting}
               className="rounded-md bg-foreground px-4 py-1.5 text-xs font-medium text-background disabled:opacity-50"
             >
@@ -201,6 +203,7 @@ export default function RoleManager({ firmId, roles }: Props) {
             </button>
             <button
               type="button"
+              data-permission-public="true"
               onClick={() => {
                 setCreating(false);
                 setCreateError(null);
@@ -255,6 +258,7 @@ export default function RoleManager({ firmId, roles }: Props) {
                         <>
                           <button
                             type="button"
+                            data-permission-public="true"
                             disabled={pendingRoleId === role.roleId}
                             onClick={() => submitRename(role.roleId)}
                             className="rounded border border-zinc-300 px-2 py-0.5 text-xs disabled:opacity-50 dark:border-zinc-700"
@@ -263,6 +267,7 @@ export default function RoleManager({ firmId, roles }: Props) {
                           </button>
                           <button
                             type="button"
+                            data-permission-public="true"
                             onClick={() => setRenamingRoleId(null)}
                             className="rounded border border-zinc-300 px-2 py-0.5 text-xs dark:border-zinc-700"
                           >
@@ -273,6 +278,7 @@ export default function RoleManager({ firmId, roles }: Props) {
                         <>
                           <button
                             type="button"
+                            data-permission-public="true"
                             disabled={pendingRoleId === role.roleId}
                             onClick={() => startRename(role)}
                             className="rounded border border-zinc-300 px-2 py-0.5 text-xs disabled:opacity-50 dark:border-zinc-700"
@@ -281,6 +287,7 @@ export default function RoleManager({ firmId, roles }: Props) {
                           </button>
                           <button
                             type="button"
+                            data-permission-public="true"
                             disabled={pendingRoleId === role.roleId}
                             onClick={() => handleDelete(role.roleId)}
                             className="rounded border border-red-300 px-2 py-0.5 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950"

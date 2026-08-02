@@ -142,6 +142,26 @@ jobs:
       - run: npm ci
       - run: npm run check:i18n
 
+  # --- Permission-Tag Coverage Check (CI Checklist item 5, extension) ----
+  # Same CI Checklist category as the i18n check above (Never-Violate Rule
+  # enforcement previously only caught manually), one job apart because
+  # it checks a different rule (Rule 7, not Rule 4) - see
+  # web/scripts/check-permission-tags.mjs's own header comment for what
+  # counts as "interactive" and the two-marker convention it verifies.
+
+  permission-tag-check:
+    name: Permission-Tag Coverage Check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "${{ env.NODE_VERSION }}" }
+      - run: npm ci
+      - run: npm run check:permission-tags
+
   # --- Doc Sync Check (CI Checklist item 6) ------------------------------
   # Pull-request-only: this is inherently a diff-against-base check, which
   # only means something in the context of a PR's changeset.

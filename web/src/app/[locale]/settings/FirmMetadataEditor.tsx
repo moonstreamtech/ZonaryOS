@@ -156,7 +156,7 @@ export default function FirmMetadataEditor({ firmId, metadata }: Props) {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="flex flex-col gap-3 text-sm">
+    <form onSubmit={handleSubmit} data-permission-public="true" className="flex flex-col gap-3 text-sm">
       {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
 
       <label className="flex flex-col gap-1">
