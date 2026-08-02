@@ -136,6 +136,15 @@ type fieldSpecResponse struct {
 	Name     string `json:"name"`
 	Type     string `json:"type"`
 	Required bool   `json:"required"`
+	// Options/ReferenceDefinitionKey/ArrayItemType are item 38's additions
+	// - see FieldSpec's own doc comment (spec.go) for what each is scoped
+	// to. omitempty means a schema field written before this batch (or any
+	// non-enum/reference/array field) serializes with none of these three
+	// keys present at all, purely additive over item 35's original wire
+	// shape.
+	Options                []string `json:"options,omitempty"`
+	ReferenceDefinitionKey string   `json:"referenceDefinitionKey,omitempty"`
+	ArrayItemType          string   `json:"arrayItemType,omitempty"`
 }
 
 func toFieldSpecResponses(fields []FieldSpec) []fieldSpecResponse {
@@ -144,7 +153,14 @@ func toFieldSpecResponses(fields []FieldSpec) []fieldSpecResponse {
 	}
 	resp := make([]fieldSpecResponse, 0, len(fields))
 	for _, f := range fields {
-		resp = append(resp, fieldSpecResponse{Name: f.Name, Type: string(f.Type), Required: f.Required})
+		resp = append(resp, fieldSpecResponse{
+			Name:                   f.Name,
+			Type:                   string(f.Type),
+			Required:               f.Required,
+			Options:                f.Options,
+			ReferenceDefinitionKey: f.ReferenceDefinitionKey,
+			ArrayItemType:          f.ArrayItemType,
+		})
 	}
 	return resp
 }
@@ -334,6 +350,12 @@ type defineFieldRequest struct {
 	Name     string `json:"name"`
 	Type     string `json:"type"`
 	Required bool   `json:"required"`
+	// Options/ReferenceDefinitionKey/ArrayItemType are item 38's additions
+	// - see fieldSpecResponse's own doc comment above for the same
+	// additive/omitempty reasoning on the response side.
+	Options                []string `json:"options,omitempty"`
+	ReferenceDefinitionKey string   `json:"referenceDefinitionKey,omitempty"`
+	ArrayItemType          string   `json:"arrayItemType,omitempty"`
 }
 
 // defineWorkflowRequest is DefinitionSpec's JSON wire shape (see spec.go)
@@ -418,7 +440,12 @@ func handleDefineWorkflow(pool *pgxpool.Pool) http.HandlerFunc {
 			spec.Fields = make([]FieldSpec, 0, len(req.Fields))
 			for _, f := range req.Fields {
 				spec.Fields = append(spec.Fields, FieldSpec{
-					Name: f.Name, Type: FieldType(f.Type), Required: f.Required,
+					Name:                   f.Name,
+					Type:                   FieldType(f.Type),
+					Required:               f.Required,
+					Options:                f.Options,
+					ReferenceDefinitionKey: f.ReferenceDefinitionKey,
+					ArrayItemType:          f.ArrayItemType,
 				})
 			}
 		}

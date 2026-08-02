@@ -108,6 +108,158 @@ func TestValidate_RejectsEmptyFieldName(t *testing.T) {
 	}
 }
 
+// Open Points item 38's structural Validate() coverage: enum/reference/
+// array field shapes, mirroring the "one test per FieldType" style
+// TestValidate_AcceptsWellFormedFieldSchema/TestValidate_RejectsUnknownFieldType
+// already use for the original four types above.
+
+func TestValidate_AcceptsWellFormedEnumField(t *testing.T) {
+	spec := validStockToSaleSpec()
+	spec.Fields = []workflow.FieldSpec{
+		{Name: "priority", Type: workflow.FieldTypeEnum, Options: []string{"low", "medium", "high"}},
+	}
+	if err := spec.Validate(); err != nil {
+		t.Fatalf("expected a well-formed enum field to validate, got: %v", err)
+	}
+}
+
+func TestValidate_RejectsEnumFieldWithNoOptions(t *testing.T) {
+	spec := validStockToSaleSpec()
+	spec.Fields = []workflow.FieldSpec{
+		{Name: "priority", Type: workflow.FieldTypeEnum, Options: nil},
+	}
+	if err := spec.Validate(); err == nil {
+		t.Fatal("expected Validate to reject an enum field with zero options, got nil error")
+	}
+}
+
+func TestValidate_RejectsEnumFieldWithEmptyOption(t *testing.T) {
+	spec := validStockToSaleSpec()
+	spec.Fields = []workflow.FieldSpec{
+		{Name: "priority", Type: workflow.FieldTypeEnum, Options: []string{"low", ""}},
+	}
+	if err := spec.Validate(); err == nil {
+		t.Fatal("expected Validate to reject an enum field with an empty-string option, got nil error")
+	}
+}
+
+func TestValidate_RejectsEnumFieldWithDuplicateOption(t *testing.T) {
+	spec := validStockToSaleSpec()
+	spec.Fields = []workflow.FieldSpec{
+		{Name: "priority", Type: workflow.FieldTypeEnum, Options: []string{"low", "low"}},
+	}
+	if err := spec.Validate(); err == nil {
+		t.Fatal("expected Validate to reject an enum field with a duplicate option, got nil error")
+	}
+}
+
+func TestValidate_RejectsScalarFieldWithOptionsSet(t *testing.T) {
+	spec := validStockToSaleSpec()
+	spec.Fields = []workflow.FieldSpec{
+		{Name: "item", Type: workflow.FieldTypeString, Options: []string{"widget"}},
+	}
+	if err := spec.Validate(); err == nil {
+		t.Fatal("expected Validate to reject a string field carrying an enum-only Options value, got nil error")
+	}
+}
+
+func TestValidate_AcceptsWellFormedReferenceField(t *testing.T) {
+	spec := validStockToSaleSpec()
+	spec.Fields = []workflow.FieldSpec{
+		{Name: "relatedStock", Type: workflow.FieldTypeReference, ReferenceDefinitionKey: "stock_to_sale"},
+	}
+	if err := spec.Validate(); err != nil {
+		t.Fatalf("expected a well-formed reference field to validate, got: %v", err)
+	}
+}
+
+func TestValidate_RejectsReferenceFieldWithEmptyKey(t *testing.T) {
+	spec := validStockToSaleSpec()
+	spec.Fields = []workflow.FieldSpec{
+		{Name: "relatedStock", Type: workflow.FieldTypeReference, ReferenceDefinitionKey: ""},
+	}
+	if err := spec.Validate(); err == nil {
+		t.Fatal("expected Validate to reject a reference field with an empty ReferenceDefinitionKey, got nil error")
+	}
+}
+
+// TestValidate_CannotCatchNonexistentReferenceTarget documents the design
+// boundary this batch's report explains at length: Validate is a pure,
+// DB-free function with no firm context, so it structurally CANNOT tell
+// whether "some_definition_that_does_not_exist" is real - that check only
+// happens at DefineWorkflowTx (engine.go), which has a live transaction
+// and firmID. This spec-level Validate call must therefore still accept a
+// reference field naming a key nobody has defined - proving the gap
+// Validate leaves is exactly where the doc comments say it is, not
+// silently narrower or wider.
+func TestValidate_CannotCatchNonexistentReferenceTarget(t *testing.T) {
+	spec := validStockToSaleSpec()
+	spec.Fields = []workflow.FieldSpec{
+		{Name: "relatedThing", Type: workflow.FieldTypeReference, ReferenceDefinitionKey: "some_definition_that_does_not_exist"},
+	}
+	if err := spec.Validate(); err != nil {
+		t.Fatalf("Validate should accept a structurally well-formed reference field regardless of whether the target key actually exists (that's DefineWorkflowTx's job) - got: %v", err)
+	}
+}
+
+func TestValidate_AcceptsWellFormedArrayField(t *testing.T) {
+	for _, itemType := range []workflow.FieldType{
+		workflow.FieldTypeString, workflow.FieldTypeNumber, workflow.FieldTypeBoolean, workflow.FieldTypeDate,
+	} {
+		spec := validStockToSaleSpec()
+		spec.Fields = []workflow.FieldSpec{
+			{Name: "tags", Type: workflow.FieldTypeArray, ArrayItemType: string(itemType)},
+		}
+		if err := spec.Validate(); err != nil {
+			t.Fatalf("expected an array field with item type %q to validate, got: %v", itemType, err)
+		}
+	}
+}
+
+// TestValidate_RejectsNestedArray and TestValidate_RejectsArrayOfReferences
+// are this batch's explicit scope-boundary proof: "no nested arrays, no
+// arrays of references" must be rejected at spec-definition time, not
+// silently mishandled at CreateInstance/runtime time.
+func TestValidate_RejectsNestedArray(t *testing.T) {
+	spec := validStockToSaleSpec()
+	spec.Fields = []workflow.FieldSpec{
+		{Name: "matrix", Type: workflow.FieldTypeArray, ArrayItemType: string(workflow.FieldTypeArray)},
+	}
+	if err := spec.Validate(); err == nil {
+		t.Fatal("expected Validate to reject a nested array (arrayItemType == \"array\"), got nil error")
+	}
+}
+
+func TestValidate_RejectsArrayOfReferences(t *testing.T) {
+	spec := validStockToSaleSpec()
+	spec.Fields = []workflow.FieldSpec{
+		{Name: "relatedThings", Type: workflow.FieldTypeArray, ArrayItemType: string(workflow.FieldTypeReference)},
+	}
+	if err := spec.Validate(); err == nil {
+		t.Fatal("expected Validate to reject an array of references (arrayItemType == \"reference\"), got nil error")
+	}
+}
+
+func TestValidate_RejectsArrayOfEnums(t *testing.T) {
+	spec := validStockToSaleSpec()
+	spec.Fields = []workflow.FieldSpec{
+		{Name: "choices", Type: workflow.FieldTypeArray, ArrayItemType: string(workflow.FieldTypeEnum)},
+	}
+	if err := spec.Validate(); err == nil {
+		t.Fatal("expected Validate to reject an array of enums (arrayItemType == \"enum\"), got nil error")
+	}
+}
+
+func TestValidate_RejectsArrayFieldWithInvalidItemType(t *testing.T) {
+	spec := validStockToSaleSpec()
+	spec.Fields = []workflow.FieldSpec{
+		{Name: "tags", Type: workflow.FieldTypeArray, ArrayItemType: "object"},
+	}
+	if err := spec.Validate(); err == nil {
+		t.Fatal("expected Validate to reject an array field with an unrecognized ArrayItemType, got nil error")
+	}
+}
+
 func TestCustomerPipelineSpec_PermissionKeysIncludesEveryTransitionOnce(t *testing.T) {
 	keys := workflow.CustomerPipelineSpec.PermissionKeys()
 	// CreatePermission + 4 transitions (qualify, convert, mark_lost x2) =

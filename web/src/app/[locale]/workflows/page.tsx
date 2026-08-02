@@ -41,7 +41,15 @@ export default async function WorkflowsPage({ params }: PageProps) {
 
       {role?.isOwner && (
         <div className="w-full max-w-md">
-          <DefinitionBuilder firmId={firm.firmId} />
+          <DefinitionBuilder
+            firmId={firm.firmId}
+            // Open Points item 38: a "reference" field's target picker
+            // (see DefinitionBuilder.tsx) is populated from the firm's
+            // actual OTHER existing definitions, not free text - this is
+            // the same `definitions` list already fetched above for the
+            // listing itself, just also handed to the builder.
+            existingDefinitionKeys={(definitions ?? []).map((d) => d.key)}
+          />
         </div>
       )}
 

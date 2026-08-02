@@ -73,6 +73,15 @@ type payloadFieldRow struct {
 	Name     string `json:"name"`
 	Type     string `json:"type"`
 	Required bool   `json:"required"`
+	// Options/ReferenceDefinitionKey/ArrayItemType are item 38's additions
+	// - each only meaningful for its own FieldType (enum/reference/array
+	// respectively, see spec.go's FieldSpec doc comments), omitted from
+	// the stored JSON entirely when unused so a pre-item-38 payload_schema
+	// row (every definition defined before this batch) round-trips with
+	// no shape change at all.
+	Options                []string `json:"options,omitempty"`
+	ReferenceDefinitionKey string   `json:"referenceDefinitionKey,omitempty"`
+	ArrayItemType          string   `json:"arrayItemType,omitempty"`
 }
 
 // marshalPayloadSchema encodes fields for storage in
@@ -87,7 +96,14 @@ func marshalPayloadSchema(fields []FieldSpec) ([]byte, error) {
 	}
 	rows := make([]payloadFieldRow, 0, len(fields))
 	for _, f := range fields {
-		rows = append(rows, payloadFieldRow{Name: f.Name, Type: string(f.Type), Required: f.Required})
+		rows = append(rows, payloadFieldRow{
+			Name:                   f.Name,
+			Type:                   string(f.Type),
+			Required:               f.Required,
+			Options:                f.Options,
+			ReferenceDefinitionKey: f.ReferenceDefinitionKey,
+			ArrayItemType:          f.ArrayItemType,
+		})
 	}
 	return json.Marshal(rows)
 }
@@ -106,27 +122,53 @@ func unmarshalPayloadSchema(data []byte) ([]FieldSpec, error) {
 	}
 	fields := make([]FieldSpec, 0, len(rows))
 	for _, r := range rows {
-		fields = append(fields, FieldSpec{Name: r.Name, Type: FieldType(r.Type), Required: r.Required})
+		fields = append(fields, FieldSpec{
+			Name:                   r.Name,
+			Type:                   FieldType(r.Type),
+			Required:               r.Required,
+			Options:                r.Options,
+			ReferenceDefinitionKey: r.ReferenceDefinitionKey,
+			ArrayItemType:          r.ArrayItemType,
+		})
 	}
 	return fields, nil
 }
 
 // validatePayload checks payload against fields - CreateInstance's server
-// side of Open Points item 35: every required field present, and a
-// best-effort type check of whatever fields are present (a JSON body
-// decodes numbers as float64, so this accepts any Go numeric kind for
-// FieldTypeNumber, not just float64, so direct Go-side callers like this
-// package's own tests aren't forced to write float64(...) everywhere). A
-// nil/empty fields (the overwhelmingly common case today - every
-// DefinitionSpec that predates item 35) is a no-op: this function isn't
-// even called in that case, see CreateInstance below, but it also
+// side of Open Points item 35 (extended by item 38): every required field
+// present, and a best-effort type check of whatever fields are present (a
+// JSON body decodes numbers as float64, so this accepts any Go numeric
+// kind for FieldTypeNumber, not just float64, so direct Go-side callers
+// like this package's own tests aren't forced to write float64(...)
+// everywhere). A nil/empty fields (the overwhelmingly common case today -
+// every DefinitionSpec that predates item 35) is a no-op: this function
+// isn't even called in that case, see CreateInstance below, but it also
 // tolerates being called with nil for that reason.
-func validatePayload(fields []FieldSpec, payload map[string]any) error {
+//
+// Takes ctx/tx/firmID (item 38's addition over item 35's original
+// signature) because FieldTypeReference's check is a real database query,
+// not a pure in-memory check like the other six types - see
+// checkReferenceField. tx/ctx are CreateInstance's own already-open
+// transaction, not a new one - this function never opens its own
+// connection or transaction.
+//
+// ciaudit:ignore-firmid-check: internal helper called only by
+// CreateInstance, which has already run permission.IsMember/Has before
+// reaching this call - firmID is only threaded through to
+// checkReferenceField (see its own doc comment/suppression) to scope its
+// query, not to make an authorization decision of its own.
+func validatePayload(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, fields []FieldSpec, payload map[string]any) error {
 	for _, f := range fields {
 		v, present := payload[f.Name]
 		if !present || v == nil {
 			if f.Required {
 				return fmt.Errorf("%w: missing required field %q", ErrPayloadValidation, f.Name)
+			}
+			continue
+		}
+		if f.Type == FieldTypeReference {
+			if err := checkReferenceField(ctx, tx, firmID, f, v); err != nil {
+				return err
 			}
 			continue
 		}
@@ -137,39 +179,154 @@ func validatePayload(fields []FieldSpec, payload map[string]any) error {
 	return nil
 }
 
-// checkFieldType is validatePayload's single-field type check - one
-// switch arm per FieldType (spec.go), matching FieldType's own "exactly
-// these four, no more elaborate type system" scope.
-func checkFieldType(f FieldSpec, v any) error {
-	switch f.Type {
+// checkScalarValue is the type check shared by a plain scalar field
+// (FieldTypeString/Number/Boolean/Date) and, per-element, a
+// FieldTypeArray field's ArrayItemType - pulled out on its own so the two
+// call sites (checkFieldType's own scalar arms and its array arm below)
+// share one implementation instead of the array arm duplicating this
+// switch. fieldName is only used for error messages.
+func checkScalarValue(fieldName string, ft FieldType, v any) error {
+	switch ft {
 	case FieldTypeString:
 		if _, ok := v.(string); !ok {
-			return fmt.Errorf("%w: field %q must be a string", ErrPayloadValidation, f.Name)
+			return fmt.Errorf("%w: field %q must be a string", ErrPayloadValidation, fieldName)
 		}
 	case FieldTypeNumber:
 		switch v.(type) {
 		case float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
 			// valid
 		default:
-			return fmt.Errorf("%w: field %q must be a number", ErrPayloadValidation, f.Name)
+			return fmt.Errorf("%w: field %q must be a number", ErrPayloadValidation, fieldName)
 		}
 	case FieldTypeBoolean:
 		if _, ok := v.(bool); !ok {
-			return fmt.Errorf("%w: field %q must be a boolean", ErrPayloadValidation, f.Name)
+			return fmt.Errorf("%w: field %q must be a boolean", ErrPayloadValidation, fieldName)
 		}
 	case FieldTypeDate:
 		s, ok := v.(string)
 		if !ok {
-			return fmt.Errorf("%w: field %q must be a date string (YYYY-MM-DD)", ErrPayloadValidation, f.Name)
+			return fmt.Errorf("%w: field %q must be a date string (YYYY-MM-DD)", ErrPayloadValidation, fieldName)
 		}
 		if _, err := time.Parse(payloadDateLayout, s); err != nil {
-			return fmt.Errorf("%w: field %q must be a valid date (YYYY-MM-DD)", ErrPayloadValidation, f.Name)
+			return fmt.Errorf("%w: field %q must be a valid date (YYYY-MM-DD)", ErrPayloadValidation, fieldName)
 		}
+	default:
+		// Unreachable for any spec that passed DefinitionSpec.Validate,
+		// which restricts an array field's ArrayItemType to these four
+		// values before it can ever be persisted (spec.go's
+		// validateFieldShape) - defensive only.
+		return fmt.Errorf("%w: field %q has unsupported scalar type %q", ErrPayloadValidation, fieldName, ft)
+	}
+	return nil
+}
+
+// checkFieldType is validatePayload's single-field type check for every
+// FieldType except FieldTypeReference (handled separately by
+// checkReferenceField, since it needs a database round trip this
+// function's pure signature doesn't have).
+func checkFieldType(f FieldSpec, v any) error {
+	switch f.Type {
+	case FieldTypeString, FieldTypeNumber, FieldTypeBoolean, FieldTypeDate:
+		return checkScalarValue(f.Name, f.Type, v)
+
+	case FieldTypeEnum:
+		s, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("%w: field %q must be a string", ErrPayloadValidation, f.Name)
+		}
+		for _, opt := range f.Options {
+			if s == opt {
+				return nil
+			}
+		}
+		return fmt.Errorf("%w: field %q must be one of %v, got %q", ErrPayloadValidation, f.Name, f.Options, s)
+
+	case FieldTypeArray:
+		arr, ok := v.([]any)
+		if !ok {
+			return fmt.Errorf("%w: field %q must be an array", ErrPayloadValidation, f.Name)
+		}
+		itemType := FieldType(f.ArrayItemType)
+		for i, elem := range arr {
+			if err := checkScalarValue(f.Name, itemType, elem); err != nil {
+				return fmt.Errorf("%w: field %q index %d is invalid: %s", ErrPayloadValidation, f.Name, i, err)
+			}
+		}
+		return nil
+
 	default:
 		// Unreachable for any spec that passed DefinitionSpec.Validate,
 		// which rejects an unknown FieldType before it can ever be
 		// persisted - defensive only.
 		return fmt.Errorf("%w: field %q has unknown type %q", ErrPayloadValidation, f.Name, f.Type)
+	}
+}
+
+// checkReferenceField validates a FieldTypeReference field's value: it
+// must be a string that parses as a UUID, and that UUID must be an
+// existing workflow_instances row, in THIS firm (firmID), belonging to
+// the definition named by f.ReferenceDefinitionKey - not just any
+// instance ID that happens to exist somewhere in the database. Runs
+// inside CreateInstance's own already-open transaction (tx/ctx are passed
+// in, never a new connection or transaction opened here) so this check
+// and the INSERT it's gating are atomic with each other.
+//
+// Race-condition reasoning (this batch's most architecturally significant
+// decision - see also the same reasoning in this batch's final report):
+// as of this batch, there is no delete path anywhere in this codebase for
+// workflow_instances (grepped: no `DELETE FROM workflow_instances`, no
+// DeleteInstance function) - so the literal "the referenced instance gets
+// deleted between this check and the INSERT below" race is not reachable
+// today. This function is still written defensively for if that ever
+// changes: `FOR SHARE OF wi` below takes a shared row lock on the
+// referenced workflow_instances row for the rest of THIS transaction. A
+// future DELETE (which needs its own row lock to remove the row) would
+// block until this transaction commits or rolls back, rather than being
+// able to remove the row out from under a reference that was just
+// validated against it. This is a single query-level lock modifier, not
+// bespoke distributed-locking machinery - deliberately proportionate to a
+// threat that doesn't exist yet, not built out further than that.
+//
+// firmID is included explicitly in the WHERE clause even though this
+// transaction's RLS session variable (app.current_firm_id, set by
+// WithFirmContext - see zdb.WithFirmContext) already confines every query
+// on this connection to firmID's own rows: RLS is the actual enforcement
+// mechanism (Never-Violate Rule 3), but stating the same constraint
+// explicitly here keeps this specific isolation property (a reference
+// can't cross firm boundaries) legible by reading this one query, not
+// only by trusting the connection-level session state is correctly set -
+// the same "defense in depth, not defense instead of" reasoning this
+// package's own doc comments use elsewhere for IsMember checks alongside
+// RLS.
+//
+// ciaudit:ignore-firmid-check: internal helper called only by
+// validatePayload, itself only called by CreateInstance after
+// permission.IsMember/Has have already run in the same transaction -
+// firmID here scopes a read query (defense in depth alongside RLS, see
+// this doc comment above), it is not itself an authorization decision.
+func checkReferenceField(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, f FieldSpec, v any) error {
+	s, ok := v.(string)
+	if !ok {
+		return fmt.Errorf("%w: field %q must be a string instance ID", ErrPayloadValidation, f.Name)
+	}
+	refID, err := uuid.Parse(s)
+	if err != nil {
+		return fmt.Errorf("%w: field %q must be a valid instance ID (UUID)", ErrPayloadValidation, f.Name)
+	}
+
+	var lockedID uuid.UUID
+	err = tx.QueryRow(ctx, `
+		SELECT wi.id
+		FROM workflow_instances wi
+		JOIN workflow_definitions wd ON wd.id = wi.workflow_definition_id
+		WHERE wi.id = $1 AND wi.firm_id = $2 AND wd.key = $3
+		FOR SHARE OF wi
+	`, refID, firmID, f.ReferenceDefinitionKey).Scan(&lockedID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("%w: field %q references a nonexistent %q instance in this firm", ErrPayloadValidation, f.Name, f.ReferenceDefinitionKey)
+	}
+	if err != nil {
+		return fmt.Errorf("check reference field %q: %w", f.Name, err)
 	}
 	return nil
 }
@@ -231,6 +388,36 @@ func DefineWorkflow(ctx context.Context, pool *pgxpool.Pool, firmID uuid.UUID, s
 func DefineWorkflowTx(ctx context.Context, tx pgx.Tx, firmID, granteeRoleID uuid.UUID, spec DefinitionSpec) (uuid.UUID, error) {
 	if err := spec.Validate(); err != nil {
 		return uuid.UUID{}, err
+	}
+
+	// A FieldTypeReference field's ReferenceDefinitionKey names another
+	// workflow definition (e.g. "stock_to_sale") - Validate above can only
+	// confirm that key is non-empty (it's a pure, DB-free function with no
+	// firm context - see FieldSpec.ReferenceDefinitionKey's and
+	// validateFieldShape's own doc comments in spec.go for why). Checking
+	// the key actually resolves to a real workflow_definitions row for
+	// THIS firm belongs here instead: DefineWorkflowTx is the one shared
+	// entry point every code path that can define a workflow goes through
+	// - DefineWorkflow (test/fixture callers), DefineWorkflowForFirm (the
+	// HTTP-reachable, owner-gated path), and SeedStockToSaleWorkflowTx/
+	// SeedCustomerPipelineWorkflowTx (firm-creation wizard provisioning) -
+	// so putting the check here, rather than only in
+	// DefineWorkflowForFirm, guarantees the invariant holds regardless of
+	// which of those callers is used, the same way upsertPermission just
+	// below is shared by all of them rather than duplicated per caller.
+	for _, f := range spec.Fields {
+		if f.Type != FieldTypeReference {
+			continue
+		}
+		var exists bool
+		if err := tx.QueryRow(ctx, `
+			SELECT EXISTS (SELECT 1 FROM workflow_definitions WHERE firm_id = $1 AND key = $2)
+		`, firmID, f.ReferenceDefinitionKey).Scan(&exists); err != nil {
+			return uuid.UUID{}, fmt.Errorf("check reference target definition %q for field %q: %w", f.ReferenceDefinitionKey, f.Name, err)
+		}
+		if !exists {
+			return uuid.UUID{}, fmt.Errorf("%w: field %q references unknown workflow definition key %q", ErrInvalidSpec, f.Name, f.ReferenceDefinitionKey)
+		}
 	}
 
 	if err := upsertPermission(ctx, tx, firmID, granteeRoleID, spec.CreatePermission); err != nil {
@@ -472,7 +659,7 @@ func CreateInstance(ctx context.Context, pool *pgxpool.Pool, firmID, userID, def
 			return err
 		}
 		if len(fields) > 0 {
-			if err := validatePayload(fields, payload); err != nil {
+			if err := validatePayload(ctx, tx, firmID, fields, payload); err != nil {
 				return err
 			}
 		}

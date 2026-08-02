@@ -269,7 +269,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WorkflowDefinition"
-        "400": { description: Invalid firmID, malformed request body, or a structurally invalid spec (DefinitionSpec.Validate - no initial state, a transition referencing an unknown state, an OPTIONAL `fields` entry with an empty/duplicate name or a type outside string/number/boolean/date, ...) }
+        "400": { description: Invalid firmID, malformed request body, or a structurally invalid spec (DefinitionSpec.Validate - no initial state, a transition referencing an unknown state, an OPTIONAL `fields` entry with an empty/duplicate name, a type outside string/number/boolean/date/enum/reference/array, an enum field with zero options, an array field's `arrayItemType` set to enum/reference/array, a reference field with an empty `referenceDefinitionKey`, or a reference field whose `referenceDefinitionKey` doesn't name a real workflow definition for this firm, ...) }
         "401": { description: Missing or invalid bearer token }
         "403": { description: Caller is a member of firmID but not an owner }
         "404": { description: Caller isn't a member of firmID at all }
@@ -286,13 +286,17 @@ paths:
 
         If the target definition has an OPTIONAL payload schema
         (`fields` on WorkflowDefinition/DefinitionSpec - Open Points item
-        35), payload is validated against it before the instance is
-        created: every required field must be present, and a present
-        field's value must match its declared type
-        (internal/workflow.ErrPayloadValidation, surfaced as 400 below).
-        A definition with no schema (every definition that predates item
-        35, e.g. stock_to_sale/customer_pipeline today) skips this
-        entirely - payload stays accepted exactly as before.
+        35, extended by item 38), payload is validated against it before
+        the instance is created: every required field must be present,
+        and a present field's value must match its declared type
+        (internal/workflow.ErrPayloadValidation, surfaced as 400 below) -
+        including, for a `reference` field, an actual database check that
+        the value is a real instance ID of the named definition in this
+        same firm (a cross-firm reference is rejected the same as a
+        nonexistent one), run inside the same transaction as the instance
+        insert. A definition with no schema (every definition that
+        predates item 35, e.g. stock_to_sale/customer_pipeline today)
+        skips this entirely - payload stays accepted exactly as before.
       parameters:
         - name: firmID
           in: path
@@ -1202,23 +1206,63 @@ components:
       type: object
       description: >
         One declared field in a workflow definition's OPTIONAL instance
-        payload schema (internal/workflow.FieldSpec, Open Points item 35).
-        Deliberately just these four types (see the `type` property) - no
-        nested objects, no arrays, no enum/pattern constraints.
+        payload schema (internal/workflow.FieldSpec). Open Points item 35
+        introduced the four scalar types; item 38 extended it with `enum`,
+        `reference`, and `array` - each of those three needs exactly one
+        of `options`/`referenceDefinitionKey`/`arrayItemType` set (see each
+        property's own description). No nested objects, no arrays of
+        enum/reference/array (see `arrayItemType`), no pattern constraints
+        beyond `enum`'s fixed option set.
       properties:
         name:
           type: string
         type:
           type: string
-          enum: [string, number, boolean, date]
+          enum: [string, number, boolean, date, enum, reference, array]
           description: >
             "date" is a plain calendar date, no time-of-day/timezone -
             matched against `YYYY-MM-DD` server-side
             (internal/workflow's payloadDateLayout), the same value an
-            HTML `<input type="date">` produces.
+            HTML `<input type="date">` produces. "enum"/"reference"/"array"
+            are Open Points item 38's additions - see `options`/
+            `referenceDefinitionKey`/`arrayItemType` below.
         required:
           type: boolean
           description: Whether CreateInstance must see this field present in the payload.
+        options:
+          type: array
+          items: { type: string }
+          description: >
+            Only meaningful when `type` is `enum`: the fixed set of string
+            values this field's value must be one of. Required to be
+            non-empty (and every option unique, non-empty) when `type` is
+            `enum`; must be omitted/empty for every other type -
+            DefinitionSpec.Validate rejects either mismatch at
+            spec-definition time.
+        referenceDefinitionKey:
+          type: string
+          description: >
+            Only meaningful when `type` is `reference`: the `key` of
+            another workflow definition in the same firm (e.g.
+            "stock_to_sale") whose instances this field's value must
+            identify. CreateInstance validates the value is a real
+            instance ID (UUID) of that definition, in the same firm, as
+            part of the same transaction that creates the new instance
+            (internal/workflow.checkReferenceField) - a value that doesn't
+            resolve, or that resolves to an instance in a different firm,
+            is rejected as 400 the same way a missing required field is.
+            Must be omitted for every other type.
+        arrayItemType:
+          type: string
+          enum: [string, number, boolean, date]
+          description: >
+            Only meaningful when `type` is `array`: which of the four
+            scalar types each array element must satisfy. Deliberately
+            restricted to those four - `enum`/`reference`/`array` are not
+            valid values here (no nested arrays, no arrays of
+            enums/references), rejected by DefinitionSpec.Validate at
+            spec-definition time, not merely at CreateInstance time. Must
+            be omitted for every other type.
       required: [name, type, required]
     WorkflowDefinition:
       type: object

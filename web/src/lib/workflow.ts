@@ -15,10 +15,18 @@ export type StateInfo = {
   name: string;
 };
 
-// FieldType is spec.go's FieldType wire value - deliberately just these
-// four (Open Points item 35's resolution), mirrored 1:1 on the frontend
-// rather than widened into something more elaborate.
-export type FieldType = "string" | "number" | "boolean" | "date";
+// FieldType is spec.go's FieldType wire value. Open Points item 35
+// resolved the original four scalar types; item 38 extends it with
+// "enum"/"reference"/"array" - mirrored 1:1 on the frontend, same
+// convention as the original four.
+export type FieldType = "string" | "number" | "boolean" | "date" | "enum" | "reference" | "array";
+
+// ScalarFieldType is the subset of FieldType a FieldSpecInput's
+// arrayItemType may be (see FieldSpecInput.arrayItemType below) - the
+// original four types, deliberately excluding "enum"/"reference"/"array"
+// itself (no nested arrays, no arrays of enums/references - matching
+// internal/workflow/spec.go's validateFieldShape).
+export type ScalarFieldType = "string" | "number" | "boolean" | "date";
 
 // FieldSpecInput is internal/workflow.FieldSpec's wire shape (see
 // handlers.go's fieldSpecResponse/defineFieldRequest) - one declared
@@ -30,6 +38,16 @@ export type FieldSpecInput = {
   name: string;
   type: FieldType;
   required: boolean;
+  // options is only meaningful when type is "enum" - the fixed set of
+  // string values this field accepts (Open Points item 38).
+  options?: string[];
+  // referenceDefinitionKey is only meaningful when type is "reference" -
+  // the workflow_definitions.key (e.g. "stock_to_sale") this field's
+  // value must identify an instance of, in the same firm (item 38).
+  referenceDefinitionKey?: string;
+  // arrayItemType is only meaningful when type is "array" - which scalar
+  // type each array element must satisfy (item 38).
+  arrayItemType?: ScalarFieldType;
 };
 
 export type AvailableAction = {

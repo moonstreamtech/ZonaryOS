@@ -19,6 +19,17 @@ import {
 
 type Props = {
   firmId: string;
+  // existingDefinitionKeys is Open Points item 38's reference-field
+  // target list: the firm's OTHER already-defined workflow definitions
+  // (see app/[locale]/workflows/page.tsx's own fetchDefinitions call,
+  // reused here rather than a second fetch) - a "reference" field picks
+  // its target from this real list, never free text, matching
+  // internal/workflow.DefineWorkflowTx's own existence check for the same
+  // key server-side. Empty (a firm with no other definitions yet, or an
+  // owner defining their firm's very first workflow) simply means the
+  // reference field type has nothing to offer yet - see its own
+  // rendering below.
+  existingDefinitionKeys: string[];
 };
 
 let nextRowId = 0;
@@ -37,7 +48,15 @@ function emptyTransition(): BuilderTransitionRow {
   };
 }
 function emptyField(): BuilderFieldRow {
-  return { id: nextRowId++, name: "", type: "string", required: false };
+  return {
+    id: nextRowId++,
+    name: "",
+    type: "string",
+    required: false,
+    options: [],
+    referenceDefinitionKey: "",
+    arrayItemType: "string",
+  };
 }
 
 // Item 1's frontend half: lets a firm's owner actually use the workflow
@@ -59,7 +78,7 @@ function emptyField(): BuilderFieldRow {
 // catalog (internal/permission.Has), it's the structural is_owner check
 // DefineWorkflowForFirm itself enforces, same category as Permission
 // Audit Mode's own toggle.
-export default function DefinitionBuilder({ firmId }: Props) {
+export default function DefinitionBuilder({ firmId, existingDefinitionKeys }: Props) {
   const t = useTranslations("Workflow");
   const router = useRouter();
 
@@ -133,7 +152,39 @@ export default function DefinitionBuilder({ firmId }: Props) {
         return t("builderErrorFieldNameRequired");
       case "duplicateFieldName":
         return t("builderErrorDuplicateFieldName", { name: error.name });
+      case "enumOptionsRequired":
+        return t("builderErrorEnumOptionsRequired", { name: error.name });
+      case "enumOptionEmpty":
+        return t("builderErrorEnumOptionEmpty", { name: error.name });
+      case "enumOptionDuplicate":
+        return t("builderErrorEnumOptionDuplicate", { name: error.name, option: error.option });
+      case "referenceDefinitionKeyRequired":
+        return t("builderErrorReferenceDefinitionKeyRequired", { name: error.name });
+      case "arrayItemTypeRequired":
+        return t("builderErrorArrayItemTypeRequired", { name: error.name });
     }
+  }
+
+  function addFieldOption(fieldId: number) {
+    setFields((prev) =>
+      prev.map((f) => (f.id === fieldId ? { ...f, options: [...f.options, ""] } : f)),
+    );
+  }
+  function updateFieldOption(fieldId: number, index: number, text: string) {
+    setFields((prev) =>
+      prev.map((f) =>
+        f.id === fieldId
+          ? { ...f, options: f.options.map((o, i) => (i === index ? text : o)) }
+          : f,
+      ),
+    );
+  }
+  function removeFieldOption(fieldId: number, index: number) {
+    setFields((prev) =>
+      prev.map((f) =>
+        f.id === fieldId ? { ...f, options: f.options.filter((_, i) => i !== index) } : f,
+      ),
+    );
   }
 
   async function handleSubmit(e: FormEvent) {
@@ -174,12 +225,24 @@ export default function DefinitionBuilder({ firmId }: Props) {
       // definition built with no payload fields round-trips as "no
       // schema" the same way DefinitionSpec.Fields' own nil/empty
       // contract works Go-side - see lib/workflow.ts's DefinitionSpecInput.
+      // Open Points item 38: options/referenceDefinitionKey/arrayItemType
+      // are only sent for the field type they're actually meaningful for
+      // - the backend's own DefinitionSpec.Validate rejects any of them
+      // being set on the "wrong" type (spec.go's validateFieldShape), so
+      // this mirrors that constraint on the way out rather than sending
+      // every field's now-unused leftover builder state (e.g. a field
+      // switched from "enum" back to "string" still has stale options in
+      // BuilderFieldRow's own state, but that's a UI-state convenience,
+      // not part of the submitted spec).
       ...(fields.length > 0
         ? {
             fields: fields.map((f) => ({
               name: f.name,
               type: f.type,
               required: f.required,
+              ...(f.type === "enum" ? { options: f.options } : {}),
+              ...(f.type === "reference" ? { referenceDefinitionKey: f.referenceDefinitionKey } : {}),
+              ...(f.type === "array" ? { arrayItemType: f.arrayItemType } : {}),
             })),
           }
         : {}),
@@ -422,43 +485,129 @@ export default function DefinitionBuilder({ firmId }: Props) {
         </h3>
         <p className="text-xs text-zinc-500 dark:text-zinc-500">{t("builderFieldsHint")}</p>
         {fields.map((f) => (
-          <div key={f.id} className="flex flex-wrap items-end gap-2 border-t border-zinc-100 pt-2 dark:border-zinc-900">
-            <Field label={t("builderFieldNameLabel")}>
-              <input
-                type="text"
-                value={f.name}
-                onChange={(e) => updateField(f.id, { name: e.target.value })}
-                className={inputClass}
-              />
-            </Field>
-            <Field label={t("builderFieldTypeLabel")}>
-              <select
-                value={f.type}
-                onChange={(e) => updateField(f.id, { type: e.target.value as FieldTypeValue })}
-                className={inputClass}
+          <div key={f.id} className="flex flex-col gap-2 border-t border-zinc-100 pt-2 dark:border-zinc-900">
+            <div className="flex flex-wrap items-end gap-2">
+              <Field label={t("builderFieldNameLabel")}>
+                <input
+                  type="text"
+                  value={f.name}
+                  onChange={(e) => updateField(f.id, { name: e.target.value })}
+                  className={inputClass}
+                />
+              </Field>
+              <Field label={t("builderFieldTypeLabel")}>
+                <select
+                  value={f.type}
+                  onChange={(e) => updateField(f.id, { type: e.target.value as FieldTypeValue })}
+                  className={inputClass}
+                >
+                  <option value="string">{t("builderFieldTypeString")}</option>
+                  <option value="number">{t("builderFieldTypeNumber")}</option>
+                  <option value="boolean">{t("builderFieldTypeBoolean")}</option>
+                  <option value="date">{t("builderFieldTypeDate")}</option>
+                  <option value="enum">{t("builderFieldTypeEnum")}</option>
+                  <option value="reference">{t("builderFieldTypeReference")}</option>
+                  <option value="array">{t("builderFieldTypeArray")}</option>
+                </select>
+              </Field>
+              <label className="flex items-center gap-1 pb-1.5 text-xs text-zinc-600 dark:text-zinc-400">
+                <input
+                  type="checkbox"
+                  checked={f.required}
+                  onChange={(e) => updateField(f.id, { required: e.target.checked })}
+                />
+                {t("builderFieldRequired")}
+              </label>
+              <button
+                type="button"
+                data-permission-public="true"
+                onClick={() => removeField(f.id)}
+                className="rounded-md border border-zinc-300 px-2 py-1.5 text-xs text-zinc-600 dark:border-zinc-700 dark:text-zinc-400"
               >
-                <option value="string">{t("builderFieldTypeString")}</option>
-                <option value="number">{t("builderFieldTypeNumber")}</option>
-                <option value="boolean">{t("builderFieldTypeBoolean")}</option>
-                <option value="date">{t("builderFieldTypeDate")}</option>
-              </select>
-            </Field>
-            <label className="flex items-center gap-1 pb-1.5 text-xs text-zinc-600 dark:text-zinc-400">
-              <input
-                type="checkbox"
-                checked={f.required}
-                onChange={(e) => updateField(f.id, { required: e.target.checked })}
-              />
-              {t("builderFieldRequired")}
-            </label>
-            <button
-              type="button"
-              data-permission-public="true"
-              onClick={() => removeField(f.id)}
-              className="rounded-md border border-zinc-300 px-2 py-1.5 text-xs text-zinc-600 dark:border-zinc-700 dark:text-zinc-400"
-            >
-              {t("removeFieldButton")}
-            </button>
+                {t("removeFieldButton")}
+              </button>
+            </div>
+
+            {/* Open Points item 38: each new field type's own
+                configuration, shown only while that type is selected. */}
+            {f.type === "enum" && (
+              <div className="flex flex-col gap-1.5 pl-2">
+                <span className="text-xs text-zinc-600 dark:text-zinc-400">
+                  {t("builderFieldOptionsLabel")}
+                </span>
+                {f.options.map((option, index) => (
+                  <div key={index} className="flex items-center gap-1.5">
+                    <input
+                      type="text"
+                      value={option}
+                      onChange={(e) => updateFieldOption(f.id, index, e.target.value)}
+                      placeholder={t("builderFieldOptionPlaceholder")}
+                      className={inputClass}
+                    />
+                    <button
+                      type="button"
+                      data-permission-public="true"
+                      onClick={() => removeFieldOption(f.id, index)}
+                      className="rounded-md border border-zinc-300 px-2 py-1 text-xs text-zinc-600 dark:border-zinc-700 dark:text-zinc-400"
+                    >
+                      {t("removeFieldButton")}
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  data-permission-public="true"
+                  onClick={() => addFieldOption(f.id)}
+                  className="self-start text-xs font-medium text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
+                >
+                  {t("builderAddOptionButton")}
+                </button>
+              </div>
+            )}
+
+            {f.type === "reference" && (
+              <div className="pl-2">
+                <Field label={t("builderFieldReferenceTargetLabel")}>
+                  {existingDefinitionKeys.length === 0 ? (
+                    <p className="text-xs text-zinc-500 dark:text-zinc-500">
+                      {t("builderFieldReferenceNoTargets")}
+                    </p>
+                  ) : (
+                    <select
+                      value={f.referenceDefinitionKey}
+                      onChange={(e) => updateField(f.id, { referenceDefinitionKey: e.target.value })}
+                      className={inputClass}
+                    >
+                      <option value="">{t("builderFieldReferenceUnselected")}</option>
+                      {existingDefinitionKeys.map((key) => (
+                        <option key={key} value={key}>
+                          {key}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </Field>
+              </div>
+            )}
+
+            {f.type === "array" && (
+              <div className="pl-2">
+                <Field label={t("builderFieldArrayItemTypeLabel")}>
+                  <select
+                    value={f.arrayItemType}
+                    onChange={(e) =>
+                      updateField(f.id, { arrayItemType: e.target.value as BuilderFieldRow["arrayItemType"] })
+                    }
+                    className={inputClass}
+                  >
+                    <option value="string">{t("builderFieldTypeString")}</option>
+                    <option value="number">{t("builderFieldTypeNumber")}</option>
+                    <option value="boolean">{t("builderFieldTypeBoolean")}</option>
+                    <option value="date">{t("builderFieldTypeDate")}</option>
+                  </select>
+                </Field>
+              </div>
+            )}
           </div>
         ))}
         <button
