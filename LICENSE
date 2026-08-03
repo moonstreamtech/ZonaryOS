@@ -1,56 +1,87 @@
-ZonaryOS Source-Available License (DRAFT — NOT FINAL, PENDING LEGAL REVIEW)
-============================================================================
+ZONARYOS SOURCE-AVAILABLE LICENSE (DRAFT — PENDING LEGAL REVIEW)
+Version 0.1 — [DATE TO BE SET]
 
-*** THIS IS A PLACEHOLDER DRAFT. IT IS NOT LEGAL ADVICE AND HAS NOT BEEN
-    REVIEWED BY A LAWYER. DO NOT RELY ON THIS TEXT AS A BINDING LEGAL
-    AGREEMENT UNTIL IT HAS BEEN DRAFTED OR APPROVED BY QUALIFIED LEGAL
-    COUNSEL. See docs/OPEN_POINTS.md, item 20. ***
+Copyright (c) 2026 [LEGAL ENTITY NAME TO BE DETERMINED] ("Licensor")
 
-Copyright (c) [YEAR] [ZonaryOS entity — legal name pending]
+1. GRANT OF RIGHTS — SOURCE ACCESS
 
-1. Grant of Rights
-   Subject to the restrictions below, permission is hereby granted, free
-   of charge, to any person obtaining a copy of this software and
-   associated documentation files (the "Software"), to view, use,
-   copy, modify, merge, and contribute to the Software, for
-   non-commercial and evaluation purposes, and to submit contributions
-   back to the official ZonaryOS project.
+Subject to the terms of this License, Licensor grants any person obtaining
+a copy of this software and associated source code (the "Software") the
+right to view, study, copy, modify, and create derivative works of the
+Software for the following purposes only:
 
-2. Restrictions
-   a. You may NOT deploy, host, or operate the Software, or any
-      modified or derivative version of it, as a product or service
-      (commercial or otherwise) that is independent of, or not
-      authorized by, ZonaryOS's own central infrastructure.
-   b. You may NOT remove, disable, or attempt to circumvent any license
-      verification, integrity check, or module-activation mechanism
-      contained in the Software.
-   c. You may NOT use the ZonaryOS name, trademarks, or branding except
-      as expressly permitted (see docs/VISION.md, "Brand / White-Label").
-   d. Commercial use of the Software outside of ZonaryOS's own
-      central service requires a separate, explicit commercial license
-      agreement with the ZonaryOS project.
+  (a) Personal, academic, or non-commercial evaluation and learning;
+  (b) Contributing improvements back to the official ZonaryOS project via
+      the official public repository, under Licensor's contribution terms;
+  (c) Non-commercial development and testing on infrastructure that is not
+      used to provide any product, service, or business function to any
+      third party, whether for payment or free of charge.
 
-3. Contributions
-   By submitting a contribution (e.g. a pull request) to this
-   repository, you agree that your contribution is licensed under the
-   same terms as this license, and you grant the ZonaryOS project the
-   right to include, modify, and relicense your contribution as part
-   of the Software, including under future versions of this license.
+2. RESTRICTED USE — NO UNAUTHORIZED COMMERCIAL DEPLOYMENT
 
-4. No Warranty
-   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-   EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND
-   NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
-   BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM
-   THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+Except as expressly permitted in Section 1, no person or entity may, without
+a separate, valid commercial license agreement executed with Licensor:
 
-5. Governing Law
-   [Pending — to be determined with legal counsel.]
+  (a) Deploy, host, or operate the Software (in whole or in material part,
+      modified or unmodified) to provide any product or service to any
+      third party, whether or not for direct monetary compensation;
+  (b) Use the Software, or any derivative of it, in connection with any
+      commercial business operation, internal or external;
+  (c) Remove, disable, circumvent, or attempt to circumvent any license
+      verification, module-activation, or usage-reporting mechanism
+      contained in the Software;
+  (d) Represent any deployment of the Software as an official, licensed,
+      or authorized ZonaryOS installation absent a valid license.
+
+"Commercial use" includes, without limitation, any use by a for-profit
+entity, any use that generates revenue directly or indirectly, and any use
+in the operation of a business's actual commercial activities (sales,
+inventory, accounting, customer management, or similar functions),
+regardless of the size of the entity or the scale of use.
+
+3. LICENSE VERIFICATION AND USAGE REPORTING
+
+The Software includes technical mechanisms that (a) verify the presence of
+a valid license issued by Licensor before enabling full functionality, and
+(b) report aggregate, non-content usage statistics (e.g., feature usage
+counts, request volumes, and originating network addresses) to Licensor's
+infrastructure. Use of the Software constitutes acceptance of these
+mechanisms. Attempting to disable, bypass, or falsify these mechanisms is
+a material breach of this License and may additionally violate applicable
+computer-fraud and anti-circumvention laws.
+
+4. NO WARRANTY
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL
+LICENSOR BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM
+THE USE OF THE SOFTWARE.
+
+5. ENFORCEMENT AND REMEDIES
+
+Unauthorized commercial use as described in Section 2 constitutes a breach
+of this License and, depending on applicable law, may also constitute
+copyright infringement and/or unfair competition. Licensor reserves all
+rights to pursue any legal remedy available under applicable law, including
+but not limited to injunctive relief and damages, and reserves the right to
+report suspected unauthorized commercial use to relevant authorities and
+industry bodies.
+
+6. GOVERNING LAW
+
+[TO BE DETERMINED BY LEGAL COUNSEL — likely the laws of the Republic of
+Türkiye, given Licensor's base of operations, subject to review.]
+
+7. CHANGES TO THIS LICENSE
+
+Licensor may publish revised versions of this License. Use of the Software
+after a revised License is published constitutes acceptance of the revised
+terms for any new deployment; existing valid licenses are governed by the
+terms in effect at the time of issuance unless otherwise stated.
 
 ---
-This draft borrows structurally from source-available license patterns
-(e.g. Business Source License-style models) without adopting any
-specific existing license verbatim. It must be replaced with — or
-formally reviewed and finalized by — qualified legal counsel before
-it is treated as enforceable.
+THIS IS A DRAFT PENDING PROFESSIONAL LEGAL REVIEW. IT IS NOT YET A VALID,
+ENFORCEABLE LEGAL DOCUMENT. DO NOT RELY ON THIS TEXT FOR ACTUAL LEGAL
+PROTECTION UNTIL REVIEWED AND FINALIZED BY QUALIFIED LEGAL COUNSEL.
+(See Open Points item 20.)

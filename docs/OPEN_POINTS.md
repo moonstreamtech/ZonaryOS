@@ -23,11 +23,12 @@ Rule 1: No item in this file moves to the main document (`docs/VISION.md`) until
 * Finalized mechanism (see Vision §3): The wizard is a decision tree — each feature appears as a question on the appropriate branch, each answer opens follow-up sub-questions (recursive), and a customer-specific structure activates at the end. Example root questions: "do you manufacture?", "do you track inventory?" — but these are examples, not the full list.
 * Remaining open question: What will all the root/main branches of the tree be — the full list hasn't been designed yet. Together with item 8 (roadmap), this also determines which features get modeled into the tree first — this requires substantial design work and should be handled separately, later.
 
-20. License Agreement Content (partially finalized)
+20. License Agreement Content (draft placed; legal review still open)
 
 * Finalized principle (see Vision §5): Code is open, but commercial use/copying is prohibited — usable only through ZonaryOS's own central service. It was assessed that no authorization from an official body/institution is required — a corporate license agreement is sufficient.
-* Remaining open question: The concrete content/text of the agreement hasn't been written yet. Will this adapt an existing open-source license (e.g. AGPLv3/SSPL/BUSL), or will a custom license be written from scratch? Important: For this agreement to actually create legal liability and hold up in court, it should be drafted/reviewed by a legal professional (a lawyer) — Claude can propose a draft but the final text requires legal counsel.
-* See item 32 — an encryption/integrity idea came up that would also technically support this principle.
+* Progress: a concrete draft (custom text, not an adaptation of an existing open-source license) now exists at `LICENSE` in the repository root — source-available, non-commercial/evaluation/contribution use permitted, commercial deployment requires a separate agreement, references the license-verification/usage-reporting mechanisms (item 32) as a Section 3 term.
+* Remaining open question, unchanged in substance: this text has NOT been reviewed by qualified legal counsel and is not yet a binding legal document — the draft says so explicitly, both at its top and bottom. Governing law (Section 6) is also still unset, pending counsel's input. Do not treat this item as resolved until a lawyer has reviewed/finalized the text.
+* See item 32 — the license-verification (Ed25519) and usage-reporting (telemetry) mechanisms this draft references in Section 3 are both now implemented (`internal/license`, `internal/telemetry`), default-disabled, as their own still-open items describe.
 
 24. Localization / Fiscal-Legal Compliance
 
