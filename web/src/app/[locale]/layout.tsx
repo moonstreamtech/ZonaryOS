@@ -13,6 +13,7 @@ import { routing } from "@/i18n/routing";
 import { fetchMe, fetchRoleInFirm, type MeResponse } from "@/lib/me";
 import { resolveActiveFirm } from "@/lib/activeFirm";
 import NavShell from "@/components/Nav/NavShell";
+import TelemetryClient from "@/components/Telemetry/TelemetryClient";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -84,6 +85,9 @@ export default async function RootLayout({ children, params }: LayoutProps) {
     >
       <body className="min-h-full flex flex-col">
         <NextIntlClientProvider>
+          {/* Renders nothing - see that component's own doc comment for
+              its default-off guarantee (NEXT_PUBLIC_ZONARYOS_TELEMETRY_ENABLED). */}
+          <TelemetryClient />
           <NavShell me={me} activeFirmId={firmId} isOwner={isOwner} />
           {children}
         </NextIntlClientProvider>

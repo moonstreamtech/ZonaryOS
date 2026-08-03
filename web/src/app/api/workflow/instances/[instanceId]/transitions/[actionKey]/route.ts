@@ -5,6 +5,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { executeTransition } from "@/lib/workflow";
+import { recordFeatureEvent } from "@/lib/telemetryServer";
 
 // Generic replacement for the old stock-specific /api/stock/[instanceId]/sell
 // route: proxies the Go backend's transition endpoint for any action on
@@ -45,6 +46,12 @@ export async function POST(
       { status: result.status || 400 },
     );
   }
+
+  // Telemetry (Open Points item 40): counts which transition action
+  // fired (a small, fixed identifier - e.g. "record_sale", never the
+  // instance's payload/content) - see lib/telemetryServer.ts's doc
+  // comment. No-op unless ZONARYOS_TELEMETRY_ENABLED=true.
+  recordFeatureEvent(`workflow_transition_executed:${actionKey}`);
 
   return NextResponse.json(result.instance);
 }

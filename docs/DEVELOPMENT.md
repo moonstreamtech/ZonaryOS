@@ -443,6 +443,62 @@ make migrate
 go test ./internal/license/... ./internal/platformadmin/... -v
 ```
 
+## Central-server discovery and usage telemetry
+
+Open Points item 40 (`docs/OPEN_POINTS.md`). Two packages, built together because the second depends on the first: `internal/discovery` (shared "where is the central server right now" client, used today only by `internal/telemetry` - see below for why `internal/license` doesn't need it yet) and `internal/telemetry` (aggregate, non-content usage telemetry - request/feature counts and source IPs, never content). Both hold to the exact same "structural, not incidental" default-disabled-guarantee rigor `internal/license.Verifier.Allow` established (see the "License Verification" section above) - `internal/telemetry` doubly so, since it collects source IP addresses, real privacy-sensitive data (see the KVKK cross-reference this batch adds to `docs/OPEN_POINTS.md` items 33 and 40).
+
+### Discovery (`internal/discovery`)
+
+- **The well-known endpoint**: every installation serves `GET /.well-known/zonaryos-central`, answering with `{"centralUrl": "<this installation's own ZONARYOS_PUBLIC_URL>"}` - self-referential today, since Open Points item 34's real separate central server doesn't exist yet. `ZONARYOS_PUBLIC_URL` reuses `docker-compose.prod.yml`'s existing `KC_HOSTNAME` convention ("what is my own public URL") rather than inventing a second one - e.g. `https://zonaryos.duckdns.org` in production, unset (empty) in plain local dev. This endpoint is unauthenticated and has no default-off gate (unlike telemetry below) - see `internal/discovery.RegisterRoutes`'s own doc comment for why.
+- **The discovery client**: `internal/discovery.Client`, built once in `cmd/server/main.go` from `ZONARYOS_DISCOVERY_START_URL` (defaults to `ZONARYOS_PUBLIC_URL` when unset). `Resolve(ctx)` returns the current best-known central address: a cached value fresh within `internal/discovery.DefaultTTL` (1 hour, a **PROVISIONAL DEFAULT, NOT A DECIDED value** - same honesty as `license.DefaultGracePeriod`) is returned with no network call; once stale, it re-fetches the well-known document from wherever it *last* successfully resolved to (not back to the original start URL) - this is what makes a real future migration a chain (A points to B, B later points to C, and A's client - still holding B as its cache - asks B and learns C, without ever needing to know about C directly).
+- **Fallback behavior, the core resilience property**: if the fetch fails, `Resolve` falls back to the **last-known-good cached address** - never a hardcoded default. On a genuine first-ever resolution (fresh process, nothing cached yet, and the very first fetch also fails), it falls back to `ZONARYOS_DISCOVERY_START_URL` itself, treated as the zeroth-generation "last known good" (the only address this installation was ever told to trust) - see `Client`'s doc comment for the full reasoning.
+- **`internal/license` does not use this yet, and that's an honest finding, not an oversight**: `internal/license` is fully local/static today (`ZONARYOS_LICENSE_TOKEN` is a config value, never fetched over the network - see that package's own doc comments) - there is nothing for it to resolve "where is the central server" for. `internal/discovery.Client` is designed to be ready as that shared resolver once license verification does grow a real network call (item 34), so that `internal/license` and `internal/telemetry` end up sharing one HTTP-fetch-with-cache implementation, not two - but forcing a dependency onto `internal/license` today would be artificial.
+
+### Usage telemetry (`internal/telemetry` + `web/src/lib/telemetry.ts`)
+
+**Absolute rule**: aggregate counts and identifiers only, never content. Page/feature counts, not what was on the page. Request counts, not request bodies. Source IPs, not payloads.
+
+- **What's collected server-side (Go)**: per-endpoint request counts (`"METHOD /registered/{pattern}"`, e.g. `"GET /api/firms/{firmID}"` - never the resolved path-parameter value) and source IP counts, via `telemetry.Middleware` wrapping the whole `*http.ServeMux` in `cmd/server/main.go`.
+- **What's collected client-side (web)**: page/route view counts and named feature-usage-event counts (e.g. `workflow_instance_created`, `workflow_transition_executed:<actionKey>`) - counts of actions the frontend already observed succeeding (its own `POST /api/workflow/instances` and `.../transitions/{actionKey}` route handlers, after `createInstance`/`executeTransition` return `ok: true`), not new instrumentation reading business data. Browser-side counts (`web/src/lib/telemetry.ts`, mounted via `components/Telemetry/TelemetryClient.tsx` near the root layout) batch in memory and flush every 5 minutes (`FLUSH_INTERVAL_MS`, a **PROVISIONAL DEFAULT**) or on `pagehide`/tab-hide via `navigator.sendBeacon` (falling back to `fetch(..., {keepalive: true})`), never per-click.
+- **Flow**: browser batches -> `POST /api/telemetry` (Next.js route, forwards to the Go backend) -> Go backend's `POST /telemetry/client-report` merges it into `internal/telemetry.Reporter`'s own counters, alongside the server-side request/IP counts -> every `telemetry.DefaultFlushInterval` (5 minutes, also provisional), the Reporter POSTs a batched `Report` to `{internal/discovery.Client.Resolve()}/telemetry/report`. Today that resolves to this same installation (self-referential, per the discovery section above), so `internal/telemetry.RegisterRoutes`'s `/telemetry/report` handler is what actually receives it - logged (a one-line count summary, never persisted to Postgres - there is no retention/access-control story for this data yet) rather than stored anywhere durable.
+- **Resilience**: a flush failure (central unreachable, timeout, non-200) is logged and dropped at `Reporter.flushOnce` - the literal bottom of that goroutine's call stack, nothing above it for an error to propagate into - never retried inline, never surfaced as a user-facing error, never blocks a request. Same guarantee client-side: `lib/telemetry.ts`'s `flush()` swallows every failure.
+- **Default-disabled guarantee, structural not incidental**: gated on `ZONARYOS_TELEMETRY_ENABLED` (Go backend, and the frontend's own server-only same-named var used by its API routes) plus `NEXT_PUBLIC_ZONARYOS_TELEMETRY_ENABLED` (browser-bundle-visible, build-time-inlined). `telemetry.NewReporter(false, ...)` returns a literal `nil`, not a disabled-but-allocated struct - every `Reporter` method is written to check for a nil receiver as its first statement and do nothing else, the identical shape `license.Verifier.Allow`'s own doc comment describes. `telemetry.Middleware(nil, mux)` hands back the wrapped handler completely unwrapped (no closure allocated at all). `telemetry.RegisterRoutes(mux, nil)` registers nothing - the `/telemetry/*` paths don't exist, they don't merely no-op. The periodic flush goroutine (`Reporter.Start`) is only ever launched from `cmd/server/main.go` inside an `if cfg.TelemetryEnabled` branch, matching `license.RecheckInterval`'s own goroutine-gating precedent. Client-side, `lib/telemetry.ts`'s `init()`/`recordPageView`/`recordFeatureEvent` all independently check `NEXT_PUBLIC_ZONARYOS_TELEMETRY_ENABLED` as their first statement - no timer, no event listener, no counter touched when it isn't exactly `"true"`.
+- **Default value chosen: OFF.** This collects source IP addresses, real privacy-sensitive data intersecting Open Points item 33's still-fully-open KVKK question - an operator must explicitly opt in, never discover after the fact that telemetry was silently running.
+- **No UI for viewing collected telemetry** (out of scope - a future admin-panel feature) and **no real separate central-server deployment** (item 34 stays open; today's "central" is this same installation, self-reporting to itself).
+
+### Enabling and testing discovery/telemetry locally (optional, opt-in only)
+
+```
+# Backend
+export ZONARYOS_PUBLIC_URL=http://localhost:8080          # optional - what /.well-known/zonaryos-central answers with
+export ZONARYOS_TELEMETRY_ENABLED=true
+make run
+
+# Frontend (web/.env.local)
+ZONARYOS_TELEMETRY_ENABLED=true
+NEXT_PUBLIC_ZONARYOS_TELEMETRY_ENABLED=true
+```
+
+```
+curl http://localhost:8080/.well-known/zonaryos-central
+# {"centralUrl":"http://localhost:8080"}
+
+curl -X POST http://localhost:8080/telemetry/client-report \
+  -H 'Content-Type: application/json' \
+  -d '{"pageViewCounts":{"/dashboard":2},"featureEventCounts":{"sale_completed":1}}'
+# 202 Accepted - watch the backend's own logs for the batched "telemetry: received report ..." line at the next flush interval (or wait up to internal/telemetry.DefaultFlushInterval for the server's own accumulated counts to flush themselves).
+```
+
+### Running the discovery/telemetry package tests
+
+Both are pure unit tests (no database - in-memory batching/caching only):
+
+```
+go test ./internal/discovery/... ./internal/telemetry/... -v
+```
+
+`internal/discovery/client_test.go` proves fallback-to-last-known-good on an unreachable well-known endpoint and a changed resolved address after a (simulated, fake-clock) TTL expiry. `internal/telemetry/telemetry_test.go` proves the default-off guarantee (`NewReporter(false, ...)` returns `nil`, every method is a no-op on a nil receiver, `Middleware`/`RegisterRoutes` add nothing when disabled) and that batching produces counts only - never the raw input replicated per-call.
+
 ## Platform Admin
 
 `internal/platformadmin` is a narrow, read-only view for ZonaryOS-the-company staff (the platform operator) - distinct from everything else in this API, which is scoped to one firm the caller belongs to. It answers a different question ("is this caller ZonaryOS staff?") than `internal/permission`/`internal/firm` ("is this caller a member/permission-holder/owner *within one firm*?"), which is why it's kept as its own package rather than folded into either.

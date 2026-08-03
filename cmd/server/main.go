@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
+	"github.com/moonstreamtech/ZonaryOS/internal/discovery"
 	"github.com/moonstreamtech/ZonaryOS/internal/firm"
 	"github.com/moonstreamtech/ZonaryOS/internal/identity"
 	"github.com/moonstreamtech/ZonaryOS/internal/invite"
@@ -22,6 +23,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/db"
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/httpapi"
 	"github.com/moonstreamtech/ZonaryOS/internal/platformadmin"
+	"github.com/moonstreamtech/ZonaryOS/internal/telemetry"
 	"github.com/moonstreamtech/ZonaryOS/internal/wizard"
 	"github.com/moonstreamtech/ZonaryOS/internal/workflow"
 )
@@ -76,7 +78,45 @@ func main() {
 		}()
 	}
 
+	// internal/discovery.Client (Open Points item 34): the single shared
+	// "where is the central server right now" resolver both this batch's
+	// internal/telemetry (below) and a future network-aware
+	// internal/license both use, so there is exactly one HTTP-fetch-
+	// with-cache implementation, not one per consumer - see that
+	// package's doc comment. Built unconditionally: it is a plain,
+	// stateless-until-called struct (no goroutine, no network call
+	// happens here), so building it costs nothing even on an
+	// installation that never enables telemetry and whose license
+	// verification never ends up needing a network call either.
+	discoveryClient := discovery.New(cfg.DiscoveryStartURL)
+
+	// internal/telemetry.Reporter (this batch, Open Points item 40 - see
+	// docs/OPEN_POINTS.md). NewReporter(false, ...) returns a literal
+	// nil when cfg.TelemetryEnabled is false (the default) - not a
+	// disabled-but-allocated struct - so every telemetry.Record*/
+	// Middleware call below is a true no-op on a nil receiver. See
+	// internal/telemetry.Reporter's doc comment for the same structural
+	// "default-disabled guarantee" internal/license.Verifier's doc
+	// comment establishes for its own package.
+	telemetryReporter := telemetry.NewReporter(cfg.TelemetryEnabled, discoveryClient)
+	// The periodic flush goroutine only exists at all when telemetry is
+	// actually enabled - not merely idling, an entirely absent
+	// goroutine, matching license.RecheckInterval's own goroutine-
+	// gating precedent exactly. reporterCtx is cancelled when srv shuts
+	// down (deferred below) so this goroutine doesn't leak past the
+	// server's own lifetime.
+	reporterCtx, cancelReporter := context.WithCancel(ctx)
+	defer cancelReporter()
+	if cfg.TelemetryEnabled {
+		go telemetryReporter.Start(reporterCtx)
+	}
+
 	mux := httpapi.NewMux()
+	// The well-known discovery endpoint (Open Points item 34) is
+	// unconditional - see internal/discovery.RegisterRoutes's own
+	// comment for why it has no default-off gate unlike license/
+	// telemetry.
+	discovery.RegisterRoutes(mux, cfg.PublicURL)
 	identity.RegisterRoutes(mux, verifier, pool)
 	workflow.RegisterRoutes(mux, verifier, pool)
 	wizard.RegisterRoutes(mux, verifier, pool)
@@ -85,6 +125,12 @@ func main() {
 	firm.RegisterRoutes(mux, verifier, pool)
 	invite.RegisterRoutes(mux, verifier, pool)
 	platformadmin.RegisterRoutes(mux, verifier, pool, platformadmin.NewAllowlist(cfg.PlatformAdminEmails), licenseVerifier)
+	// Only actually registers the two /telemetry/* endpoints when
+	// telemetryReporter is non-nil (enabled) - see
+	// telemetry.RegisterRoutes's own comment: a disabled installation
+	// has no listening surface for this package at all, not just
+	// no-op handlers.
+	telemetry.RegisterRoutes(mux, telemetryReporter)
 
 	// An explicit http.Server (not the bare http.ListenAndServe function)
 	// so ReadHeaderTimeout can be set - a slowloris mitigation (CI
@@ -93,9 +139,16 @@ func main() {
 	// left unset: internal/permission's SSE endpoint
 	// (GET .../permission-events) intentionally keeps its response stream
 	// open indefinitely, and a blanket WriteTimeout would force-close it.
+	//
+	// telemetry.Middleware(telemetryReporter, mux) wraps the whole mux
+	// with per-request/source-IP counting - on a nil telemetryReporter
+	// (the default) this returns mux itself, completely unwrapped (see
+	// that function's own comment), so Handler below is byte-for-byte
+	// what it was before this batch on any installation that hasn't
+	// opted in.
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           mux,
+		Handler:           telemetry.Middleware(telemetryReporter, mux)(mux),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

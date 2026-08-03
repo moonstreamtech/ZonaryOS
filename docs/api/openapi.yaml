@@ -29,6 +29,96 @@ paths:
                     type: string
                     example: ok
 
+  /.well-known/zonaryos-central:
+    get:
+      summary: Resolve this installation's currently-known central-server address
+      description: >
+        Open Points item 34/40 (internal/discovery). Today every
+        installation answers self-referentially, with its own configured
+        ZONARYOS_PUBLIC_URL - there is no separate central server yet.
+        Every installation's own internal/discovery.Client periodically
+        fetches this same endpoint (from whichever address it last
+        resolved, walking forward) to discover a real future central
+        server migration without requiring a code or config change.
+        Unauthenticated and unconditional - see
+        internal/discovery.RegisterRoutes's doc comment for why this has
+        no default-off gate unlike license/telemetry.
+      security: []
+      responses:
+        "200":
+          description: The current central-server base URL, as this installation understands it
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  centralUrl:
+                    type: string
+                    description: >
+                      This installation's own public base URL (empty if
+                      ZONARYOS_PUBLIC_URL isn't configured, e.g. plain
+                      local dev) - never a placeholder or third-party
+                      value.
+                    example: https://zonaryos.duckdns.org
+                required: [centralUrl]
+
+  /telemetry/report:
+    post:
+      summary: Ingest a batched usage-telemetry report (aggregate counts only)
+      description: >
+        Open Points item 40 (internal/telemetry). The "central server"
+        side of the reporting flow - today every installation both sends
+        to and (via this handler) receives its own reports, since Open
+        Points item 34's real separate central server doesn't exist yet.
+        Only reachable at all when ZONARYOS_TELEMETRY_ENABLED=true on
+        this installation (internal/telemetry.RegisterRoutes registers
+        nothing when disabled - a request to this path 404s exactly as
+        if the package were never imported). Logs a one-line count
+        summary; does not persist to Postgres (no retention/access-
+        control story exists yet for this data - see
+        docs/OPEN_POINTS.md's KVKK cross-reference).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TelemetryReport"
+      responses:
+        "202":
+          description: Report accepted (counts only, aggregate, never content - see internal/telemetry's doc comment)
+        "400":
+          description: Malformed report body
+
+  /telemetry/client-report:
+    post:
+      summary: Ingest a batched client-side (frontend) usage-telemetry report
+      description: >
+        What the web frontend's own batching client
+        (web/src/lib/telemetry.ts, flushed via the frontend's
+        /api/telemetry route handler - see that route's doc comment) and
+        this same Next.js server process's own route handlers
+        (web/src/lib/telemetryServer.ts) POST periodically: page/screen
+        view counts by route and named feature-usage-event counts only -
+        never page content or request/response bodies. Merged into
+        internal/telemetry.Reporter's own counters, then flushed onward
+        to /telemetry/report on the resolved central address alongside
+        this installation's server-side (Go) request/source-IP counts.
+        Only reachable when ZONARYOS_TELEMETRY_ENABLED=true, same as
+        /telemetry/report above.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TelemetryClientReport"
+      responses:
+        "202":
+          description: Report accepted
+        "400":
+          description: Malformed report body
+
   /api/me:
     get:
       summary: Resolve the caller's identity and firm memberships
@@ -1674,6 +1764,53 @@ components:
           type: string
           nullable: true
       required: [firmId, name, address, taxId, defaultLocale, defaultCurrency, logoUrl]
+
+    TelemetryReport:
+      type: object
+      description: >
+        internal/telemetry.Report's wire shape - aggregate counts only
+        (Open Points item 40), keyed by identifier (an endpoint pattern,
+        a source IP, or a named feature-event string), never content.
+      properties:
+        periodStart:
+          type: string
+          format: date-time
+        periodEnd:
+          type: string
+          format: date-time
+        requestCounts:
+          type: object
+          additionalProperties:
+            type: integer
+          description: "\"METHOD /pattern\" (e.g. \"GET /api/firms/{firmID}\") -> request count"
+        sourceIpCounts:
+          type: object
+          additionalProperties:
+            type: integer
+          description: source IP address -> request count
+        featureEventCounts:
+          type: object
+          additionalProperties:
+            type: integer
+          description: named feature-usage event -> count
+      required: [periodStart, periodEnd]
+
+    TelemetryClientReport:
+      type: object
+      description: >
+        internal/telemetry.ClientReport's wire shape - what the web
+        frontend's batching client sends (Open Points item 40).
+      properties:
+        pageViewCounts:
+          type: object
+          additionalProperties:
+            type: integer
+          description: route path -> view count
+        featureEventCounts:
+          type: object
+          additionalProperties:
+            type: integer
+          description: named feature-usage event -> count
 
     PlatformAdminFirm:
       type: object

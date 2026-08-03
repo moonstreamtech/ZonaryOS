@@ -5,6 +5,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createInstance } from "@/lib/workflow";
+import { recordFeatureEvent } from "@/lib/telemetryServer";
 
 // Generic replacement for the old stock-specific /api/stock/create route:
 // proxies the Go backend's "create instance" endpoint for any workflow
@@ -42,6 +43,12 @@ export async function POST(request: NextRequest) {
       { status: result.status || 400 },
     );
   }
+
+  // Telemetry (Open Points item 40): counts an already-succeeded action
+  // the route handler just observed - no new instrumentation reading
+  // business data, see lib/telemetryServer.ts's doc comment. No-op
+  // unless ZONARYOS_TELEMETRY_ENABLED=true.
+  recordFeatureEvent("workflow_instance_created");
 
   return NextResponse.json(result.instance, { status: 201 });
 }

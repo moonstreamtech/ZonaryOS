@@ -71,6 +71,39 @@ type Config struct {
 	// matching the brief's ask for a sensible provisional default
 	// rather than a fully general knob.
 	LicenseGracePeriod time.Duration
+
+	// PublicURL is this installation's own configured public base URL
+	// (no trailing slash), e.g. https://zonaryos.duckdns.org - the same
+	// "what is my own public address" value docker-compose.prod.yml's
+	// KC_HOSTNAME convention already establishes for Keycloak, reused
+	// here rather than inventing a second one. It is what
+	// internal/discovery.HandleWellKnown answers with at
+	// GET /.well-known/zonaryos-central, and (via DiscoveryStartURL's
+	// default, see below) what a fresh installation's own discovery
+	// client starts from. Empty by default - plain local dev has no
+	// real public URL, and both consumers treat an empty value as
+	// "nothing to serve/start from" rather than guessing.
+	PublicURL string
+	// DiscoveryStartURL is the address internal/discovery.Client begins
+	// resolving from (ZONARYOS_DISCOVERY_START_URL). Defaults to
+	// PublicURL when unset - for today's single-instance reality
+	// (Open Points item 34), an installation's own discovery starting
+	// point is itself, the same self-referential answer
+	// HandleWellKnown gives. A real future migration would repoint this
+	// at whatever address is actually known to be further along the
+	// discovery chain, without requiring any code change - see
+	// internal/discovery's package doc comment.
+	DiscoveryStartURL string
+
+	// TelemetryEnabled is internal/telemetry's single default-disabled
+	// switch, mirroring LicenseEnforced's exact convention: only "true"
+	// (exact, case-sensitive match) turns it on. Default OFF - this
+	// collects source IP addresses (aggregate request/operation counts
+	// server-side, page/feature-usage counts client-side), which has
+	// real privacy weight (see docs/OPEN_POINTS.md's KVKK
+	// cross-reference) - an operator must explicitly opt in, never
+	// discover after the fact that telemetry was silently on.
+	TelemetryEnabled bool
 }
 
 // Load reads configuration from environment variables, applying defaults
@@ -85,7 +118,10 @@ func Load() (Config, error) {
 		LicenseEnforced:     os.Getenv("ZONARYOS_LICENSE_ENFORCEMENT") == "true",
 		LicensePublicKey:    os.Getenv("ZONARYOS_LICENSE_PUBLIC_KEY"),
 		LicenseToken:        os.Getenv("ZONARYOS_LICENSE_TOKEN"),
+		PublicURL:           strings.TrimRight(os.Getenv("ZONARYOS_PUBLIC_URL"), "/"),
+		TelemetryEnabled:    os.Getenv("ZONARYOS_TELEMETRY_ENABLED") == "true",
 	}
+	cfg.DiscoveryStartURL = strings.TrimRight(getEnv("ZONARYOS_DISCOVERY_START_URL", cfg.PublicURL), "/")
 
 	if cfg.HTTPAddr == "" {
 		return Config{}, fmt.Errorf("ZONARYOS_HTTP_ADDR must not be empty")
