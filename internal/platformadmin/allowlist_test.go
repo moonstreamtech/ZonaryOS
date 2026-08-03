@@ -50,7 +50,7 @@ func TestListFirms_RejectsNonAllowlistedBeforeAnyDatabaseAccess(t *testing.T) {
 		Email:   "not-an-admin@example.com",
 	}
 
-	_, err := platformadmin.ListFirms(context.Background(), nil, allow, caller)
+	_, err := platformadmin.ListFirms(context.Background(), nil, allow, caller, nil)
 	if !errors.Is(err, platformadmin.ErrNotPlatformAdmin) {
 		t.Fatalf("expected ErrNotPlatformAdmin, got: %v", err)
 	}

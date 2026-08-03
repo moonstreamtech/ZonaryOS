@@ -1117,6 +1117,17 @@ paths:
         not 403 - this endpoint is designed to look like it doesn't exist
         to anyone off the allowlist, matching the frontend route's
         next/navigation notFound() behavior at /platform-admin.
+        Also gated by internal/license (Open Points item 32) - the one
+        module-gating call site this codebase wires today
+        (license.ModulePlatformAdmin). With ZONARYOS_LICENSE_ENFORCEMENT
+        unset (the default), this check is a structural no-op and never
+        changes this endpoint's behavior. With enforcement enabled and
+        the license invalid/expired-past-grace/missing this module, the
+        request fails closed with 503 and a plain-text, actionable
+        message (which env var to fix and what to do) - checked only
+        after the allowlist check above, so a non-allowlisted caller
+        still just gets 404 and never learns anything about license
+        state.
       responses:
         "200":
           description: Firm metadata for every firm in the system
@@ -1128,6 +1139,19 @@ paths:
                   $ref: "#/components/schemas/PlatformAdminFirm"
         "401": { description: Missing or invalid bearer token }
         "404": { description: Caller is authenticated but not on the platform-admin allowlist }
+        "503":
+          description: >
+            License enforcement is enabled (ZONARYOS_LICENSE_ENFORCEMENT=true)
+            and the configured license is missing, invalid, expired past
+            its grace period, or does not include the platform_admin
+            module. Response body is plain text with a specific,
+            actionable message (which env var to fix, and how) - not a
+            generic "unauthorized". Only ever returned for an otherwise
+            allowlisted caller (see above).
+          content:
+            text/plain:
+              schema:
+                type: string
 
 components:
   securitySchemes:

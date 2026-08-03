@@ -16,6 +16,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/firm"
 	"github.com/moonstreamtech/ZonaryOS/internal/identity"
 	"github.com/moonstreamtech/ZonaryOS/internal/invite"
+	"github.com/moonstreamtech/ZonaryOS/internal/license"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/config"
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/db"
@@ -46,6 +47,35 @@ func main() {
 
 	broadcaster := permission.NewBroadcaster()
 
+	// internal/license.Verifier (Open Points item 32). Built unconditionally
+	// (not skipped when disabled) so every call site can rely on it being
+	// non-nil - but NewVerifier(false, ...) never parses cfg.LicensePublicKey
+	// or cfg.LicenseToken at all when cfg.LicenseEnforced is false (the
+	// default), so an operator who never sets ZONARYOS_LICENSE_ENFORCEMENT=true
+	// never needs to configure either of those either. See
+	// internal/license.Verifier's doc comment for the structural
+	// default-disabled guarantee this rests on.
+	licenseVerifier, err := license.NewVerifier(cfg.LicenseEnforced, cfg.LicensePublicKey, cfg.LicenseToken, cfg.LicenseGracePeriod)
+	if err != nil {
+		log.Fatalf("license: %v", err)
+	}
+	// The periodic re-check goroutine only exists at all when enforcement
+	// is actually enabled - not merely a no-op tick when disabled, an
+	// entirely absent goroutine, so a deployment that never opts in pays
+	// zero background-goroutine cost from this package either. See
+	// license.RecheckInterval's doc comment for why periodic re-checking
+	// (rather than startup-only) matters even though the token itself is
+	// static local config today.
+	if cfg.LicenseEnforced {
+		go func() {
+			ticker := time.NewTicker(license.RecheckInterval)
+			defer ticker.Stop()
+			for range ticker.C {
+				licenseVerifier.Check()
+			}
+		}()
+	}
+
 	mux := httpapi.NewMux()
 	identity.RegisterRoutes(mux, verifier, pool)
 	workflow.RegisterRoutes(mux, verifier, pool)
@@ -54,7 +84,7 @@ func main() {
 	auditlog.RegisterRoutes(mux, verifier, pool)
 	firm.RegisterRoutes(mux, verifier, pool)
 	invite.RegisterRoutes(mux, verifier, pool)
-	platformadmin.RegisterRoutes(mux, verifier, pool, platformadmin.NewAllowlist(cfg.PlatformAdminEmails))
+	platformadmin.RegisterRoutes(mux, verifier, pool, platformadmin.NewAllowlist(cfg.PlatformAdminEmails), licenseVerifier)
 
 	// An explicit http.Server (not the bare http.ListenAndServe function)
 	// so ReadHeaderTimeout can be set - a slowloris mitigation (CI

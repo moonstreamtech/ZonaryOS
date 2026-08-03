@@ -400,6 +400,49 @@ make migrate
 go test ./internal/auditlog/... -v
 ```
 
+## License Verification
+
+`internal/license` is the technical-friction layer of Open Points item 32 ("License Verification Mechanism") - Vision §5's "3-Layer Defense," layer 2 only (layer 1, the real deterrent, is the license agreement - item 20). **Disabled by default, and this is a structural guarantee, not an incidental one**: `internal/license.Verifier.Allow` (the one gate every call site uses) returns `nil` as its literal first statement whenever `ZONARYOS_LICENSE_ENFORCEMENT` is not exactly `"true"`. Nobody needs to read this section or set any of the env vars below to keep working exactly as before this batch existed - this is entirely opt-in.
+
+- **Token format and signature scheme**: Ed25519 (`crypto/ed25519`, no third-party crypto dependency), NOT the Developer's original MD5-based raw idea (`docs/OPEN_POINTS.md` item 32) - MD5 is broken for integrity/authenticity purposes and can't prove authorized issuance the way a signature can. A token is `<base64url(payload JSON)>.<base64url(Ed25519 signature over the payload JSON bytes)>` - see `internal/license/license.go`'s package doc comment for the exact wire format. Payload: an opaque firm/installation identifier, an expiry timestamp, and a list of active module keys.
+- **Server-side secret, client-only-implements-a-protocol** (item 32's open question 4, now answered): this codebase holds only the Ed25519 *public* key (`ZONARYOS_LICENSE_PUBLIC_KEY`) - it can verify a token's signature but can never mint one, since it never holds the matching private key.
+- **Module gating**: a small, honest, deliberately provisional stand-in for item 30's still fully-open real module/pricing catalog - `internal/license.ModuleWorkflowEngine`/`ModuleAuditTrail`/`ModulePlatformAdmin`. Only `ModulePlatformAdmin` is actually wired into a real gate today: `internal/platformadmin.ListFirms` (`GET /api/platform-admin/firms`) calls `license.Verifier.Allow(license.ModulePlatformAdmin)` right after its existing allowlist check, before any database access - chosen as the lowest-blast-radius illustrative fit (see that package's own doc comment for the reasoning). When enforcement is enabled and denied, that endpoint now returns `503 Service Unavailable` with the license error's own actionable message (not `401`/`403`/`404` - the caller's identity/authorization was never in question, only the installation's own license state).
+- **Grace period**: `ZONARYOS_LICENSE_GRACE_PERIOD` (a Go duration string, e.g. `72h`), how long past a token's expiry `Allow` keeps allowing access before failing closed. Defaults to `internal/license.DefaultGracePeriod` (72h) - a **PROVISIONAL DEFAULT, NOT A DECIDED SLA**, same honesty `deploy/backup/backup-postgres.sh`'s own backup-retention default carries for its own still-open Open Points item.
+- **Periodic re-check**: when enforcement is enabled, `cmd/server/main.go` starts one background goroutine (a plain `time.Ticker`, no daemon framework - there's no existing precedent for one in this codebase) that calls `Verifier.Check()` every `license.RecheckInterval` (15 minutes) so a long-running server process catches its own token's expiry crossing over time, not just at startup. No goroutine at all is started when enforcement is disabled.
+
+### Enabling and testing license enforcement locally (optional, opt-in only)
+
+```
+# 1. Generate a test keypair (never commit the private key anywhere).
+go run ./cmd/licensegen -genkey
+# prints ZONARYOS_LICENSE_PUBLIC_KEY=... and ZONARYOS_LICENSE_PRIVATE_KEY=...
+
+# 2. Issue a test token signed with that private key.
+export ZONARYOS_LICENSE_PRIVATE_KEY=<private key from step 1>
+go run ./cmd/licensegen -issued-to "local-dev" -expires-in 720h -modules platform_admin
+# prints a signed token string
+
+# 3. Point the server at the public key and the token, and turn enforcement on.
+export ZONARYOS_LICENSE_ENFORCEMENT=true
+export ZONARYOS_LICENSE_PUBLIC_KEY=<public key from step 1>
+export ZONARYOS_LICENSE_TOKEN=<token string from step 2>
+# ZONARYOS_LICENSE_GRACE_PERIOD is optional (defaults to 72h)
+make run
+```
+
+With enforcement on and a valid token, `GET /api/platform-admin/firms` (for an allowlisted caller) behaves normally. Omit `-modules platform_admin` from step 2, or let the token expire past its grace period, to see the `503` fail-closed response instead. **`cmd/licensegen` is a stand-in test/dev issuing tool only** - it is explicitly NOT the real central license-issuing server Open Points item 34 still needs to design; see that command's own doc comment.
+
+### Running the license package tests
+
+`internal/license/license_test.go` and `verifier_test.go` are pure unit tests (no database - signature verification, tampering, wrong-key, expiry/grace-period behavior, and the default-disabled guarantee). `internal/platformadmin/license_integration_test.go` needs a real Postgres, same convention as everywhere else above, and proves the gated endpoint's three real scenarios (enforcement off, enforcement on with a valid token, enforcement on with an expired-past-grace token):
+
+```
+export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5433/zonaryos?sslmode=disable
+export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5433/zonaryos?sslmode=disable
+make migrate
+go test ./internal/license/... ./internal/platformadmin/... -v
+```
+
 ## Platform Admin
 
 `internal/platformadmin` is a narrow, read-only view for ZonaryOS-the-company staff (the platform operator) - distinct from everything else in this API, which is scoped to one firm the caller belongs to. It answers a different question ("is this caller ZonaryOS staff?") than `internal/permission`/`internal/firm` ("is this caller a member/permission-holder/owner *within one firm*?"), which is why it's kept as its own package rather than folded into either.
@@ -410,10 +453,11 @@ go test ./internal/auditlog/... -v
 - **Accountability**: every access writes one `audit_log` row (`action: "platform_admin_metadata_view"`) into *each firm's own* audit trail, attributed to the platform admin's resolved user ID - reusing `internal/auditlog.Write` rather than a parallel logging path. `audit_log.firm_id` is `NOT NULL` and RLS-scoped to one firm (`migrations/0003_workflow_engine.up.sql`), so there's no clean way to represent one firm-less "platform-level" event in it; logging per-firm-visited instead is a deliberate, and reasonably clean, resolution of that ambiguity - the read genuinely happened while scoped to that one firm, so its own audit_log is where accountability for it belongs. A firm's own owner can see this access the same way they see any other `audit_log` entry (`GET /api/firms/{firmID}/audit-log`).
 - **Ordering**: the allowlist check runs first, before `identity.ResolveOrCreateUser` or any query - a non-allowlisted caller never causes a query to run at all (see `internal/platformadmin/allowlist_test.go`'s `TestListFirms_RejectsNonAllowlistedBeforeAnyDatabaseAccess`, which proves this with a `nil` pool as a poison pill rather than just asserting the happy path is narrow).
 - **Frontend gate**: `web/src/app/[locale]/platform-admin/page.tsx` is reachable only at that distinct path, outside any firm namespace, with no in-app link to it. Unlike `settings/permissions`/`audit-log` (which render an inline "not authorized" message for a real but unauthorized firm member), this route calls `next/navigation`'s `notFound()` for anyone off the allowlist - the real 404 page, as if the route didn't exist. That's a deliberate, higher-sensitivity choice for this one route given its own task brief's explicit ask, not a pattern the other owner-gated pages need to adopt.
+- **License gate**: this endpoint is also the one place `internal/license`'s module-gating mechanism (see "License Verification" above) is actually wired in today - `ListFirms` calls `license.Verifier.Allow(license.ModulePlatformAdmin)` right after the allowlist check above, before any database access. With `ZONARYOS_LICENSE_ENFORCEMENT` unset (the default), this is a complete no-op - see the "License Verification" section for the structural guarantee behind that. With enforcement enabled and denied, the endpoint returns `503`, not `401`/`403`/`404`.
 
 HTTP surface:
 
-- `GET /api/platform-admin/firms` — firm metadata across every firm (allowlist-gated; 404, not 403, for a non-allowlisted caller)
+- `GET /api/platform-admin/firms` — firm metadata across every firm (allowlist-gated; 404, not 403, for a non-allowlisted caller; also license-gated, see above - 503 with an actionable message if enforcement is enabled and the license is invalid/expired/missing the `platform_admin` module)
 
 ### Running the platform admin tests
 
