@@ -6,13 +6,19 @@
 import { getTranslations } from "next-intl/server";
 import {
   fetchDefinitionByKey,
+  fetchDefinitions,
   fetchInstances,
   fetchInstancesPage,
+  fetchRules,
+  type AvailableAction,
 } from "@/lib/workflow";
 import { fetchAuditLog } from "@/lib/auditlog";
+import { fetchRoleInFirm } from "@/lib/me";
 import CreateInstanceForm from "./CreateInstanceForm";
 import WorkflowInstanceList from "./WorkflowInstanceList";
 import WorkflowHistory from "./WorkflowHistory";
+import RuleBuilder from "./RuleBuilder";
+import RuleList from "./RuleList";
 
 // Page size for the instance list below - not user-configurable (no UI
 // for it), just the fixed page size pagination pages through.
@@ -89,6 +95,32 @@ export default async function WorkflowDefinitionView({
     ? ((await fetchInstances(sessionToken, firmId, definition.definitionId)) ?? [])
     : [];
 
+  // Rule Engine Builder UI (Open Points item 7's frontend batch): the
+  // rule list is visible to any member (ListRulesForDefinition is only
+  // membership-checked, see rules.go), but creating/editing/deleting one
+  // is owner-only, same tier as DefinitionBuilder's own workflow-creation
+  // gate. RuleBuilder's "state" leaf definitionKey dropdown and
+  // "transition" action's actionKey dropdown both need real data the
+  // definition alone doesn't carry: existingDefinitionKeys (the firm's
+  // OTHER definitions, same list DefinitionBuilder's own reference-field
+  // picker already uses) and availableActions (every distinct action key
+  // reachable from the currently-instantiated states - the closest
+  // available proxy for "every transition this definition has," since no
+  // endpoint returns the full state graph independent of any instance).
+  const [role, allDefinitions] = await Promise.all([
+    fetchRoleInFirm(sessionToken, firmId),
+    fetchDefinitions(sessionToken, firmId),
+  ]);
+  const isOwner = role?.isOwner ?? false;
+  const rules = isOwner || role ? await fetchRules(sessionToken, firmId, workflowKey) : null;
+  const availableActions: AvailableAction[] = Array.from(
+    new Map(
+      [...(instancesPage?.instances ?? []), ...allInstances].flatMap((inst) =>
+        inst.availableActions.map((a) => [a.actionKey, a] as const),
+      ),
+    ).values(),
+  );
+
   return (
     <main className="flex flex-1 flex-col items-center gap-10 bg-zinc-50 px-6 py-16 dark:bg-black">
       <div className="flex w-full max-w-2xl flex-col items-center gap-6">
@@ -115,6 +147,26 @@ export default async function WorkflowDefinitionView({
           q={q}
         />
       </div>
+
+      {rules !== null && (
+        <div className="flex w-full max-w-2xl flex-col items-center gap-3">
+          <h2 className="text-xl font-semibold tracking-tight text-black dark:text-zinc-50">
+            {t("ruleListTitle")}
+          </h2>
+          {isOwner && (
+            <RuleBuilder
+              firmId={firmId}
+              definitionKey={workflowKey}
+              fields={definition.fields}
+              availableActions={availableActions}
+              existingDefinitionKeys={(allDefinitions ?? [])
+                .map((d) => d.key)
+                .filter((key) => key !== workflowKey)}
+            />
+          )}
+          <RuleList firmId={firmId} definitionKey={workflowKey} rules={rules} isOwner={isOwner} />
+        </div>
+      )}
 
       {auditEntries && (
         <div className="w-full max-w-2xl">

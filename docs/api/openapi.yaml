@@ -521,14 +521,11 @@ paths:
 
   /api/firms/{firmID}/workflow-definitions/{definitionKey}/rules:
     get:
-      summary: List a workflow definition's rules (Rule Engine, read-only this batch)
+      summary: List a workflow definition's rules (Rule Engine)
       description: >
         internal/workflow.ListRulesForDefinition - Vision §3's "Autonomous
         Decision Layer" (Open Points item 7). Lists every workflow_rules
-        row for definitionKey, condition tree and actions included, so a
-        rule IS visible in the UI even though the rule-creation form
-        itself is deferred to a later batch (no POST endpoint exists yet
-        - internal/workflow.CreateRule is Go-only this batch).
+        row for definitionKey, condition tree and actions included.
         Membership-checked (internal/permission.IsMember); not gated by
         any rule-specific permission, since none exists yet.
       parameters:
@@ -553,6 +550,104 @@ paths:
         "400": { description: Invalid firmID }
         "401": { description: Missing or invalid bearer token }
         "404": { description: The caller isn't a member of firmID }
+    post:
+      summary: Create a rule for this workflow definition (Rule Engine Builder UI, owner-only)
+      description: >
+        internal/workflow.CreateRuleForFirm. Owner-gated
+        (internal/permission.IsMember then IsOwner). Structural validation
+        (ValidateExpressionTree/ValidateActions) and a narrow, statically-
+        detectable self-referential-loop check (an on_transition-triggered
+        rule whose own transition action is a literal state self-loop)
+        both map to a 400, not a generic 500.
+      parameters:
+        - name: firmID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: definitionKey
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                trigger: { type: string, enum: [on_create, on_transition] }
+                conditionTree: { type: object }
+                actions: { type: array, items: { type: object } }
+                autonomous: { type: boolean }
+                enabled: { type: boolean }
+      responses:
+        "201": { description: The newly-created rule }
+        "400": { description: Invalid firmID, malformed request body, an invalid condition tree/actions, or the obvious self-referential-loop case }
+        "401": { description: Missing or invalid bearer token }
+        "403": { description: Caller is a member of firmID but not an owner }
+        "404": { description: Caller isn't a member of firmID, or definitionKey doesn't name a real workflow definition for this firm }
+
+  /api/firms/{firmID}/workflow-definitions/{definitionKey}/rules/{ruleID}:
+    patch:
+      summary: Partially update a rule (Rule Engine Builder UI, owner-only)
+      description: >
+        internal/workflow.UpdateRuleForFirm. Owner-gated identically to
+        the create endpoint above. Every field in the request body is
+        optional - an omitted field leaves that column unchanged. The
+        FULL resulting rule (not just the changed fields) is re-validated
+        before writing.
+      parameters:
+        - name: firmID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: definitionKey
+          in: path
+          required: true
+          schema: { type: string }
+        - name: ruleID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                enabled: { type: boolean }
+                autonomous: { type: boolean }
+                conditionTree: { type: object }
+                actions: { type: array, items: { type: object } }
+      responses:
+        "200": { description: The updated rule }
+        "400": { description: Invalid firmID/ruleID, malformed request body, or the resulting rule is invalid }
+        "401": { description: Missing or invalid bearer token }
+        "403": { description: Caller is a member of firmID but not an owner }
+        "404": { description: Caller isn't a member of firmID, or ruleID doesn't resolve to a rule scoped to this firm/definitionKey }
+    delete:
+      summary: Delete a rule (Rule Engine Builder UI, owner-only)
+      description: internal/workflow.DeleteRuleForFirm. Owner-gated identically to the endpoints above.
+      parameters:
+        - name: firmID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: definitionKey
+          in: path
+          required: true
+          schema: { type: string }
+        - name: ruleID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: Deleted }
+        "400": { description: Invalid firmID/ruleID }
+        "401": { description: Missing or invalid bearer token }
+        "403": { description: Caller is a member of firmID but not an owner }
+        "404": { description: Caller isn't a member of firmID, or ruleID doesn't resolve to a rule scoped to this firm/definitionKey }
 
   /api/firms/{firmID}/workflow-instances/{instanceID}:
     get:

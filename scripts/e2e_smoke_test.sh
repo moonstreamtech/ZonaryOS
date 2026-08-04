@@ -129,6 +129,62 @@ assert ('workflow_instance', 'record_sale') in actions, entries
 " || fail "expected firm-create/instance-create/record_sale entries in the audit log: $AUDIT_LOG"
 log "audit trail confirmed"
 
+# --- Rule Engine Builder UI backend: create a rule through the real API,
+# confirm it fires on a transition (deferred from the last batch, which
+# only wired the rule engine and unit/integration-tested it - this is the
+# genuine end-to-end proof that was flagged as missing) --------------------
+
+log "rule engine: creating a notify-on-record_sale rule for stock_to_sale"
+RULE_CREATE_RESPONSE=$(auth -X POST "$BACKEND_URL/api/firms/$FIRM_ID/workflow-definitions/stock_to_sale/rules" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "name": "E2E notify on sale",
+      "trigger": "on_transition",
+      "conditionTree": {"type":"field","field":"quantity","op":"gt","value":0},
+      "actions": [{"type":"notify","channel":"audit_log","messageTemplate":"e2e sold {{quantity}} of {{item}}"}],
+      "autonomous": true,
+      "enabled": true
+    }')
+RULE_ID=$(echo "$RULE_CREATE_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['id'])")
+[ -n "$RULE_ID" ] || fail "did not get an id back from creating the rule: $RULE_CREATE_RESPONSE"
+log "rule created: $RULE_ID"
+
+log "rule engine: confirming GET .../rules lists the new rule"
+RULES_LIST=$(auth "$BACKEND_URL/api/firms/$FIRM_ID/workflow-definitions/stock_to_sale/rules")
+echo "$RULES_LIST" | python3 -c "
+import sys, json
+rules = json.load(sys.stdin)
+matches = [r for r in rules if r['id'] == '$RULE_ID']
+assert matches, rules
+assert matches[0]['name'] == 'E2E notify on sale', matches[0]
+" || fail "expected the new rule to be listed: $RULES_LIST"
+log "rule listing confirmed"
+
+log "rule engine: adding a second stock instance and selling it, to fire the new rule"
+RULE_INSTANCE_RESPONSE=$(auth -X POST "$BACKEND_URL/api/firms/$FIRM_ID/workflow-definitions/$DEFINITION_ID/instances" \
+    -H "Content-Type: application/json" \
+    -d '{"payload":{"item":"E2E Rule Widget","quantity":7}}')
+RULE_INSTANCE_ID=$(echo "$RULE_INSTANCE_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['instanceId'])")
+[ -n "$RULE_INSTANCE_ID" ] || fail "did not get an instanceId back from add-stock (rule test): $RULE_INSTANCE_RESPONSE"
+
+auth -X POST "$BACKEND_URL/api/firms/$FIRM_ID/workflow-instances/$RULE_INSTANCE_ID/transitions/record_sale" \
+    -H "Content-Type: application/json" -d '{}' > /dev/null
+
+log "rule engine: confirming the rule's notify action actually executed (a real audit_log row, not a mock)"
+RULE_AUDIT_LOG=$(auth "$BACKEND_URL/api/firms/$FIRM_ID/audit-log")
+echo "$RULE_AUDIT_LOG" | python3 -c "
+import sys, json
+entries = json.load(sys.stdin)
+matches = [
+    e for e in entries
+    if e['entityType'] == 'workflow_instance' and e['action'] == 'notify'
+    and e['changes'].get('ruleId') == '$RULE_ID'
+]
+assert matches, entries
+assert matches[0]['changes'].get('message') == 'e2e sold 7 of E2E Rule Widget', matches[0]
+" || fail "expected the rule's notify action to have written a matching audit_log entry: $RULE_AUDIT_LOG"
+log "rule engine: rule fired on transition, confirmed via a real audit_log entry"
+
 # --- UI-path add stock, firm switch, and audit log view (item 39 / 3 / 4) ---
 #
 # Everything above exercises the Go backend directly. This section instead

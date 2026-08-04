@@ -206,6 +206,14 @@ var ErrInvalidRule = errors.New("invalid rule definition")
 // triggering CreateInstance/ExecuteTransition call.
 var ErrConditionEvaluation = errors.New("rule condition could not be evaluated")
 
+// ErrRuleNotFound means no workflow_rules row with the given ID is
+// visible in the caller's firm context (RLS: either it doesn't exist, or
+// it belongs to a different firm), or it doesn't belong to the given
+// definitionKey - both resolve to the same error, by the same "don't leak
+// existence" design every other *NotFound sentinel in this package
+// follows (see engine.go's ErrDefinitionNotFound/ErrInstanceNotFound).
+var ErrRuleNotFound = errors.New("workflow rule not found")
+
 // EvalContext is everything Evaluate needs to check one rule's condition
 // tree against one triggering instance: its own payload/state, and (for a
 // cross-workflow "state" leaf) a pool to read another instance's state
@@ -449,6 +457,78 @@ func compareValues(op CompareOp, a, b any) (bool, error) {
 	}
 }
 
+// ValidateExpressionTree checks tree is structurally sound before it's
+// ever stored - a pure, DB-free counterpart to Evaluate's own runtime
+// switch (this file, above): every logic node has the right number of
+// children for its operator, every condition leaf has its required
+// fields set and a known comparison operator. What this function
+// deliberately CANNOT check, for the same reason DefinitionSpec.Validate's
+// own doc comment gives for FieldTypeReference (spec.go): a "state" leaf's
+// DefinitionKey isn't verified against a real workflow_definitions row
+// here (no DB context) - that's the HTTP-reachable creation/update path's
+// job (handlers.go's rule endpoints), which does have one.
+func ValidateExpressionTree(tree ExpressionNode) error {
+	if tree.isLogicNode() {
+		switch LogicOp(tree.Op) {
+		case LogicAnd, LogicOr:
+			if len(tree.Children) == 0 {
+				return fmt.Errorf("%w: %q node must have at least one child", ErrInvalidRule, tree.Op)
+			}
+		case LogicNot:
+			if len(tree.Children) != 1 {
+				return fmt.Errorf("%w: \"not\" node must have exactly one child", ErrInvalidRule)
+			}
+		default:
+			return fmt.Errorf("%w: unknown logic operator %q", ErrInvalidRule, tree.Op)
+		}
+		for _, child := range tree.Children {
+			if err := ValidateExpressionTree(child); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	switch tree.Type {
+	case ConditionField:
+		if tree.Field == "" {
+			return fmt.Errorf("%w: \"field\" condition must set field", ErrInvalidRule)
+		}
+		if !isKnownCompareOp(CompareOp(tree.Op), true) {
+			return fmt.Errorf("%w: \"field\" condition has unknown operator %q", ErrInvalidRule, tree.Op)
+		}
+	case ConditionState:
+		if tree.DefinitionKey == "" || tree.InstanceIDField == "" || tree.State == "" {
+			return fmt.Errorf("%w: \"state\" condition must set definitionKey, instanceIdField, and state", ErrInvalidRule)
+		}
+	case ConditionFieldCompare:
+		if tree.FieldA == "" || tree.FieldB == "" {
+			return fmt.Errorf("%w: \"field_compare\" condition must set fieldA and fieldB", ErrInvalidRule)
+		}
+		if !isKnownCompareOp(CompareOp(tree.Op), false) {
+			return fmt.Errorf("%w: \"field_compare\" condition has unknown operator %q", ErrInvalidRule, tree.Op)
+		}
+	default:
+		return fmt.Errorf("%w: unknown condition leaf type %q", ErrInvalidRule, tree.Type)
+	}
+	return nil
+}
+
+// isKnownCompareOp reports whether op is one ValidateExpressionTree/
+// compareValues actually implements - allowContains is false for
+// "field_compare" (OpContains is only meaningful for "field", per
+// CompareOp's own doc comment).
+func isKnownCompareOp(op CompareOp, allowContains bool) bool {
+	switch op {
+	case OpEq, OpNeq, OpLt, OpGt, OpLte, OpGte:
+		return true
+	case OpContains:
+		return allowContains
+	default:
+		return false
+	}
+}
+
 // ValidateActions checks Actions is structurally sound before it's ever
 // stored or run - every action has a known Type and its type-specific
 // required fields set. Mirrors DefinitionSpec.Validate's "reject before
@@ -500,52 +580,387 @@ type ruleRow struct {
 	Actions       json.RawMessage
 }
 
-// CreateRule stores rule (validated first) as a new workflow_rules row.
-// Not exposed over HTTP this batch - the design brief scopes the frontend
-// Rule Engine builder UI to a later batch, so this is reached only from Go
-// (test fixtures, and any future batch's HTTP handler once the builder UI
-// exists). firmID/definitionKey are trusted as given: unlike every HTTP-
-// reachable function elsewhere in this package, there is no caller-supplied
-// firmID to validate against a caller's own membership here, because there
-// is no HTTP caller yet.
-//
-// ciaudit:ignore-firmid-check: provisioning-only helper, not reachable via
-// any HTTP handler this batch - see doc comment above.
-func CreateRule(ctx context.Context, pool *pgxpool.Pool, rule Rule) (uuid.UUID, error) {
+// validateRuleShape runs every pure, DB-free structural check a rule must
+// pass before it's ever written: Name/DefinitionKey non-empty, a known
+// Trigger, ValidateExpressionTree on ConditionTree, ValidateActions on
+// Actions. Shared by CreateRule (the fixture/test entry point) and
+// createRuleTx/updateRuleTx (the HTTP-reachable path, which additionally
+// runs checkObviousSelfReferentialLoop - a real DB query, not something
+// this pure function can do).
+func validateRuleShape(rule Rule) error {
 	if rule.Name == "" {
-		return uuid.UUID{}, fmt.Errorf("%w: rule name must not be empty", ErrInvalidRule)
+		return fmt.Errorf("%w: rule name must not be empty", ErrInvalidRule)
 	}
 	if rule.DefinitionKey == "" {
-		return uuid.UUID{}, fmt.Errorf("%w: rule definitionKey must not be empty", ErrInvalidRule)
+		return fmt.Errorf("%w: rule definitionKey must not be empty", ErrInvalidRule)
 	}
 	if rule.Trigger != TriggerOnCreate && rule.Trigger != TriggerOnTransition {
-		return uuid.UUID{}, fmt.Errorf("%w: rule trigger must be %q or %q", ErrInvalidRule, TriggerOnCreate, TriggerOnTransition)
+		return fmt.Errorf("%w: rule trigger must be %q or %q", ErrInvalidRule, TriggerOnCreate, TriggerOnTransition)
 	}
-	if err := ValidateActions(rule.Actions); err != nil {
-		return uuid.UUID{}, err
+	if err := ValidateExpressionTree(rule.ConditionTree); err != nil {
+		return err
 	}
+	return ValidateActions(rule.Actions)
+}
 
+// createRuleTx inserts rule as a new workflow_rules row within an
+// already-open, firm-scoped transaction, returning its generated ID and
+// created_at - the shared core both CreateRule (below) and
+// CreateRuleForFirm (the HTTP-reachable path) build on, mirroring
+// DefineWorkflow/DefineWorkflowTx's own split (engine.go). Callers are
+// responsible for validation (validateRuleShape, plus
+// checkObviousSelfReferentialLoop for the HTTP path) before calling this.
+func createRuleTx(ctx context.Context, tx pgx.Tx, rule Rule) (uuid.UUID, time.Time, error) {
 	conditionTreeJSON, err := json.Marshal(rule.ConditionTree)
 	if err != nil {
-		return uuid.UUID{}, fmt.Errorf("marshal condition tree: %w", err)
+		return uuid.UUID{}, time.Time{}, fmt.Errorf("marshal condition tree: %w", err)
 	}
 	actionsJSON, err := json.Marshal(rule.Actions)
 	if err != nil {
-		return uuid.UUID{}, fmt.Errorf("marshal actions: %w", err)
+		return uuid.UUID{}, time.Time{}, fmt.Errorf("marshal actions: %w", err)
 	}
 
 	var id uuid.UUID
-	err = zdb.WithFirmContext(ctx, pool, rule.FirmID, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `
-			INSERT INTO workflow_rules (firm_id, definition_key, name, trigger, condition_tree, actions, autonomous, enabled)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-			RETURNING id
-		`, rule.FirmID, rule.DefinitionKey, rule.Name, string(rule.Trigger), conditionTreeJSON, actionsJSON, rule.Autonomous, rule.Enabled).Scan(&id)
+	var createdAt time.Time
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO workflow_rules (firm_id, definition_key, name, trigger, condition_tree, actions, autonomous, enabled)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING id, created_at
+	`, rule.FirmID, rule.DefinitionKey, rule.Name, string(rule.Trigger), conditionTreeJSON, actionsJSON, rule.Autonomous, rule.Enabled).Scan(&id, &createdAt); err != nil {
+		return uuid.UUID{}, time.Time{}, fmt.Errorf("insert workflow rule: %w", err)
+	}
+	return id, createdAt, nil
+}
+
+// CreateRule validates and stores rule as a new workflow_rules row - the
+// fixture/test entry point (see rules_integration_test.go). Not owner-
+// gated and takes no acting userID: unlike CreateRuleForFirm (the HTTP-
+// reachable path below), there is no caller-supplied firmID to validate
+// against a caller's own membership here.
+//
+// ciaudit:ignore-firmid-check: provisioning-only helper, only called by
+// test fixtures - never exposed via an HTTP handler with a caller-supplied
+// firmID; see CreateRuleForFirm for the gated, HTTP-reachable counterpart.
+func CreateRule(ctx context.Context, pool *pgxpool.Pool, rule Rule) (uuid.UUID, error) {
+	if err := validateRuleShape(rule); err != nil {
+		return uuid.UUID{}, err
+	}
+
+	var id uuid.UUID
+	err := zdb.WithFirmContext(ctx, pool, rule.FirmID, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		id, _, err = createRuleTx(ctx, tx, rule)
+		return err
 	})
 	if err != nil {
-		return uuid.UUID{}, fmt.Errorf("insert workflow rule: %w", err)
+		return uuid.UUID{}, err
 	}
 	return id, nil
+}
+
+// definitionExistsTx reports whether firmID has a workflow_definitions row
+// keyed by definitionKey - the existence check CreateRuleForFirm runs
+// before creating a rule against it, so a rule can't be created against a
+// definition key that doesn't (yet, or ever) exist for this firm, giving
+// a clean ErrDefinitionNotFound instead of surfacing the composite foreign
+// key violation workflow_rules already enforces at the database level
+// (migrations/0008_workflow_rules.up.sql).
+//
+// ciaudit:ignore-firmid-check: internal helper called only by
+// CreateRuleForFirm, which has already run permission.IsMember/IsOwner
+// before reaching this call - firmID here scopes an existence-check
+// query, not a fresh authorization decision.
+func definitionExistsTx(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, definitionKey string) (bool, error) {
+	var exists bool
+	err := tx.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM workflow_definitions WHERE firm_id = $1 AND key = $2)
+	`, firmID, definitionKey).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("check definition exists: %w", err)
+	}
+	return exists, nil
+}
+
+// checkObviousSelfReferentialLoop rejects the narrow, statically-
+// detectable case the design brief asks for: a rule whose own action
+// would immediately make it eligible to re-fire itself - Trigger
+// on_transition plus a "transition" action whose ActionKey resolves (for
+// this firm/definitionKey) to a transition that is a literal self-loop
+// (from_state_id == to_state_id). EvaluateRules' on_transition trigger
+// isn't scoped to which specific transition just fired - ANY transition on
+// this definition re-evaluates every enabled on_transition rule, including
+// this one - so a self-loop transition action guarantees the same rule
+// becomes eligible again on its own action's own completion.
+//
+// Deliberately NOT the full arbitrary graph: a longer cycle through
+// several different rules and transitions is not caught here - that
+// would need real runtime cycle detection, which this batch doesn't add.
+// The actual backstop for that broader case is EvaluateRules' existing
+// fail-closed behavior (rules.go): an error partway through a chain never
+// corrupts state or crashes the triggering operation, it just stops that
+// one rule's actions and logs it - a bounded failure mode, not a proof of
+// termination, but the one this codebase actually has today.
+//
+// ciaudit:ignore-firmid-check: internal helper called only by
+// CreateRuleForFirm/UpdateRuleForFirm, both of which have already run
+// permission.IsMember/IsOwner before reaching this call - firmID here
+// scopes a structural read query, not a fresh authorization decision.
+func checkObviousSelfReferentialLoop(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, definitionKey string, trigger Trigger, actions []Action) error {
+	if trigger != TriggerOnTransition {
+		return nil
+	}
+	for _, a := range actions {
+		if a.Type != ActionTransition {
+			continue
+		}
+		var fromStateID, toStateID uuid.UUID
+		err := tx.QueryRow(ctx, `
+			SELECT wt.from_state_id, wt.to_state_id
+			FROM workflow_transitions wt
+			JOIN workflow_definitions wd ON wd.id = wt.workflow_definition_id
+			WHERE wd.firm_id = $1 AND wd.key = $2 AND wt.action_key = $3
+			LIMIT 1
+		`, firmID, definitionKey, a.ActionKey).Scan(&fromStateID, &toStateID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			// An unknown action key isn't this check's job to catch - it
+			// will fail at evaluation time (ErrConditionEvaluation-style
+			// fail-closed) or is a separate validation concern.
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("check self-referential loop: %w", err)
+		}
+		if fromStateID == toStateID {
+			return fmt.Errorf("%w: transition action %q is a self-loop (from and to the same state) on an on_transition-triggered rule - this rule would become eligible to fire itself again immediately after its own action runs", ErrInvalidRule, a.ActionKey)
+		}
+	}
+	return nil
+}
+
+// ruleAuditChanges builds the audit_log.changes payload CreateRuleForFirm/
+// UpdateRuleForFirm/DeleteRuleForFirm each write - shared shape so a
+// reader of the audit trail sees the same fields for every rule mutation.
+func ruleAuditChanges(rule Rule) map[string]any {
+	return map[string]any{
+		"name":       rule.Name,
+		"trigger":    string(rule.Trigger),
+		"autonomous": rule.Autonomous,
+		"enabled":    rule.Enabled,
+	}
+}
+
+// CreateRuleForFirm is CreateRule's HTTP-reachable, owner-gated
+// counterpart (handlers.go's handleCreateRule) - the actual point of this
+// batch: until now, creating a rule was only reachable from Go fixtures.
+// Owner-gated (permission.IsMember then IsOwner, the same order every
+// owner-gated function in this codebase checks - see DefineWorkflowForFirm,
+// engine.go) - defining a rule is a structural, autonomous-behavior-
+// introducing decision, the same tier as defining a workflow itself.
+// definitionKey must resolve to a real workflow_definitions row for
+// firmID (definitionExistsTx) before anything is validated further.
+// Writes one audit_log entry on success.
+func CreateRuleForFirm(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.UUID, definitionKey string, rule Rule) (Rule, error) {
+	rule.FirmID = firmID
+	rule.DefinitionKey = definitionKey
+
+	var result Rule
+	err := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		isMember, err := permission.IsMember(ctx, tx, firmID, userID)
+		if err != nil {
+			return err
+		}
+		if !isMember {
+			return ErrDefinitionNotFound
+		}
+
+		isOwner, err := permission.IsOwner(ctx, tx, firmID, userID)
+		if err != nil {
+			return err
+		}
+		if !isOwner {
+			return ErrPermissionDenied
+		}
+
+		exists, err := definitionExistsTx(ctx, tx, firmID, definitionKey)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return ErrDefinitionNotFound
+		}
+
+		if err := validateRuleShape(rule); err != nil {
+			return err
+		}
+		if err := checkObviousSelfReferentialLoop(ctx, tx, firmID, definitionKey, rule.Trigger, rule.Actions); err != nil {
+			return err
+		}
+
+		id, createdAt, err := createRuleTx(ctx, tx, rule)
+		if err != nil {
+			return err
+		}
+		result = rule
+		result.ID = id
+		result.CreatedAt = createdAt
+
+		return auditlog.Write(ctx, tx, firmID, userID, id, ruleEntityType, ruleCreateAction, ruleAuditChanges(result))
+	})
+	if err != nil {
+		return Rule{}, err
+	}
+	return result, nil
+}
+
+// getRuleTx reads one workflow_rules row scoped to (ruleID, firmID,
+// definitionKey) - UpdateRuleForFirm/DeleteRuleForFirm's shared lookup.
+// Scoping by definitionKey too (not just ruleID/firmID) means a ruleID
+// that's real but belongs to a different definition within the same firm
+// resolves to the same ErrRuleNotFound as a ruleID that doesn't exist at
+// all - no cross-definition existence leak, matching this package's
+// existing not-found conventions.
+//
+// ciaudit:ignore-firmid-check: internal helper called only by
+// UpdateRuleForFirm/DeleteRuleForFirm, both of which have already run
+// permission.IsMember/IsOwner before reaching this call - firmID here
+// scopes a read query, not a fresh authorization decision.
+func getRuleTx(ctx context.Context, tx pgx.Tx, firmID, ruleID uuid.UUID, definitionKey string) (Rule, error) {
+	row := tx.QueryRow(ctx, `
+		SELECT id, firm_id, definition_key, name, trigger, condition_tree, actions, autonomous, enabled, created_at
+		FROM workflow_rules
+		WHERE id = $1 AND firm_id = $2 AND definition_key = $3
+	`, ruleID, firmID, definitionKey)
+	rule, err := scanRule(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Rule{}, ErrRuleNotFound
+	}
+	if err != nil {
+		return Rule{}, err
+	}
+	return rule, nil
+}
+
+// RuleUpdate is UpdateRuleForFirm's partial-update shape: a nil field
+// leaves that column unchanged, a non-nil field overwrites it - the same
+// "*T means optional, nil means untouched" convention internal/firm.Update's
+// UpdateFields already uses for firm metadata (internal/firm/firm.go).
+type RuleUpdate struct {
+	Name          *string
+	Enabled       *bool
+	Autonomous    *bool
+	ConditionTree *ExpressionNode
+	Actions       *[]Action
+}
+
+// UpdateRuleForFirm applies patch to ruleID (scoped to firmID/definitionKey
+// via getRuleTx), re-validating the FULL resulting rule (not just the
+// changed fields) before writing - the same "the whole thing must be valid
+// after the patch, not just what changed" discipline as everywhere else
+// mutation in this codebase. Owner-gated identically to CreateRuleForFirm.
+func UpdateRuleForFirm(ctx context.Context, pool *pgxpool.Pool, firmID, userID, ruleID uuid.UUID, definitionKey string, patch RuleUpdate) (Rule, error) {
+	var result Rule
+	err := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		isMember, err := permission.IsMember(ctx, tx, firmID, userID)
+		if err != nil {
+			return err
+		}
+		if !isMember {
+			return ErrDefinitionNotFound
+		}
+
+		isOwner, err := permission.IsOwner(ctx, tx, firmID, userID)
+		if err != nil {
+			return err
+		}
+		if !isOwner {
+			return ErrPermissionDenied
+		}
+
+		existing, err := getRuleTx(ctx, tx, firmID, ruleID, definitionKey)
+		if err != nil {
+			return err
+		}
+
+		updated := existing
+		if patch.Name != nil {
+			updated.Name = *patch.Name
+		}
+		if patch.Enabled != nil {
+			updated.Enabled = *patch.Enabled
+		}
+		if patch.Autonomous != nil {
+			updated.Autonomous = *patch.Autonomous
+		}
+		if patch.ConditionTree != nil {
+			updated.ConditionTree = *patch.ConditionTree
+		}
+		if patch.Actions != nil {
+			updated.Actions = *patch.Actions
+		}
+
+		if err := validateRuleShape(updated); err != nil {
+			return err
+		}
+		if err := checkObviousSelfReferentialLoop(ctx, tx, firmID, definitionKey, updated.Trigger, updated.Actions); err != nil {
+			return err
+		}
+
+		conditionTreeJSON, err := json.Marshal(updated.ConditionTree)
+		if err != nil {
+			return fmt.Errorf("marshal condition tree: %w", err)
+		}
+		actionsJSON, err := json.Marshal(updated.Actions)
+		if err != nil {
+			return fmt.Errorf("marshal actions: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE workflow_rules
+			SET name = $1, condition_tree = $2, actions = $3, autonomous = $4, enabled = $5
+			WHERE id = $6
+		`, updated.Name, conditionTreeJSON, actionsJSON, updated.Autonomous, updated.Enabled, ruleID); err != nil {
+			return fmt.Errorf("update workflow rule: %w", err)
+		}
+
+		result = updated
+		return auditlog.Write(ctx, tx, firmID, userID, ruleID, ruleEntityType, ruleUpdateAction, ruleAuditChanges(result))
+	})
+	if err != nil {
+		return Rule{}, err
+	}
+	return result, nil
+}
+
+// DeleteRuleForFirm deletes ruleID (scoped to firmID/definitionKey via
+// getRuleTx). Owner-gated identically to CreateRuleForFirm/UpdateRuleForFirm.
+func DeleteRuleForFirm(ctx context.Context, pool *pgxpool.Pool, firmID, userID, ruleID uuid.UUID, definitionKey string) error {
+	return zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		isMember, err := permission.IsMember(ctx, tx, firmID, userID)
+		if err != nil {
+			return err
+		}
+		if !isMember {
+			return ErrDefinitionNotFound
+		}
+
+		isOwner, err := permission.IsOwner(ctx, tx, firmID, userID)
+		if err != nil {
+			return err
+		}
+		if !isOwner {
+			return ErrPermissionDenied
+		}
+
+		existing, err := getRuleTx(ctx, tx, firmID, ruleID, definitionKey)
+		if err != nil {
+			return err
+		}
+
+		if _, err := tx.Exec(ctx, `DELETE FROM workflow_rules WHERE id = $1`, ruleID); err != nil {
+			return fmt.Errorf("delete workflow rule: %w", err)
+		}
+
+		return auditlog.Write(ctx, tx, firmID, userID, ruleID, ruleEntityType, ruleDeleteAction, ruleAuditChanges(existing))
+	})
 }
 
 // scanRule reads one workflow_rules row into a Rule.
@@ -655,6 +1070,13 @@ const (
 	rulePendingApprovalAction = "pending_approval"
 	ruleNotifyAction          = "notify"
 	ruleSetFieldAction        = "set_field"
+	// ruleCreateAction/ruleUpdateAction/ruleDeleteAction are the
+	// audit_log.action values CreateRuleForFirm/UpdateRuleForFirm/
+	// DeleteRuleForFirm write under - the human/API-driven counterpart to
+	// EvaluateRules' own action vocabulary above.
+	ruleCreateAction = "create"
+	ruleUpdateAction = "update"
+	ruleDeleteAction = "delete"
 	// workflowInstanceEntityType mirrors the literal 'workflow_instance'
 	// string engine.go's own audit_log writes use directly in SQL - named
 	// here since this file's rule-action writers (ActionNotify/

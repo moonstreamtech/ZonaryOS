@@ -8,6 +8,7 @@ package workflow_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
@@ -354,5 +355,377 @@ func TestListRulesForDefinition_ReturnsOnlyThatDefinitionsRules(t *testing.T) {
 	}
 	if len(rules[0].Actions) != 1 || rules[0].Actions[0].MessageTemplate != "x" {
 		t.Errorf("expected actions to round-trip, got %+v", rules[0].Actions)
+	}
+}
+
+// --- Rule Engine Builder UI backend: CreateRuleForFirm/UpdateRuleForFirm/
+// DeleteRuleForFirm (owner-gated HTTP surface) ---------------------------
+
+func validStockNotifyRule() workflow.Rule {
+	return workflow.Rule{
+		Name:    "Notify on quantity",
+		Trigger: workflow.TriggerOnCreate,
+		ConditionTree: workflow.ExpressionNode{
+			Type: workflow.ConditionField, Field: "quantity", Op: string(workflow.OpGt), Value: float64(0),
+		},
+		Actions: []workflow.Action{
+			{Type: workflow.ActionNotify, Channel: workflow.NotifyChannelAuditLog, MessageTemplate: "created {{item}}"},
+		},
+		Autonomous: true,
+		Enabled:    true,
+	}
+}
+
+func TestCreateRuleForFirm_OwnerCanCreateARule(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	var firmID uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm Rules F') RETURNING id`).Scan(&firmID); err != nil {
+		t.Fatalf("seed firm: %v", err)
+	}
+	if _, err := workflow.SeedStockToSaleWorkflow(ctx, appPool, firmID); err != nil {
+		t.Fatalf("seed stock_to_sale: %v", err)
+	}
+	ownerID, _ := seedOwnerInFirm(ctx, t, adminPool, appPool, firmID, "sub-create-rule-owner")
+
+	created, err := workflow.CreateRuleForFirm(ctx, appPool, firmID, ownerID, workflow.StockToSaleKey, validStockNotifyRule())
+	if err != nil {
+		t.Fatalf("CreateRuleForFirm: %v", err)
+	}
+	if created.ID == uuid.Nil {
+		t.Fatal("expected a non-nil rule ID")
+	}
+	if created.FirmID != firmID || created.DefinitionKey != workflow.StockToSaleKey {
+		t.Errorf("expected firmID/definitionKey to be set from the call, got %+v", created)
+	}
+
+	rules, err := workflow.ListRulesForDefinition(ctx, appPool, firmID, ownerID, workflow.StockToSaleKey)
+	if err != nil {
+		t.Fatalf("ListRulesForDefinition: %v", err)
+	}
+	if len(rules) != 1 || rules[0].ID != created.ID {
+		t.Fatalf("expected the created rule to be listed, got %+v", rules)
+	}
+
+	var count int
+	if err := adminPool.QueryRow(ctx, `
+		SELECT count(*) FROM audit_log WHERE firm_id = $1 AND entity_type = 'workflow_rule' AND entity_id = $2 AND action = 'create'
+	`, firmID, created.ID).Scan(&count); err != nil {
+		t.Fatalf("count create audit entries: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 create audit_log entry, got %d", count)
+	}
+}
+
+func TestCreateRuleForFirm_NonOwnerIsDenied(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	var firmID uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm Rules G') RETURNING id`).Scan(&firmID); err != nil {
+		t.Fatalf("seed firm: %v", err)
+	}
+	if _, err := workflow.SeedStockToSaleWorkflow(ctx, appPool, firmID); err != nil {
+		t.Fatalf("seed stock_to_sale: %v", err)
+	}
+	memberID, _ := seedUserInFirm(ctx, t, adminPool, appPool, firmID, "sub-create-rule-nonowner")
+
+	if _, err := workflow.CreateRuleForFirm(ctx, appPool, firmID, memberID, workflow.StockToSaleKey, validStockNotifyRule()); !errors.Is(err, workflow.ErrPermissionDenied) {
+		t.Fatalf("expected ErrPermissionDenied for a non-owner member, got: %v", err)
+	}
+}
+
+func TestCreateRuleForFirm_NonMemberGetsNotFound(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	var firmA, firmB uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm Rules H-A') RETURNING id`).Scan(&firmA); err != nil {
+		t.Fatalf("seed firm A: %v", err)
+	}
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm Rules H-B') RETURNING id`).Scan(&firmB); err != nil {
+		t.Fatalf("seed firm B: %v", err)
+	}
+	if _, err := workflow.SeedStockToSaleWorkflow(ctx, appPool, firmA); err != nil {
+		t.Fatalf("seed stock_to_sale for firm A: %v", err)
+	}
+	outsiderID, _ := seedOwnerInFirm(ctx, t, adminPool, appPool, firmB, "sub-create-rule-outsider")
+
+	if _, err := workflow.CreateRuleForFirm(ctx, appPool, firmA, outsiderID, workflow.StockToSaleKey, validStockNotifyRule()); !errors.Is(err, workflow.ErrDefinitionNotFound) {
+		t.Fatalf("expected ErrDefinitionNotFound for an owner of a different firm supplying firm A's real ID, got: %v", err)
+	}
+}
+
+func TestCreateRuleForFirm_UnknownDefinitionKeyIsRejected(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	var firmID uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm Rules I') RETURNING id`).Scan(&firmID); err != nil {
+		t.Fatalf("seed firm: %v", err)
+	}
+	ownerID, _ := seedOwnerInFirm(ctx, t, adminPool, appPool, firmID, "sub-create-rule-unknown-def")
+
+	if _, err := workflow.CreateRuleForFirm(ctx, appPool, firmID, ownerID, "does_not_exist", validStockNotifyRule()); !errors.Is(err, workflow.ErrDefinitionNotFound) {
+		t.Fatalf("expected ErrDefinitionNotFound for an unknown definition key, got: %v", err)
+	}
+}
+
+func TestCreateRuleForFirm_RejectsMalformedConditionTree(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	var firmID uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm Rules J') RETURNING id`).Scan(&firmID); err != nil {
+		t.Fatalf("seed firm: %v", err)
+	}
+	if _, err := workflow.SeedStockToSaleWorkflow(ctx, appPool, firmID); err != nil {
+		t.Fatalf("seed stock_to_sale: %v", err)
+	}
+	ownerID, _ := seedOwnerInFirm(ctx, t, adminPool, appPool, firmID, "sub-create-rule-malformed")
+
+	rule := validStockNotifyRule()
+	rule.ConditionTree = workflow.ExpressionNode{Op: string(workflow.LogicAnd)} // no children
+	if _, err := workflow.CreateRuleForFirm(ctx, appPool, firmID, ownerID, workflow.StockToSaleKey, rule); !errors.Is(err, workflow.ErrInvalidRule) {
+		t.Fatalf("expected ErrInvalidRule for a malformed condition tree, got: %v", err)
+	}
+
+	rule2 := validStockNotifyRule()
+	rule2.Actions = []workflow.Action{{Type: "bogus"}}
+	if _, err := workflow.CreateRuleForFirm(ctx, appPool, firmID, ownerID, workflow.StockToSaleKey, rule2); !errors.Is(err, workflow.ErrInvalidRule) {
+		t.Fatalf("expected ErrInvalidRule for an unknown action type, got: %v", err)
+	}
+}
+
+// TestCreateRuleForFirm_RejectsObviousSelfReferentialLoop covers the
+// design brief's explicit ask: a rule triggered on_transition whose own
+// action is a transition that is a literal self-loop (from == to state)
+// must be rejected at creation time, not left to recurse at runtime.
+func TestCreateRuleForFirm_RejectsObviousSelfReferentialLoop(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	var firmID uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm Rules K') RETURNING id`).Scan(&firmID); err != nil {
+		t.Fatalf("seed firm: %v", err)
+	}
+	ownerID, _ := seedOwnerInFirm(ctx, t, adminPool, appPool, firmID, "sub-create-rule-selfloop")
+
+	// A workflow definition with a genuine self-loop transition: "ping"
+	// stays in "active" from "active".
+	selfLoopSpec := workflow.DefinitionSpec{
+		Key:  "self_loop_test",
+		Name: "Self Loop Test",
+		CreatePermission: workflow.PermissionSpec{
+			Key: "workflow.self_loop_test.create", Description: "Create.",
+		},
+		States: []workflow.StateSpec{
+			{Key: "active", Name: "Active", IsInitial: true},
+		},
+		Transitions: []workflow.TransitionSpec{
+			{
+				FromStateKey: "active", ToStateKey: "active", ActionKey: "ping", Name: "Ping",
+				Permission: workflow.PermissionSpec{Key: "workflow.self_loop_test.ping", Description: "Ping."},
+			},
+		},
+	}
+	if _, err := workflow.DefineWorkflow(ctx, appPool, firmID, selfLoopSpec); err != nil {
+		t.Fatalf("DefineWorkflow (self-loop spec): %v", err)
+	}
+
+	rule := workflow.Rule{
+		Name:          "Self-referential",
+		Trigger:       workflow.TriggerOnTransition,
+		ConditionTree: workflow.ExpressionNode{Type: workflow.ConditionField, Field: "x", Op: string(workflow.OpEq), Value: "y"},
+		Actions:       []workflow.Action{{Type: workflow.ActionTransition, ActionKey: "ping"}},
+		Autonomous:    true,
+		Enabled:       true,
+	}
+	if _, err := workflow.CreateRuleForFirm(ctx, appPool, firmID, ownerID, "self_loop_test", rule); !errors.Is(err, workflow.ErrInvalidRule) {
+		t.Fatalf("expected ErrInvalidRule for an obvious self-referential loop, got: %v", err)
+	}
+}
+
+func TestUpdateRuleForFirm_OwnerCanUpdate(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	var firmID uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm Rules L') RETURNING id`).Scan(&firmID); err != nil {
+		t.Fatalf("seed firm: %v", err)
+	}
+	if _, err := workflow.SeedStockToSaleWorkflow(ctx, appPool, firmID); err != nil {
+		t.Fatalf("seed stock_to_sale: %v", err)
+	}
+	ownerID, _ := seedOwnerInFirm(ctx, t, adminPool, appPool, firmID, "sub-update-rule-owner")
+
+	created, err := workflow.CreateRuleForFirm(ctx, appPool, firmID, ownerID, workflow.StockToSaleKey, validStockNotifyRule())
+	if err != nil {
+		t.Fatalf("CreateRuleForFirm: %v", err)
+	}
+
+	newName := "Renamed rule"
+	disabled := false
+	updated, err := workflow.UpdateRuleForFirm(ctx, appPool, firmID, ownerID, created.ID, workflow.StockToSaleKey, workflow.RuleUpdate{
+		Name: &newName, Enabled: &disabled,
+	})
+	if err != nil {
+		t.Fatalf("UpdateRuleForFirm: %v", err)
+	}
+	if updated.Name != newName {
+		t.Errorf("expected name %q, got %q", newName, updated.Name)
+	}
+	if updated.Enabled {
+		t.Error("expected the rule to now be disabled")
+	}
+	// Untouched fields survive the partial update.
+	if updated.Actions[0].MessageTemplate != "created {{item}}" {
+		t.Errorf("expected actions to survive an update that didn't touch them, got %+v", updated.Actions)
+	}
+
+	var count int
+	if err := adminPool.QueryRow(ctx, `
+		SELECT count(*) FROM audit_log WHERE firm_id = $1 AND entity_type = 'workflow_rule' AND entity_id = $2 AND action = 'update'
+	`, firmID, created.ID).Scan(&count); err != nil {
+		t.Fatalf("count update audit entries: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 update audit_log entry, got %d", count)
+	}
+}
+
+func TestUpdateRuleForFirm_NonOwnerIsDenied(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	var firmID uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm Rules M') RETURNING id`).Scan(&firmID); err != nil {
+		t.Fatalf("seed firm: %v", err)
+	}
+	if _, err := workflow.SeedStockToSaleWorkflow(ctx, appPool, firmID); err != nil {
+		t.Fatalf("seed stock_to_sale: %v", err)
+	}
+	ownerID, _ := seedOwnerInFirm(ctx, t, adminPool, appPool, firmID, "sub-update-rule-owner-2")
+	memberID, _ := seedUserInFirm(ctx, t, adminPool, appPool, firmID, "sub-update-rule-nonowner")
+
+	created, err := workflow.CreateRuleForFirm(ctx, appPool, firmID, ownerID, workflow.StockToSaleKey, validStockNotifyRule())
+	if err != nil {
+		t.Fatalf("CreateRuleForFirm: %v", err)
+	}
+
+	newName := "Should not apply"
+	if _, err := workflow.UpdateRuleForFirm(ctx, appPool, firmID, memberID, created.ID, workflow.StockToSaleKey, workflow.RuleUpdate{Name: &newName}); !errors.Is(err, workflow.ErrPermissionDenied) {
+		t.Fatalf("expected ErrPermissionDenied for a non-owner member, got: %v", err)
+	}
+}
+
+func TestUpdateRuleForFirm_CrossFirmRuleIDGetsNotFound(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	var firmA, firmB uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm Rules N-A') RETURNING id`).Scan(&firmA); err != nil {
+		t.Fatalf("seed firm A: %v", err)
+	}
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm Rules N-B') RETURNING id`).Scan(&firmB); err != nil {
+		t.Fatalf("seed firm B: %v", err)
+	}
+	if _, err := workflow.SeedStockToSaleWorkflow(ctx, appPool, firmA); err != nil {
+		t.Fatalf("seed stock_to_sale for firm A: %v", err)
+	}
+	if _, err := workflow.SeedStockToSaleWorkflow(ctx, appPool, firmB); err != nil {
+		t.Fatalf("seed stock_to_sale for firm B: %v", err)
+	}
+	ownerA, _ := seedOwnerInFirm(ctx, t, adminPool, appPool, firmA, "sub-update-rule-crossfirm-a")
+	ownerB, _ := seedOwnerInFirm(ctx, t, adminPool, appPool, firmB, "sub-update-rule-crossfirm-b")
+
+	created, err := workflow.CreateRuleForFirm(ctx, appPool, firmA, ownerA, workflow.StockToSaleKey, validStockNotifyRule())
+	if err != nil {
+		t.Fatalf("CreateRuleForFirm: %v", err)
+	}
+
+	newName := "Should not apply"
+	if _, err := workflow.UpdateRuleForFirm(ctx, appPool, firmB, ownerB, created.ID, workflow.StockToSaleKey, workflow.RuleUpdate{Name: &newName}); !errors.Is(err, workflow.ErrRuleNotFound) {
+		t.Fatalf("expected ErrRuleNotFound for firm B's owner supplying firm A's real rule ID, got: %v", err)
+	}
+}
+
+func TestDeleteRuleForFirm_OwnerCanDelete(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	var firmID uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm Rules O') RETURNING id`).Scan(&firmID); err != nil {
+		t.Fatalf("seed firm: %v", err)
+	}
+	if _, err := workflow.SeedStockToSaleWorkflow(ctx, appPool, firmID); err != nil {
+		t.Fatalf("seed stock_to_sale: %v", err)
+	}
+	ownerID, _ := seedOwnerInFirm(ctx, t, adminPool, appPool, firmID, "sub-delete-rule-owner")
+
+	created, err := workflow.CreateRuleForFirm(ctx, appPool, firmID, ownerID, workflow.StockToSaleKey, validStockNotifyRule())
+	if err != nil {
+		t.Fatalf("CreateRuleForFirm: %v", err)
+	}
+
+	if err := workflow.DeleteRuleForFirm(ctx, appPool, firmID, ownerID, created.ID, workflow.StockToSaleKey); err != nil {
+		t.Fatalf("DeleteRuleForFirm: %v", err)
+	}
+
+	rules, err := workflow.ListRulesForDefinition(ctx, appPool, firmID, ownerID, workflow.StockToSaleKey)
+	if err != nil {
+		t.Fatalf("ListRulesForDefinition: %v", err)
+	}
+	if len(rules) != 0 {
+		t.Fatalf("expected 0 rules after delete, got %d", len(rules))
+	}
+
+	var count int
+	if err := adminPool.QueryRow(ctx, `
+		SELECT count(*) FROM audit_log WHERE firm_id = $1 AND entity_type = 'workflow_rule' AND entity_id = $2 AND action = 'delete'
+	`, firmID, created.ID).Scan(&count); err != nil {
+		t.Fatalf("count delete audit entries: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 delete audit_log entry, got %d", count)
+	}
+
+	if err := workflow.DeleteRuleForFirm(ctx, appPool, firmID, ownerID, created.ID, workflow.StockToSaleKey); !errors.Is(err, workflow.ErrRuleNotFound) {
+		t.Fatalf("expected ErrRuleNotFound deleting an already-deleted rule, got: %v", err)
+	}
+}
+
+func TestDeleteRuleForFirm_NonOwnerIsDenied(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	var firmID uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm Rules P') RETURNING id`).Scan(&firmID); err != nil {
+		t.Fatalf("seed firm: %v", err)
+	}
+	if _, err := workflow.SeedStockToSaleWorkflow(ctx, appPool, firmID); err != nil {
+		t.Fatalf("seed stock_to_sale: %v", err)
+	}
+	ownerID, _ := seedOwnerInFirm(ctx, t, adminPool, appPool, firmID, "sub-delete-rule-owner-2")
+	memberID, _ := seedUserInFirm(ctx, t, adminPool, appPool, firmID, "sub-delete-rule-nonowner")
+
+	created, err := workflow.CreateRuleForFirm(ctx, appPool, firmID, ownerID, workflow.StockToSaleKey, validStockNotifyRule())
+	if err != nil {
+		t.Fatalf("CreateRuleForFirm: %v", err)
+	}
+
+	if err := workflow.DeleteRuleForFirm(ctx, appPool, firmID, memberID, created.ID, workflow.StockToSaleKey); !errors.Is(err, workflow.ErrPermissionDenied) {
+		t.Fatalf("expected ErrPermissionDenied for a non-owner member, got: %v", err)
+	}
+
+	// The rule should still exist - a denied delete must not have any effect.
+	rules, err := workflow.ListRulesForDefinition(ctx, appPool, firmID, ownerID, workflow.StockToSaleKey)
+	if err != nil {
+		t.Fatalf("ListRulesForDefinition: %v", err)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("expected the rule to still exist after a denied delete, got %d rules", len(rules))
 	}
 }
