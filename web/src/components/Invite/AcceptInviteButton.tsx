@@ -52,6 +52,7 @@ export default function AcceptInviteButton({ locale, token }: Props) {
         type="button"
         disabled={submitting}
         onClick={handleAccept}
+        data-permission-public="true"
         className="rounded-full bg-foreground px-5 py-2 text-sm font-medium text-background transition-colors hover:bg-[#383838] disabled:opacity-50 dark:hover:bg-[#ccc]"
       >
         {submitting ? t("accepting") : t("acceptButton")}

@@ -16,6 +16,7 @@ import (
 
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
 	"github.com/moonstreamtech/ZonaryOS/internal/identity"
+	"github.com/moonstreamtech/ZonaryOS/internal/license"
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
 )
 
@@ -43,29 +44,37 @@ type FirmMetadata struct {
 // caller must be on allow (checked first, before ResolveOrCreateUser or
 // any query - see below) or this returns ErrNotPlatformAdmin immediately.
 //
-// How the counts are obtained without a database-privilege bypass: firms
-// is queried directly (it carries no RLS policy at all - see
-// migrations/0001_core_schema.up.sql's comment on it), but
-// workflow_definitions and user_firm_roles are both tenant-scoped,
-// RLS-enforced tables (Never-Violate Rule 3), and this codebase's
-// Postgres app role deliberately holds no BYPASSRLS privilege (see
-// internal/platform/db.WithFirmContext's doc comment). So this function
-// does not run one cross-firm query against those tables - it loops over
-// every firm returned by the first query and opens one legitimate,
-// firm-scoped transaction per firm via zdb.WithFirmContext, the exact
-// mechanism internal/wizard.CreateDefaultFirm and every other tenant-
-// scoped read in this codebase already uses. Each iteration's query is
-// therefore RLS-enforced exactly like any other per-firm read; the only
-// thing platform-admin-specific about it is that this function runs the
-// loop across every firm's ID instead of one caller-selected firm. This is
-// N legitimate, RLS-respecting reads, not a bypass.
-func ListFirms(ctx context.Context, pool *pgxpool.Pool, allow Allowlist, caller identity.Identity) ([]FirmMetadata, error) {
+// lic is internal/license's gate (Open Points item 32) - this is that
+// batch's chosen "at least one real gate" wiring, picked as the lowest-
+// blast-radius illustrative fit: this read is already gated by an
+// allowlist, already narrow in scope (metadata only, no tenant business
+// data - see this package's doc comment), and adding a second, orthogonal
+// gate on top of an already-restricted path can't newly expose anything
+// that wasn't already behind the allowlist. The license check runs AFTER
+// the allowlist check (an unauthorized caller still just gets
+// ErrNotPlatformAdmin -> 404, never learns anything about license state)
+// but BEFORE any database access, mirroring the allowlist's own
+// check-before-any-query placement. lic may be nil (license.Verifier's
+// methods are nil-safe and always allow) - callers that don't care about
+// license enforcement at all (e.g. this package's own non-license tests)
+// can pass nil.
+func ListFirms(ctx context.Context, pool *pgxpool.Pool, allow Allowlist, caller identity.Identity, lic *license.Verifier) ([]FirmMetadata, error) {
 	// Allowlist check first, before any database access at all (including
 	// resolving caller into ZonaryOS's own users table) - caller.Email
 	// comes from the already-verified bearer token
 	// (internal/identity.Middleware), so this decision needs no query.
 	if !allow.Contains(caller.Email) {
 		return nil, ErrNotPlatformAdmin
+	}
+
+	// License gate, second: still before any database access. When lic
+	// is nil or enforcement is disabled (internal/license.Verifier.Allow's
+	// own structural guarantee), this is a no-op and returns nil
+	// immediately - so with ZONARYOS_LICENSE_ENFORCEMENT unset (the
+	// default), this line changes nothing about this function's
+	// behavior versus before this batch existed.
+	if err := lic.Allow(license.ModulePlatformAdmin); err != nil {
+		return nil, err
 	}
 
 	callerUserID, err := identity.ResolveOrCreateUser(ctx, pool, caller)

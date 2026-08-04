@@ -114,4 +114,84 @@ describe("buildTypedPayload", () => {
     });
     expect(payload).toBeNull();
   });
+
+  // Open Points item 38's three additions.
+  describe("enum fields", () => {
+    const enumFields: FieldSpecInput[] = [
+      { name: "priority", type: "enum", required: true, options: ["low", "medium", "high"] },
+    ];
+
+    it("accepts a value present in options", () => {
+      expect(buildTypedPayload(enumFields, { priority: "medium" })).toEqual({ priority: "medium" });
+    });
+
+    it("returns null for a value not in options", () => {
+      expect(buildTypedPayload(enumFields, { priority: "urgent" })).toBeNull();
+    });
+
+    it("returns null when a required enum field is left unselected", () => {
+      expect(buildTypedPayload(enumFields, { priority: "" })).toBeNull();
+    });
+  });
+
+  describe("reference fields", () => {
+    const referenceFields: FieldSpecInput[] = [
+      { name: "relatedStock", type: "reference", required: false, referenceDefinitionKey: "stock_to_sale" },
+    ];
+
+    it("carries the picked instance ID through as a plain string", () => {
+      const id = "11111111-1111-1111-1111-111111111111";
+      expect(buildTypedPayload(referenceFields, { relatedStock: id })).toEqual({ relatedStock: id });
+    });
+
+    it("omits an optional reference field left unpicked", () => {
+      expect(buildTypedPayload(referenceFields, { relatedStock: "" })).toEqual({});
+    });
+  });
+
+  describe("array fields", () => {
+    const arrayOfStrings: FieldSpecInput[] = [
+      { name: "tags", type: "array", required: true, arrayItemType: "string" },
+    ];
+    const arrayOfNumbers: FieldSpecInput[] = [
+      { name: "amounts", type: "array", required: false, arrayItemType: "number" },
+    ];
+    const arrayOfBooleans: FieldSpecInput[] = [
+      { name: "flags", type: "array", required: false, arrayItemType: "boolean" },
+    ];
+
+    it("builds a string array from row values", () => {
+      expect(buildTypedPayload(arrayOfStrings, { tags: ["urgent", "vip"] })).toEqual({
+        tags: ["urgent", "vip"],
+      });
+    });
+
+    it("converts a number array's rows", () => {
+      expect(buildTypedPayload(arrayOfNumbers, { amounts: ["1", "2.5"] })).toEqual({
+        amounts: [1, 2.5],
+      });
+    });
+
+    it("converts a boolean array's rows", () => {
+      expect(buildTypedPayload(arrayOfBooleans, { flags: [true, false] })).toEqual({
+        flags: [true, false],
+      });
+    });
+
+    it("returns null for a required array field left empty", () => {
+      expect(buildTypedPayload(arrayOfStrings, { tags: [] })).toBeNull();
+    });
+
+    it("omits an optional array field left empty", () => {
+      expect(buildTypedPayload(arrayOfNumbers, { amounts: [] })).toEqual({});
+    });
+
+    it("returns null when a number array row isn't a valid number", () => {
+      expect(buildTypedPayload(arrayOfNumbers, { amounts: ["1", "not-a-number"] })).toBeNull();
+    });
+
+    it("returns null when a string array row is left blank", () => {
+      expect(buildTypedPayload(arrayOfStrings, { tags: ["urgent", ""] })).toBeNull();
+    });
+  });
 });

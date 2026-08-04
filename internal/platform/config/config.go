@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 )
 
 // Config holds the runtime configuration for the ZonaryOS server binary.
@@ -39,6 +40,70 @@ type Config struct {
 	// until this is explicitly set, matching the "deny by default"
 	// posture the rest of this system already follows.
 	PlatformAdminEmails []string
+
+	// LicenseEnforced is internal/license's single default-disabled
+	// switch (Open Points item 32). Only "true" (exact, case-sensitive
+	// match) turns it on - unset or any other value leaves it false, so
+	// every code path in this system behaves exactly as it did before
+	// this package existed unless an operator explicitly opts in. See
+	// internal/license.Verifier's doc comment for the structural
+	// guarantee this flag's value ultimately gates.
+	LicenseEnforced bool
+	// LicensePublicKey is the Ed25519 public key (base64url or base64)
+	// used to verify a license token's signature - see
+	// internal/license's package doc comment for why this codebase only
+	// ever holds a public key, never a private one. Only required (and
+	// only ever read) when LicenseEnforced is true.
+	LicensePublicKey string
+	// LicenseToken is the signed token string itself (see
+	// internal/license's "Token wire format" doc comment) - normally
+	// issued by cmd/licensegen for test/dev, or by a real central
+	// license server once Open Points item 34 designs one. Only
+	// required (and only ever read) when LicenseEnforced is true.
+	LicenseToken string
+	// LicenseGracePeriod is how long past a token's expiry
+	// internal/license.Verifier.Allow keeps allowing access before
+	// failing closed - see that package's DefaultGracePeriod constant
+	// for why 72h is this codebase's current PROVISIONAL default
+	// (Open Points item 32's open question 2 is still unresolved).
+	// Zero means "use the package default", not "no grace period" -
+	// there is no env-var-level way to request a zero grace period,
+	// matching the brief's ask for a sensible provisional default
+	// rather than a fully general knob.
+	LicenseGracePeriod time.Duration
+
+	// PublicURL is this installation's own configured public base URL
+	// (no trailing slash), e.g. https://zonaryos.duckdns.org - the same
+	// "what is my own public address" value docker-compose.prod.yml's
+	// KC_HOSTNAME convention already establishes for Keycloak, reused
+	// here rather than inventing a second one. It is what
+	// internal/discovery.HandleWellKnown answers with at
+	// GET /.well-known/zonaryos-central, and (via DiscoveryStartURL's
+	// default, see below) what a fresh installation's own discovery
+	// client starts from. Empty by default - plain local dev has no
+	// real public URL, and both consumers treat an empty value as
+	// "nothing to serve/start from" rather than guessing.
+	PublicURL string
+	// DiscoveryStartURL is the address internal/discovery.Client begins
+	// resolving from (ZONARYOS_DISCOVERY_START_URL). Defaults to
+	// PublicURL when unset - for today's single-instance reality
+	// (Open Points item 34), an installation's own discovery starting
+	// point is itself, the same self-referential answer
+	// HandleWellKnown gives. A real future migration would repoint this
+	// at whatever address is actually known to be further along the
+	// discovery chain, without requiring any code change - see
+	// internal/discovery's package doc comment.
+	DiscoveryStartURL string
+
+	// TelemetryEnabled is internal/telemetry's single default-disabled
+	// switch, mirroring LicenseEnforced's exact convention: only "true"
+	// (exact, case-sensitive match) turns it on. Default OFF - this
+	// collects source IP addresses (aggregate request/operation counts
+	// server-side, page/feature-usage counts client-side), which has
+	// real privacy weight (see docs/OPEN_POINTS.md's KVKK
+	// cross-reference) - an operator must explicitly opt in, never
+	// discover after the fact that telemetry was silently on.
+	TelemetryEnabled bool
 }
 
 // Load reads configuration from environment variables, applying defaults
@@ -50,7 +115,13 @@ func Load() (Config, error) {
 		OIDCIssuerURL:       os.Getenv("ZONARYOS_OIDC_ISSUER_URL"),
 		OIDCClientID:        getEnv("ZONARYOS_OIDC_CLIENT_ID", "zonaryos-web"),
 		PlatformAdminEmails: parseEmailList(os.Getenv("ZONARYOS_PLATFORM_ADMIN_EMAILS")),
+		LicenseEnforced:     os.Getenv("ZONARYOS_LICENSE_ENFORCEMENT") == "true",
+		LicensePublicKey:    os.Getenv("ZONARYOS_LICENSE_PUBLIC_KEY"),
+		LicenseToken:        os.Getenv("ZONARYOS_LICENSE_TOKEN"),
+		PublicURL:           strings.TrimRight(os.Getenv("ZONARYOS_PUBLIC_URL"), "/"),
+		TelemetryEnabled:    os.Getenv("ZONARYOS_TELEMETRY_ENABLED") == "true",
 	}
+	cfg.DiscoveryStartURL = strings.TrimRight(getEnv("ZONARYOS_DISCOVERY_START_URL", cfg.PublicURL), "/")
 
 	if cfg.HTTPAddr == "" {
 		return Config{}, fmt.Errorf("ZONARYOS_HTTP_ADDR must not be empty")
@@ -60,6 +131,21 @@ func Load() (Config, error) {
 	}
 	if cfg.OIDCIssuerURL == "" {
 		return Config{}, fmt.Errorf("ZONARYOS_OIDC_ISSUER_URL must be set")
+	}
+
+	// Only parsed if set at all - an unset ZONARYOS_LICENSE_GRACE_PERIOD
+	// leaves LicenseGracePeriod at its zero value, which
+	// internal/license.NewVerifier treats as "use DefaultGracePeriod",
+	// not "no grace period" (see that field's doc comment above). A
+	// value that IS set but doesn't parse as a Go duration is a real
+	// config error worth failing startup over, same as this function's
+	// other required-field checks.
+	if raw := os.Getenv("ZONARYOS_LICENSE_GRACE_PERIOD"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return Config{}, fmt.Errorf("ZONARYOS_LICENSE_GRACE_PERIOD must be a valid Go duration (e.g. \"72h\"): %w", err)
+		}
+		cfg.LicenseGracePeriod = d
 	}
 
 	return cfg, nil

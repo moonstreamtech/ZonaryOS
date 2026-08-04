@@ -29,6 +29,96 @@ paths:
                     type: string
                     example: ok
 
+  /.well-known/zonaryos-central:
+    get:
+      summary: Resolve this installation's currently-known central-server address
+      description: >
+        Open Points item 34/40 (internal/discovery). Today every
+        installation answers self-referentially, with its own configured
+        ZONARYOS_PUBLIC_URL - there is no separate central server yet.
+        Every installation's own internal/discovery.Client periodically
+        fetches this same endpoint (from whichever address it last
+        resolved, walking forward) to discover a real future central
+        server migration without requiring a code or config change.
+        Unauthenticated and unconditional - see
+        internal/discovery.RegisterRoutes's doc comment for why this has
+        no default-off gate unlike license/telemetry.
+      security: []
+      responses:
+        "200":
+          description: The current central-server base URL, as this installation understands it
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  centralUrl:
+                    type: string
+                    description: >
+                      This installation's own public base URL (empty if
+                      ZONARYOS_PUBLIC_URL isn't configured, e.g. plain
+                      local dev) - never a placeholder or third-party
+                      value.
+                    example: https://zonaryos.duckdns.org
+                required: [centralUrl]
+
+  /telemetry/report:
+    post:
+      summary: Ingest a batched usage-telemetry report (aggregate counts only)
+      description: >
+        Open Points item 40 (internal/telemetry). The "central server"
+        side of the reporting flow - today every installation both sends
+        to and (via this handler) receives its own reports, since Open
+        Points item 34's real separate central server doesn't exist yet.
+        Only reachable at all when ZONARYOS_TELEMETRY_ENABLED=true on
+        this installation (internal/telemetry.RegisterRoutes registers
+        nothing when disabled - a request to this path 404s exactly as
+        if the package were never imported). Logs a one-line count
+        summary; does not persist to Postgres (no retention/access-
+        control story exists yet for this data - see
+        docs/OPEN_POINTS.md's KVKK cross-reference).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TelemetryReport"
+      responses:
+        "202":
+          description: Report accepted (counts only, aggregate, never content - see internal/telemetry's doc comment)
+        "400":
+          description: Malformed report body
+
+  /telemetry/client-report:
+    post:
+      summary: Ingest a batched client-side (frontend) usage-telemetry report
+      description: >
+        What the web frontend's own batching client
+        (web/src/lib/telemetry.ts, flushed via the frontend's
+        /api/telemetry route handler - see that route's doc comment) and
+        this same Next.js server process's own route handlers
+        (web/src/lib/telemetryServer.ts) POST periodically: page/screen
+        view counts by route and named feature-usage-event counts only -
+        never page content or request/response bodies. Merged into
+        internal/telemetry.Reporter's own counters, then flushed onward
+        to /telemetry/report on the resolved central address alongside
+        this installation's server-side (Go) request/source-IP counts.
+        Only reachable when ZONARYOS_TELEMETRY_ENABLED=true, same as
+        /telemetry/report above.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TelemetryClientReport"
+      responses:
+        "202":
+          description: Report accepted
+        "400":
+          description: Malformed report body
+
   /api/me:
     get:
       summary: Resolve the caller's identity and firm memberships
@@ -269,7 +359,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WorkflowDefinition"
-        "400": { description: Invalid firmID, malformed request body, or a structurally invalid spec (DefinitionSpec.Validate - no initial state, a transition referencing an unknown state, an OPTIONAL `fields` entry with an empty/duplicate name or a type outside string/number/boolean/date, ...) }
+        "400": { description: Invalid firmID, malformed request body, or a structurally invalid spec (DefinitionSpec.Validate - no initial state, a transition referencing an unknown state, an OPTIONAL `fields` entry with an empty/duplicate name, a type outside string/number/boolean/date/enum/reference/array, an enum field with zero options, an array field's `arrayItemType` set to enum/reference/array, a reference field with an empty `referenceDefinitionKey`, or a reference field whose `referenceDefinitionKey` doesn't name a real workflow definition for this firm, ...) }
         "401": { description: Missing or invalid bearer token }
         "403": { description: Caller is a member of firmID but not an owner }
         "404": { description: Caller isn't a member of firmID at all }
@@ -286,13 +376,17 @@ paths:
 
         If the target definition has an OPTIONAL payload schema
         (`fields` on WorkflowDefinition/DefinitionSpec - Open Points item
-        35), payload is validated against it before the instance is
-        created: every required field must be present, and a present
-        field's value must match its declared type
-        (internal/workflow.ErrPayloadValidation, surfaced as 400 below).
-        A definition with no schema (every definition that predates item
-        35, e.g. stock_to_sale/customer_pipeline today) skips this
-        entirely - payload stays accepted exactly as before.
+        35, extended by item 38), payload is validated against it before
+        the instance is created: every required field must be present,
+        and a present field's value must match its declared type
+        (internal/workflow.ErrPayloadValidation, surfaced as 400 below) -
+        including, for a `reference` field, an actual database check that
+        the value is a real instance ID of the named definition in this
+        same firm (a cross-firm reference is rejected the same as a
+        nonexistent one), run inside the same transaction as the instance
+        insert. A definition with no schema (every definition that
+        predates item 35, e.g. stock_to_sale/customer_pipeline today)
+        skips this entirely - payload stays accepted exactly as before.
       parameters:
         - name: firmID
           in: path
@@ -1113,6 +1207,17 @@ paths:
         not 403 - this endpoint is designed to look like it doesn't exist
         to anyone off the allowlist, matching the frontend route's
         next/navigation notFound() behavior at /platform-admin.
+        Also gated by internal/license (Open Points item 32) - the one
+        module-gating call site this codebase wires today
+        (license.ModulePlatformAdmin). With ZONARYOS_LICENSE_ENFORCEMENT
+        unset (the default), this check is a structural no-op and never
+        changes this endpoint's behavior. With enforcement enabled and
+        the license invalid/expired-past-grace/missing this module, the
+        request fails closed with 503 and a plain-text, actionable
+        message (which env var to fix and what to do) - checked only
+        after the allowlist check above, so a non-allowlisted caller
+        still just gets 404 and never learns anything about license
+        state.
       responses:
         "200":
           description: Firm metadata for every firm in the system
@@ -1124,6 +1229,19 @@ paths:
                   $ref: "#/components/schemas/PlatformAdminFirm"
         "401": { description: Missing or invalid bearer token }
         "404": { description: Caller is authenticated but not on the platform-admin allowlist }
+        "503":
+          description: >
+            License enforcement is enabled (ZONARYOS_LICENSE_ENFORCEMENT=true)
+            and the configured license is missing, invalid, expired past
+            its grace period, or does not include the platform_admin
+            module. Response body is plain text with a specific,
+            actionable message (which env var to fix, and how) - not a
+            generic "unauthorized". Only ever returned for an otherwise
+            allowlisted caller (see above).
+          content:
+            text/plain:
+              schema:
+                type: string
 
 components:
   securitySchemes:
@@ -1202,23 +1320,63 @@ components:
       type: object
       description: >
         One declared field in a workflow definition's OPTIONAL instance
-        payload schema (internal/workflow.FieldSpec, Open Points item 35).
-        Deliberately just these four types (see the `type` property) - no
-        nested objects, no arrays, no enum/pattern constraints.
+        payload schema (internal/workflow.FieldSpec). Open Points item 35
+        introduced the four scalar types; item 38 extended it with `enum`,
+        `reference`, and `array` - each of those three needs exactly one
+        of `options`/`referenceDefinitionKey`/`arrayItemType` set (see each
+        property's own description). No nested objects, no arrays of
+        enum/reference/array (see `arrayItemType`), no pattern constraints
+        beyond `enum`'s fixed option set.
       properties:
         name:
           type: string
         type:
           type: string
-          enum: [string, number, boolean, date]
+          enum: [string, number, boolean, date, enum, reference, array]
           description: >
             "date" is a plain calendar date, no time-of-day/timezone -
             matched against `YYYY-MM-DD` server-side
             (internal/workflow's payloadDateLayout), the same value an
-            HTML `<input type="date">` produces.
+            HTML `<input type="date">` produces. "enum"/"reference"/"array"
+            are Open Points item 38's additions - see `options`/
+            `referenceDefinitionKey`/`arrayItemType` below.
         required:
           type: boolean
           description: Whether CreateInstance must see this field present in the payload.
+        options:
+          type: array
+          items: { type: string }
+          description: >
+            Only meaningful when `type` is `enum`: the fixed set of string
+            values this field's value must be one of. Required to be
+            non-empty (and every option unique, non-empty) when `type` is
+            `enum`; must be omitted/empty for every other type -
+            DefinitionSpec.Validate rejects either mismatch at
+            spec-definition time.
+        referenceDefinitionKey:
+          type: string
+          description: >
+            Only meaningful when `type` is `reference`: the `key` of
+            another workflow definition in the same firm (e.g.
+            "stock_to_sale") whose instances this field's value must
+            identify. CreateInstance validates the value is a real
+            instance ID (UUID) of that definition, in the same firm, as
+            part of the same transaction that creates the new instance
+            (internal/workflow.checkReferenceField) - a value that doesn't
+            resolve, or that resolves to an instance in a different firm,
+            is rejected as 400 the same way a missing required field is.
+            Must be omitted for every other type.
+        arrayItemType:
+          type: string
+          enum: [string, number, boolean, date]
+          description: >
+            Only meaningful when `type` is `array`: which of the four
+            scalar types each array element must satisfy. Deliberately
+            restricted to those four - `enum`/`reference`/`array` are not
+            valid values here (no nested arrays, no arrays of
+            enums/references), rejected by DefinitionSpec.Validate at
+            spec-definition time, not merely at CreateInstance time. Must
+            be omitted for every other type.
       required: [name, type, required]
     WorkflowDefinition:
       type: object
@@ -1606,6 +1764,53 @@ components:
           type: string
           nullable: true
       required: [firmId, name, address, taxId, defaultLocale, defaultCurrency, logoUrl]
+
+    TelemetryReport:
+      type: object
+      description: >
+        internal/telemetry.Report's wire shape - aggregate counts only
+        (Open Points item 40), keyed by identifier (an endpoint pattern,
+        a source IP, or a named feature-event string), never content.
+      properties:
+        periodStart:
+          type: string
+          format: date-time
+        periodEnd:
+          type: string
+          format: date-time
+        requestCounts:
+          type: object
+          additionalProperties:
+            type: integer
+          description: "\"METHOD /pattern\" (e.g. \"GET /api/firms/{firmID}\") -> request count"
+        sourceIpCounts:
+          type: object
+          additionalProperties:
+            type: integer
+          description: source IP address -> request count
+        featureEventCounts:
+          type: object
+          additionalProperties:
+            type: integer
+          description: named feature-usage event -> count
+      required: [periodStart, periodEnd]
+
+    TelemetryClientReport:
+      type: object
+      description: >
+        internal/telemetry.ClientReport's wire shape - what the web
+        frontend's batching client sends (Open Points item 40).
+      properties:
+        pageViewCounts:
+          type: object
+          additionalProperties:
+            type: integer
+          description: route path -> view count
+        featureEventCounts:
+          type: object
+          additionalProperties:
+            type: integer
+          description: named feature-usage event -> count
 
     PlatformAdminFirm:
       type: object

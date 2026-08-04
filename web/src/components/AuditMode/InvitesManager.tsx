@@ -158,6 +158,7 @@ export default function InvitesManager({ firmId, locale, invites, roles }: Props
             </code>
             <button
               type="button"
+              data-permission-public="true"
               onClick={copyLink}
               className="rounded-md border border-zinc-300 px-3 py-1 text-xs font-medium text-black dark:border-zinc-700 dark:text-zinc-50"
             >
@@ -170,6 +171,7 @@ export default function InvitesManager({ firmId, locale, invites, roles }: Props
       {creating && (
         <form
           onSubmit={submitCreate}
+          data-permission-public="true"
           className="mb-4 flex flex-col gap-3 rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950 sm:flex-row sm:items-end"
         >
           <div className="flex-1">
@@ -191,6 +193,7 @@ export default function InvitesManager({ firmId, locale, invites, roles }: Props
           <div className="flex gap-2">
             <button
               type="submit"
+              data-permission-public="true"
               disabled={submitting}
               className="rounded-md bg-foreground px-4 py-1.5 text-xs font-medium text-background disabled:opacity-50"
             >
@@ -198,6 +201,7 @@ export default function InvitesManager({ firmId, locale, invites, roles }: Props
             </button>
             <button
               type="button"
+              data-permission-public="true"
               onClick={() => {
                 setCreating(false);
                 setCreateError(null);
@@ -237,6 +241,7 @@ export default function InvitesManager({ firmId, locale, invites, roles }: Props
                     {invite.status === "pending" && !invite.expired ? (
                       <button
                         type="button"
+                        data-permission-public="true"
                         disabled={pendingInviteId === invite.inviteId}
                         onClick={() => handleRevoke(invite.inviteId)}
                         className="rounded border border-red-300 px-2 py-0.5 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950"

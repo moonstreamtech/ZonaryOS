@@ -400,5 +400,131 @@ MEMBER_COUNT=$(echo "$MEMBERS_RESPONSE" | python3 -c "import sys, json; print(le
 [ "$MEMBER_COUNT" = "2" ] || fail "expected 2 members after the invite was accepted, got $MEMBER_COUNT: $MEMBERS_RESPONSE"
 log "invites: full self-registration -> invite -> accept flow verified end-to-end ($MEMBER_COUNT members now in the firm)"
 
+# --- Session refresh (Open Points item 41): a real, expired access token
+# --- is silently refreshed by src/proxy.ts, no re-login prompt ----------
+#
+# Genuine proof, not "login works then immediately calls again": this
+# section makes a real access token issued by the real Keycloak server
+# actually expire, then proves the frontend transparently mints a new one
+# via the refresh_token grant and serves the original request anyway.
+#
+# A full, honest ~5-minute sleep (Keycloak's real default
+# accessTokenLifespan) is impractical for a CI job that otherwise runs in
+# well under a minute, so this uses Keycloak's own Admin REST API (the
+# KC_BOOTSTRAP_ADMIN_USERNAME/PASSWORD docker-compose.yml already sets for
+# the dev Keycloak container) to temporarily override the realm's
+# accessTokenLifespan to a few seconds, obtains a real token under that
+# override, and genuinely waits (a real `sleep`, no clock mocking) past
+# its real expiry - the same server-side validation path a full 5-minute
+# wait would exercise, just compressed. The realm override is restored
+# (via a trap, so it's undone even if an assertion below fails) before
+# the script exits, so this leaves the realm's config exactly as every
+# other section of this test found it.
+
+ORIGINAL_REALM_JSON=$(mktemp)
+restore_realm_config() {
+    if [ -s "$ORIGINAL_REALM_JSON" ] && [ -n "${ADMIN_TOKEN:-}" ]; then
+        curl -sS -X PUT "${KEYCLOAK_BASE_URL:-http://localhost:8081}/admin/realms/zonaryos" \
+            -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
+            --data-binary "@$ORIGINAL_REALM_JSON" >/dev/null || true
+    fi
+    rm -f "$ORIGINAL_REALM_JSON"
+}
+trap restore_realm_config EXIT
+
+KEYCLOAK_BASE_URL="${KEYCLOAK_BASE_URL:-http://localhost:8081}"
+KEYCLOAK_ADMIN_USERNAME="${KEYCLOAK_ADMIN_USERNAME:-admin}"
+KEYCLOAK_ADMIN_PASSWORD="${KEYCLOAK_ADMIN_PASSWORD:-admin}"
+
+log "session refresh: obtaining a Keycloak admin token to temporarily shorten the access-token lifespan"
+ADMIN_TOKEN_RESPONSE=$(curl -sS -X POST "$KEYCLOAK_BASE_URL/realms/master/protocol/openid-connect/token" \
+    -d "grant_type=password" -d "client_id=admin-cli" \
+    -d "username=$KEYCLOAK_ADMIN_USERNAME" -d "password=$KEYCLOAK_ADMIN_PASSWORD")
+ADMIN_TOKEN=$(echo "$ADMIN_TOKEN_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin).get('access_token', ''))")
+[ -n "$ADMIN_TOKEN" ] || fail "did not receive an admin access_token from Keycloak's master realm: $ADMIN_TOKEN_RESPONSE"
+
+curl -sS "$KEYCLOAK_BASE_URL/admin/realms/zonaryos" -H "Authorization: Bearer $ADMIN_TOKEN" > "$ORIGINAL_REALM_JSON"
+python3 -c "import json; json.load(open('$ORIGINAL_REALM_JSON'))" \
+    || fail "did not receive a parseable realm representation from the admin API: $(cat "$ORIGINAL_REALM_JSON")"
+
+SHORT_LIFESPAN_JSON=$(mktemp)
+python3 -c "
+import json
+d = json.load(open('$ORIGINAL_REALM_JSON'))
+d['accessTokenLifespan'] = 5
+json.dump(d, open('$SHORT_LIFESPAN_JSON', 'w'))
+"
+log "session refresh: setting accessTokenLifespan=5s on the zonaryos realm (test-only override, restored on exit)"
+SHORT_LIFESPAN_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -X PUT "$KEYCLOAK_BASE_URL/admin/realms/zonaryos" \
+    -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
+    --data-binary "@$SHORT_LIFESPAN_JSON")
+rm -f "$SHORT_LIFESPAN_JSON"
+[ "$SHORT_LIFESPAN_STATUS" = "204" ] || fail "expected 204 setting accessTokenLifespan, got $SHORT_LIFESPAN_STATUS"
+
+log "session refresh: logging in again to get a token that actually carries the 5s lifespan"
+SHORT_TOKEN_RESPONSE=$(curl -sS -X POST "$KEYCLOAK_ISSUER_URL/protocol/openid-connect/token" \
+    -d "grant_type=password" -d "client_id=$KEYCLOAK_CLIENT_ID" \
+    -d "username=$KEYCLOAK_USERNAME" -d "password=$KEYCLOAK_PASSWORD")
+SHORT_ACCESS_TOKEN=$(echo "$SHORT_TOKEN_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin).get('access_token', ''))")
+SHORT_REFRESH_TOKEN=$(echo "$SHORT_TOKEN_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin).get('refresh_token', ''))")
+SHORT_EXPIRES_IN=$(echo "$SHORT_TOKEN_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin).get('expires_in', ''))")
+[ -n "$SHORT_ACCESS_TOKEN" ] && [ -n "$SHORT_REFRESH_TOKEN" ] || fail "did not receive both an access_token and refresh_token under the shortened lifespan: $SHORT_TOKEN_RESPONSE"
+[ "$SHORT_EXPIRES_IN" = "5" ] || fail "expected the token response to report expires_in=5 confirming the realm override actually took effect, got $SHORT_EXPIRES_IN"
+log "session refresh: got a real access token that genuinely expires in 5s (refresh token is long-lived as usual)"
+
+log "session refresh: sleeping 8s (a real wait, past the token's real 5s expiry - not simulated)"
+sleep 8
+
+log "session refresh: confirming the now-actually-expired access token is genuinely rejected by the real backend directly (proves this isn't a false expiry)"
+DIRECT_STATUS_WITH_EXPIRED=$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $SHORT_ACCESS_TOKEN" "$BACKEND_URL/api/me")
+[ "$DIRECT_STATUS_WITH_EXPIRED" = "401" ] || fail "expected the backend to reject the genuinely-expired access token directly with 401, got $DIRECT_STATUS_WITH_EXPIRED - the token isn't actually expired, this proof would be meaningless"
+log "session refresh: confirmed the access token is genuinely expired (backend rejects it directly with 401)"
+
+REFRESH_HEADERS=$(mktemp)
+log "session refresh: hitting the frontend dashboard with the expired access-token cookie + a still-valid refresh-token cookie"
+REFRESH_PROOF_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -D "$REFRESH_HEADERS" \
+    -b "zonaryos_session=$SHORT_ACCESS_TOKEN; zonaryos_refresh_token=$SHORT_REFRESH_TOKEN" \
+    "$FRONTEND_URL/en")
+[ "$REFRESH_PROOF_STATUS" = "200" ] || fail "expected the frontend to still render the dashboard (200) via silent refresh despite the expired access token, got $REFRESH_PROOF_STATUS"
+
+NEW_SESSION_COOKIE=$(grep -i '^set-cookie: *zonaryos_session=' "$REFRESH_HEADERS" | sed -E 's/^[Ss]et-[Cc]ookie: *zonaryos_session=([^;]*);.*/\1/' | tr -d '\r')
+[ -n "$NEW_SESSION_COOKIE" ] || fail "expected src/proxy.ts to set a fresh zonaryos_session cookie on the response: $(cat "$REFRESH_HEADERS")"
+[ "$NEW_SESSION_COOKIE" != "$SHORT_ACCESS_TOKEN" ] || fail "the zonaryos_session cookie was not actually replaced with a new access token"
+log "session refresh: proxy.ts issued a brand-new zonaryos_session cookie, different from the expired one"
+
+log "session refresh: confirming the new access token is real and accepted by the backend directly"
+DIRECT_STATUS_WITH_NEW=$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $NEW_SESSION_COOKIE" "$BACKEND_URL/api/me")
+[ "$DIRECT_STATUS_WITH_NEW" = "200" ] || fail "expected the backend to accept the refreshed access token directly with 200, got $DIRECT_STATUS_WITH_NEW"
+log "session refresh: confirmed the refreshed access token is real and valid - the request never fell through to a re-login prompt"
+rm -f "$REFRESH_HEADERS"
+
+# --- Terminal case: once the refresh token itself is invalid (revoked
+# --- here, standing in for it actually expiring), a real re-login IS
+# --- correct - proxy.ts must clear both cookies, not loop or error ------
+
+log "session refresh (terminal case): revoking the refresh token server-side (Keycloak logout), simulating it having actually expired"
+curl -sS -o /dev/null -X POST "$KEYCLOAK_ISSUER_URL/protocol/openid-connect/logout" \
+    -d "client_id=$KEYCLOAK_CLIENT_ID" -d "refresh_token=$SHORT_REFRESH_TOKEN"
+
+TERMINAL_HEADERS=$(mktemp)
+# /en itself is the public landing/login page (it renders a signed-out
+# state at 200 rather than redirecting - it *is* where an unauthenticated
+# visitor is supposed to land), so this hits /en/stock instead - a firm-
+# scoped page that goes through requireFirmContext (src/lib/firmContext.ts)
+# and calls redirect() whenever there's no valid session, same as every
+# other firm-scoped page in this app.
+TERMINAL_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -D "$TERMINAL_HEADERS" \
+    -b "zonaryos_session=$SHORT_ACCESS_TOKEN; zonaryos_refresh_token=$SHORT_REFRESH_TOKEN" \
+    "$FRONTEND_URL/en/stock")
+[ "$TERMINAL_STATUS" = "307" ] || [ "$TERMINAL_STATUS" = "302" ] || fail "expected a redirect (real re-login is correct once the refresh token is actually invalid), got $TERMINAL_STATUS"
+grep -qi '^set-cookie: *zonaryos_session=;\|^set-cookie: *zonaryos_session=.*Max-Age=0\|^set-cookie: *zonaryos_session=.*Expires=Thu, 01 Jan 1970' "$TERMINAL_HEADERS" \
+    || fail "expected proxy.ts to clear the stale zonaryos_session cookie on the terminal path: $(cat "$TERMINAL_HEADERS")"
+log "session refresh (terminal case): confirmed - an invalid refresh token cleanly clears cookies and falls through to the existing login redirect, no loop, no confusing error"
+rm -f "$TERMINAL_HEADERS"
+
+restore_realm_config
+trap - EXIT
+log "session refresh: realm's accessTokenLifespan restored to its original (unset/default) value"
+
 echo ""
-echo "E2E SMOKE TEST PASSED: login + wizard -> firm creation -> add stock -> sell, plus UI-path add stock, firm switch, audit log view, a real second workflow defined + rendered through the generic UI, the Customer Pipeline default workflow walked lead -> qualified -> customer, the dashboard's counts-by-state overview, quick-create, global search, and (new) a full self-registration -> invite -> accept flow bringing a second real user into the firm with no email infrastructure, all against a real stack"
+echo "E2E SMOKE TEST PASSED: login + wizard -> firm creation -> add stock -> sell, plus UI-path add stock, firm switch, audit log view, a real second workflow defined + rendered through the generic UI, the Customer Pipeline default workflow walked lead -> qualified -> customer, the dashboard's counts-by-state overview, quick-create, global search, a full self-registration -> invite -> accept flow bringing a second real user into the firm with no email infrastructure, and (new) a genuine session-refresh proof - a real Keycloak access token actually expires, gets silently refreshed by src/proxy.ts with no re-login prompt, and the terminal (invalid refresh token) case cleanly falls through to a real login redirect - all against a real stack"

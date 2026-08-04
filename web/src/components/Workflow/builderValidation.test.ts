@@ -35,7 +35,16 @@ function transition(overrides: Partial<BuilderTransitionRow>): BuilderTransition
 }
 
 function field(overrides: Partial<BuilderFieldRow>): BuilderFieldRow {
-  return { id: 1, name: "", type: "string", required: false, ...overrides };
+  return {
+    id: 1,
+    name: "",
+    type: "string",
+    required: false,
+    options: [],
+    referenceDefinitionKey: "",
+    arrayItemType: "string",
+    ...overrides,
+  };
 }
 
 function baseSpec(overrides: Partial<BuilderSpec>): BuilderSpec {
@@ -267,5 +276,83 @@ describe("validateBuilderSpec", () => {
       }),
     );
     expect(errors).toContainEqual({ code: "duplicateFieldName", name: "item" });
+  });
+
+  // Open Points item 38's builder-side checks.
+  describe("enum fields", () => {
+    it("accepts a well-formed enum field", () => {
+      const spec = baseSpec({
+        states: [state({ id: 1, key: "draft", isInitial: true })],
+        fields: [field({ id: 1, name: "priority", type: "enum", options: ["low", "high"] })],
+      });
+      expect(validateBuilderSpec(spec)).toEqual([]);
+    });
+
+    it("flags an enum field with zero options", () => {
+      const spec = baseSpec({
+        states: [state({ id: 1, key: "draft", isInitial: true })],
+        fields: [field({ id: 1, name: "priority", type: "enum", options: [] })],
+      });
+      expect(validateBuilderSpec(spec)).toContainEqual({ code: "enumOptionsRequired", name: "priority" });
+    });
+
+    it("flags an empty-string enum option", () => {
+      const spec = baseSpec({
+        states: [state({ id: 1, key: "draft", isInitial: true })],
+        fields: [field({ id: 1, name: "priority", type: "enum", options: ["low", ""] })],
+      });
+      expect(validateBuilderSpec(spec)).toContainEqual({ code: "enumOptionEmpty", name: "priority" });
+    });
+
+    it("flags a duplicate enum option", () => {
+      const spec = baseSpec({
+        states: [state({ id: 1, key: "draft", isInitial: true })],
+        fields: [field({ id: 1, name: "priority", type: "enum", options: ["low", "low"] })],
+      });
+      expect(validateBuilderSpec(spec)).toContainEqual({
+        code: "enumOptionDuplicate",
+        name: "priority",
+        option: "low",
+      });
+    });
+  });
+
+  describe("reference fields", () => {
+    it("accepts a well-formed reference field", () => {
+      const spec = baseSpec({
+        states: [state({ id: 1, key: "draft", isInitial: true })],
+        fields: [field({ id: 1, name: "relatedStock", type: "reference", referenceDefinitionKey: "stock_to_sale" })],
+      });
+      expect(validateBuilderSpec(spec)).toEqual([]);
+    });
+
+    it("flags a reference field with no target definition key chosen", () => {
+      const spec = baseSpec({
+        states: [state({ id: 1, key: "draft", isInitial: true })],
+        fields: [field({ id: 1, name: "relatedStock", type: "reference", referenceDefinitionKey: "" })],
+      });
+      expect(validateBuilderSpec(spec)).toContainEqual({
+        code: "referenceDefinitionKeyRequired",
+        name: "relatedStock",
+      });
+    });
+  });
+
+  describe("array fields", () => {
+    it("accepts a well-formed array field", () => {
+      const spec = baseSpec({
+        states: [state({ id: 1, key: "draft", isInitial: true })],
+        fields: [field({ id: 1, name: "tags", type: "array", arrayItemType: "string" })],
+      });
+      expect(validateBuilderSpec(spec)).toEqual([]);
+    });
+
+    it("flags an array field with no item type chosen", () => {
+      const spec = baseSpec({
+        states: [state({ id: 1, key: "draft", isInitial: true })],
+        fields: [field({ id: 1, name: "tags", type: "array", arrayItemType: "" as never })],
+      });
+      expect(validateBuilderSpec(spec)).toContainEqual({ code: "arrayItemTypeRequired", name: "tags" });
+    });
   });
 });

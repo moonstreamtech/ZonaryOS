@@ -101,6 +101,7 @@ export default function AuditLogTable({
     <div className="flex w-full max-w-4xl flex-col items-center gap-4">
       <form
         onSubmit={submitFilters}
+        data-permission-public="true"
         className="flex w-full flex-wrap items-end gap-3"
       >
         <label className="flex flex-col gap-1 text-xs text-zinc-600 dark:text-zinc-400">
@@ -141,6 +142,7 @@ export default function AuditLogTable({
         </label>
         <button
           type="submit"
+          data-permission-public="true"
           className="rounded-md bg-foreground px-4 py-1.5 text-xs font-medium text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc]"
         >
           {t("filtersApplyButton")}
@@ -149,6 +151,7 @@ export default function AuditLogTable({
           <button
             type="button"
             onClick={clearFilters}
+            data-permission-public="true"
             className="rounded-md border border-zinc-300 px-4 py-1.5 text-xs font-medium text-zinc-700 dark:border-zinc-700 dark:text-zinc-300"
           >
             {t("filtersClearButton")}
@@ -210,6 +213,7 @@ export default function AuditLogTable({
             type="button"
             disabled={page <= 1}
             onClick={() => navigate({ page: page - 1, from, to, definitionId })}
+            data-permission-public="true"
             className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium disabled:opacity-50 dark:border-zinc-700"
           >
             {t("paginationPrevious")}
@@ -219,6 +223,7 @@ export default function AuditLogTable({
             type="button"
             disabled={page >= totalPages}
             onClick={() => navigate({ page: page + 1, from, to, definitionId })}
+            data-permission-public="true"
             className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium disabled:opacity-50 dark:border-zinc-700"
           >
             {t("paginationNext")}

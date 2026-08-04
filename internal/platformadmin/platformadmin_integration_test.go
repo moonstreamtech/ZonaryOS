@@ -117,7 +117,7 @@ func TestListFirms_ReturnsMetadataAcrossMultipleFirms(t *testing.T) {
 	caller := identity.Identity{Subject: "platform-admin", Email: "admin@zonaryos.com"}
 	_ = adminUserID
 
-	results, err := platformadmin.ListFirms(ctx, appPool, allow, caller)
+	results, err := platformadmin.ListFirms(ctx, appPool, allow, caller, nil)
 	if err != nil {
 		t.Fatalf("ListFirms: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestListFirms_RejectsNonAllowlistedCallerAgainstRealDatabase(t *testing.T) 
 	allow := platformadmin.NewAllowlist([]string{"admin@zonaryos.com"})
 	notAdmin := identity.Identity{Subject: "owner-x", Email: "owner-x@example.com"}
 
-	results, err := platformadmin.ListFirms(ctx, appPool, allow, notAdmin)
+	results, err := platformadmin.ListFirms(ctx, appPool, allow, notAdmin, nil)
 	if err == nil {
 		t.Fatalf("expected an error rejecting the non-allowlisted caller, got results: %+v", results)
 	}
@@ -251,7 +251,7 @@ func TestListFirms_DoesNotLeakTenantBusinessData(t *testing.T) {
 	allow := platformadmin.NewAllowlist([]string{"admin@zonaryos.com"})
 	caller := identity.Identity{Subject: "platform-admin", Email: "admin@zonaryos.com"}
 
-	results, err := platformadmin.ListFirms(ctx, appPool, allow, caller)
+	results, err := platformadmin.ListFirms(ctx, appPool, allow, caller, nil)
 	if err != nil {
 		t.Fatalf("ListFirms: %v", err)
 	}
@@ -299,7 +299,7 @@ func TestListFirms_WritesAuditLogEntryPerAccessedFirm(t *testing.T) {
 	allow := platformadmin.NewAllowlist([]string{"admin@zonaryos.com"})
 	caller := identity.Identity{Subject: "platform-admin", Email: "admin@zonaryos.com"}
 
-	if _, err := platformadmin.ListFirms(ctx, appPool, allow, caller); err != nil {
+	if _, err := platformadmin.ListFirms(ctx, appPool, allow, caller, nil); err != nil {
 		t.Fatalf("ListFirms: %v", err)
 	}
 
