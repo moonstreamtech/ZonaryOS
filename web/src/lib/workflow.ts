@@ -141,6 +141,77 @@ export type DefinitionInstanceCounts = {
   counts: StateCount[];
 };
 
+// --- Rule Engine (Open Points item 7, the builder UI batch) -------------
+//
+// ExpressionNode/Action are internal/workflow/rules.go's condition-tree/
+// action wire shapes, mirrored 1:1 (see handlers.go's
+// expressionNodeResponse/actionResponse and their request-side
+// counterparts) - the same "flat type, all fields optional" shape
+// FieldSpecInput above already uses.
+
+export type LogicOp = "and" | "or" | "not";
+export type ConditionType = "field" | "state" | "field_compare";
+export type CompareOp = "eq" | "neq" | "lt" | "gt" | "lte" | "gte" | "contains";
+export type ActionType = "transition" | "notify" | "set_field";
+export type NotifyChannel = "audit_log";
+export type RuleTrigger = "on_create" | "on_transition";
+
+// ExpressionNode is either a logic node (op is "and"/"or"/"not",
+// children set, type empty) or a condition leaf (type set, selecting
+// which of the leaf-specific fields below apply) - see
+// internal/workflow/rules.go's own ExpressionNode doc comment. TypeScript
+// can't cheaply express "exactly one of these shapes" as a discriminated
+// union here without the tree-builder component doing its own narrowing
+// anyway, so this mirrors the Go side's own "one flat struct" choice.
+export type ExpressionNode = {
+  op?: LogicOp | CompareOp | "";
+  children?: ExpressionNode[];
+  type?: ConditionType | "";
+  field?: string;
+  value?: unknown;
+  definitionKey?: string;
+  instanceIdField?: string;
+  state?: string;
+  fieldA?: string;
+  fieldB?: string;
+};
+
+export type RuleAction = {
+  type: ActionType;
+  actionKey?: string;
+  channel?: NotifyChannel;
+  messageTemplate?: string;
+  field?: string;
+  value?: unknown;
+};
+
+export type Rule = {
+  id: string;
+  definitionKey: string;
+  name: string;
+  trigger: RuleTrigger;
+  conditionTree: ExpressionNode;
+  actions: RuleAction[];
+  autonomous: boolean;
+  enabled: boolean;
+};
+
+// The create-rule request body's shape (no id/definitionKey - those are
+// server-assigned/path-derived, see internal/workflow/handlers.go's
+// createRuleRequest).
+export type RuleInput = {
+  name: string;
+  trigger: RuleTrigger;
+  conditionTree: ExpressionNode;
+  actions: RuleAction[];
+  autonomous: boolean;
+  enabled: boolean;
+};
+
+// RuleUpdateInput mirrors internal/workflow.RuleUpdate's partial-update
+// contract: an omitted field leaves that column unchanged.
+export type RuleUpdateInput = Partial<RuleInput>;
+
 function apiBase(): string {
   return process.env.ZONARYOS_API_BASE_URL ?? "http://localhost:8080";
 }
@@ -452,6 +523,132 @@ export async function executeTransition(
       };
     }
     return { ok: true, instance: (await res.json()) as InstanceState };
+  } catch {
+    return { ok: false, error: "network error", status: 0 };
+  }
+}
+
+/**
+ * Calls the Go backend's `GET .../workflow-definitions/{definitionKey}/rules`
+ * - the read-only rule listing endpoint. Returns null on failure, same
+ * convention as fetchDefinitionByKey/fetchInstances above.
+ */
+export async function fetchRules(
+  token: string,
+  firmId: string,
+  definitionKey: string,
+): Promise<Rule[] | null> {
+  try {
+    const res = await fetch(
+      `${apiBase()}/api/firms/${encodeURIComponent(firmId)}/workflow-definitions/${encodeURIComponent(definitionKey)}/rules`,
+      {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      },
+    );
+    if (!res.ok) return null;
+    return (await res.json()) as Rule[];
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Calls the Go backend's `POST .../workflow-definitions/{definitionKey}/rules`
+ * (owner-only). Same failure-surfacing convention as defineWorkflow/
+ * createInstance above (not the swallow-to-null read helpers) - the
+ * builder needs to show the caller why a rule didn't get created (e.g.
+ * 403 not-owner, 400 an invalid tree the backend's own
+ * ValidateExpressionTree/ValidateActions rejected).
+ */
+export async function createRule(
+  token: string,
+  firmId: string,
+  definitionKey: string,
+  rule: RuleInput,
+): Promise<{ ok: true; rule: Rule } | { ok: false; error: string; status: number }> {
+  try {
+    const res = await fetch(
+      `${apiBase()}/api/firms/${encodeURIComponent(firmId)}/workflow-definitions/${encodeURIComponent(definitionKey)}/rules`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(rule),
+        cache: "no-store",
+      },
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      return { ok: false, error: text || `Request failed (${res.status})`, status: res.status };
+    }
+    return { ok: true, rule: (await res.json()) as Rule };
+  } catch {
+    return { ok: false, error: "network error", status: 0 };
+  }
+}
+
+/**
+ * Calls the Go backend's `PATCH .../workflow-definitions/{definitionKey}/rules/{ruleId}`
+ * (owner-only) - a partial update (RuleUpdateInput's omitted fields leave
+ * that column unchanged, see internal/workflow.RuleUpdate).
+ */
+export async function updateRule(
+  token: string,
+  firmId: string,
+  definitionKey: string,
+  ruleId: string,
+  patch: RuleUpdateInput,
+): Promise<{ ok: true; rule: Rule } | { ok: false; error: string; status: number }> {
+  try {
+    const res = await fetch(
+      `${apiBase()}/api/firms/${encodeURIComponent(firmId)}/workflow-definitions/${encodeURIComponent(definitionKey)}/rules/${encodeURIComponent(ruleId)}`,
+      {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(patch),
+        cache: "no-store",
+      },
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      return { ok: false, error: text || `Request failed (${res.status})`, status: res.status };
+    }
+    return { ok: true, rule: (await res.json()) as Rule };
+  } catch {
+    return { ok: false, error: "network error", status: 0 };
+  }
+}
+
+/**
+ * Calls the Go backend's `DELETE .../workflow-definitions/{definitionKey}/rules/{ruleId}`
+ * (owner-only).
+ */
+export async function deleteRule(
+  token: string,
+  firmId: string,
+  definitionKey: string,
+  ruleId: string,
+): Promise<{ ok: true } | { ok: false; error: string; status: number }> {
+  try {
+    const res = await fetch(
+      `${apiBase()}/api/firms/${encodeURIComponent(firmId)}/workflow-definitions/${encodeURIComponent(definitionKey)}/rules/${encodeURIComponent(ruleId)}`,
+      {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      },
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      return { ok: false, error: text || `Request failed (${res.status})`, status: res.status };
+    }
+    return { ok: true };
   } catch {
     return { ok: false, error: "network error", status: 0 };
   }

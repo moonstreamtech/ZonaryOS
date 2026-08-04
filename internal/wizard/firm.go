@@ -43,27 +43,36 @@ const defaultRoleKey = "owner"
 const createFirmAuditAction = "create"
 
 // CreateDefaultFirmResult is what CreateDefaultFirm produces on success.
+// Every *DefinitionID field is uuid.Nil when SeedSelection didn't ask for
+// that workflow (see CreateDefaultFirm) - a firm that said "no" to
+// everything gets every field left at its zero value, not an error, per
+// Open Points item 37's resolution: "a firm that says no to everything
+// still gets created; it just starts with no seeded workflows."
 type CreateDefaultFirmResult struct {
 	FirmID                       uuid.UUID
 	FirmName                     string
 	RoleID                       uuid.UUID
 	StockToSaleDefinitionID      uuid.UUID
 	CustomerPipelineDefinitionID uuid.UUID
+	PurchaseOrderDefinitionID    uuid.UUID
+	TaskApprovalDefinitionID     uuid.UUID
 }
 
 // CreateDefaultFirm is the wizard's one implemented terminal action
 // (ActionCreateDefaultFirm): it creates a new firm, a default "owner"
 // role for it (flagged is_owner for Permission Audit Mode's UI, see
 // migrations/0004_role_owner_flag.up.sql), adds userID as that role's
-// holder, seeds the firm with the Stock In -> Sale and Customer Pipeline
-// workflows - granting the owner role every permission each one
-// introduces along the way, via workflow.SeedStockToSaleWorkflowTx's and
-// workflow.SeedCustomerPipelineWorkflowTx's shared self-action auto-grant,
-// not a bespoke grant step here - and writes one audit_log entry, all
+// holder, and seeds ONLY the workflows sel's answers actually asked for -
+// this batch's resolution of Open Points item 37 ("Parametric New-Firm
+// Workflow Seeding"), replacing the previous unconditional "every firm
+// gets Stock In -> Sale and Customer Pipeline whether it wants them or
+// not" behavior. Each seeded workflow grants the owner role every
+// permission it introduces along the way, via workflow.SeedStockToSaleWorkflowTx/
+// SeedCustomerPipelineWorkflowTx/SeedPurchaseOrderWorkflowTx/
+// SeedTaskApprovalWorkflowTx's shared self-action auto-grant, not a
+// bespoke grant step here - and one audit_log entry is written, all
 // inside a single transaction, so a caller never ends up with a
-// half-created firm. Both are seeded for every *new* firm from here on -
-// no retroactive seeding into firms that already existed before this
-// batch (see docs/VISION.md's note on Customer Pipeline).
+// half-created firm.
 //
 // A plain WithFirmContext (internal/platform/db) can't be used here: it
 // requires a firmID up front to scope the transaction to, but the firm
@@ -72,7 +81,7 @@ type CreateDefaultFirmResult struct {
 // migrations/0002_user_scoped_discovery.up.sql solved for firm discovery -
 // the transaction below sets app.current_firm_id itself, once the new
 // firm's ID is known, before touching any tenant-scoped table.
-func CreateDefaultFirm(ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID, firmName string) (CreateDefaultFirmResult, error) {
+func CreateDefaultFirm(ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID, firmName string, sel SeedSelection) (CreateDefaultFirmResult, error) {
 	firmName = strings.TrimSpace(firmName)
 	if firmName == "" {
 		return CreateDefaultFirmResult{}, fmt.Errorf("firm name must not be empty")
@@ -123,21 +132,44 @@ func CreateDefaultFirm(ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID
 		return CreateDefaultFirmResult{}, fmt.Errorf("register audit log read permission: %w", err)
 	}
 
-	// Granting the owner role every permission this seeds is
-	// SeedStockToSaleWorkflowTx's/SeedCustomerPipelineWorkflowTx's job,
-	// not this function's - see DefineWorkflowTx's self-action
-	// auto-grant.
-	stockDefinitionID, err := workflow.SeedStockToSaleWorkflowTx(ctx, tx, result.FirmID, result.RoleID)
-	if err != nil {
-		return CreateDefaultFirmResult{}, fmt.Errorf("seed stock-to-sale workflow: %w", err)
+	// Granting the owner role every permission a seeded workflow
+	// introduces is each Seed*WorkflowTx call's own job, not this
+	// function's - see DefineWorkflowTx's self-action auto-grant. Only
+	// the workflows sel's answers actually asked for are seeded (Open
+	// Points item 37) - a firm that answered "no" everywhere reaches the
+	// end of this block having seeded nothing, which is a normal, fully
+	// supported outcome, not an error.
+	if sel.Sells && sel.TracksInventory {
+		stockDefinitionID, err := workflow.SeedStockToSaleWorkflowTx(ctx, tx, result.FirmID, result.RoleID)
+		if err != nil {
+			return CreateDefaultFirmResult{}, fmt.Errorf("seed stock-to-sale workflow: %w", err)
+		}
+		result.StockToSaleDefinitionID = stockDefinitionID
 	}
-	result.StockToSaleDefinitionID = stockDefinitionID
 
-	customerPipelineDefinitionID, err := workflow.SeedCustomerPipelineWorkflowTx(ctx, tx, result.FirmID, result.RoleID)
-	if err != nil {
-		return CreateDefaultFirmResult{}, fmt.Errorf("seed customer pipeline workflow: %w", err)
+	if sel.Sells && sel.ManagesCRM {
+		customerPipelineDefinitionID, err := workflow.SeedCustomerPipelineWorkflowTx(ctx, tx, result.FirmID, result.RoleID)
+		if err != nil {
+			return CreateDefaultFirmResult{}, fmt.Errorf("seed customer pipeline workflow: %w", err)
+		}
+		result.CustomerPipelineDefinitionID = customerPipelineDefinitionID
 	}
-	result.CustomerPipelineDefinitionID = customerPipelineDefinitionID
+
+	if sel.PurchasesFromSuppliers {
+		purchaseOrderDefinitionID, err := workflow.SeedPurchaseOrderWorkflowTx(ctx, tx, result.FirmID, result.RoleID)
+		if err != nil {
+			return CreateDefaultFirmResult{}, fmt.Errorf("seed purchase order workflow: %w", err)
+		}
+		result.PurchaseOrderDefinitionID = purchaseOrderDefinitionID
+	}
+
+	if sel.ManagesTasks {
+		taskApprovalDefinitionID, err := workflow.SeedTaskApprovalWorkflowTx(ctx, tx, result.FirmID, result.RoleID)
+		if err != nil {
+			return CreateDefaultFirmResult{}, fmt.Errorf("seed task approval workflow: %w", err)
+		}
+		result.TaskApprovalDefinitionID = taskApprovalDefinitionID
+	}
 
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO user_firm_roles (firm_id, user_id, role_id) VALUES ($1, $2, $3)

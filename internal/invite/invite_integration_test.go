@@ -107,7 +107,7 @@ func TestGenerate_OwnerCanGenerateInvite(t *testing.T) {
 	ctx := context.Background()
 
 	ownerID := seedUser(ctx, t, adminPool, "owner-generate")
-	created, err := wizard.CreateDefaultFirm(ctx, appPool, ownerID, "Invite Firm")
+	created, err := wizard.CreateDefaultFirm(ctx, appPool, ownerID, "Invite Firm", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true})
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestGenerate_OwnerCanGenerateInvite(t *testing.T) {
 	if inv.RoleID != roleID {
 		t.Errorf("expected roleID %v, got %v", roleID, inv.RoleID)
 	}
-	if !inv.ExpiresAt.After(time.Now().Add(6*24*time.Hour)) {
+	if !inv.ExpiresAt.After(time.Now().Add(6 * 24 * time.Hour)) {
 		t.Errorf("expected expiresAt roughly 7 days out, got %v", inv.ExpiresAt)
 	}
 }
@@ -142,7 +142,7 @@ func TestGenerate_NonOwnerMemberIsDenied(t *testing.T) {
 	ctx := context.Background()
 
 	ownerID := seedUser(ctx, t, adminPool, "owner-generate-denied")
-	created, err := wizard.CreateDefaultFirm(ctx, appPool, ownerID, "Invite Firm")
+	created, err := wizard.CreateDefaultFirm(ctx, appPool, ownerID, "Invite Firm", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true})
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm: %v", err)
 	}
@@ -169,12 +169,12 @@ func TestGenerate_RoleFromDifferentFirmIsRejected(t *testing.T) {
 	ctx := context.Background()
 
 	ownerAID := seedUser(ctx, t, adminPool, "owner-a-cross-firm")
-	firmA, err := wizard.CreateDefaultFirm(ctx, appPool, ownerAID, "Firm A")
+	firmA, err := wizard.CreateDefaultFirm(ctx, appPool, ownerAID, "Firm A", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true})
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm A: %v", err)
 	}
 	ownerBID := seedUser(ctx, t, adminPool, "owner-b-cross-firm")
-	firmB, err := wizard.CreateDefaultFirm(ctx, appPool, ownerBID, "Firm B")
+	firmB, err := wizard.CreateDefaultFirm(ctx, appPool, ownerBID, "Firm B", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true})
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm B: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestAccept_GrantsTheCorrectRoleAndMarksTheInviteUsed(t *testing.T) {
 	ctx := context.Background()
 
 	ownerID := seedUser(ctx, t, adminPool, "owner-accept")
-	created, err := wizard.CreateDefaultFirm(ctx, appPool, ownerID, "Accept Firm")
+	created, err := wizard.CreateDefaultFirm(ctx, appPool, ownerID, "Accept Firm", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true})
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm: %v", err)
 	}
@@ -271,7 +271,7 @@ func TestAccept_SecondAcceptOnTheSameTokenFails(t *testing.T) {
 	ctx := context.Background()
 
 	ownerID := seedUser(ctx, t, adminPool, "owner-double-accept")
-	created, err := wizard.CreateDefaultFirm(ctx, appPool, ownerID, "Double Accept Firm")
+	created, err := wizard.CreateDefaultFirm(ctx, appPool, ownerID, "Double Accept Firm", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true})
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestAccept_ExpiredInviteIsRejected(t *testing.T) {
 	ctx := context.Background()
 
 	ownerID := seedUser(ctx, t, adminPool, "owner-expired")
-	created, err := wizard.CreateDefaultFirm(ctx, appPool, ownerID, "Expired Firm")
+	created, err := wizard.CreateDefaultFirm(ctx, appPool, ownerID, "Expired Firm", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true})
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm: %v", err)
 	}
@@ -366,7 +366,7 @@ func TestRevoke_RevokedInviteCanNoLongerBeAccepted(t *testing.T) {
 	ctx := context.Background()
 
 	ownerID := seedUser(ctx, t, adminPool, "owner-revoke")
-	created, err := wizard.CreateDefaultFirm(ctx, appPool, ownerID, "Revoke Firm")
+	created, err := wizard.CreateDefaultFirm(ctx, appPool, ownerID, "Revoke Firm", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true})
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm: %v", err)
 	}
@@ -409,7 +409,7 @@ func TestRevoke_NonOwnerMemberIsDenied(t *testing.T) {
 	ctx := context.Background()
 
 	ownerID := seedUser(ctx, t, adminPool, "owner-revoke-denied")
-	created, err := wizard.CreateDefaultFirm(ctx, appPool, ownerID, "Revoke Denied Firm")
+	created, err := wizard.CreateDefaultFirm(ctx, appPool, ownerID, "Revoke Denied Firm", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true})
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm: %v", err)
 	}
@@ -457,7 +457,7 @@ func TestList_OwnerSeesGeneratedInvites(t *testing.T) {
 	ctx := context.Background()
 
 	ownerID := seedUser(ctx, t, adminPool, "owner-list")
-	created, err := wizard.CreateDefaultFirm(ctx, appPool, ownerID, "List Firm")
+	created, err := wizard.CreateDefaultFirm(ctx, appPool, ownerID, "List Firm", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true})
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm: %v", err)
 	}

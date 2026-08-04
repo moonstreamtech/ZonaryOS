@@ -92,13 +92,13 @@ func TestListFirms_ReturnsMetadataAcrossMultipleFirms(t *testing.T) {
 	ctx := context.Background()
 
 	ownerA := seedUser(ctx, t, adminPool, "owner-a", "owner-a@example.com")
-	firmA, err := wizard.CreateDefaultFirm(ctx, appPool, ownerA, "Firm A")
+	firmA, err := wizard.CreateDefaultFirm(ctx, appPool, ownerA, "Firm A", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true})
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm A: %v", err)
 	}
 
 	ownerB := seedUser(ctx, t, adminPool, "owner-b", "owner-b@example.com")
-	firmB, err := wizard.CreateDefaultFirm(ctx, appPool, ownerB, "Firm B")
+	firmB, err := wizard.CreateDefaultFirm(ctx, appPool, ownerB, "Firm B", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true})
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm B: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestListFirms_RejectsNonAllowlistedCallerAgainstRealDatabase(t *testing.T) 
 	ctx := context.Background()
 
 	owner := seedUser(ctx, t, adminPool, "owner-x", "owner-x@example.com")
-	if _, err := wizard.CreateDefaultFirm(ctx, appPool, owner, "Firm X"); err != nil {
+	if _, err := wizard.CreateDefaultFirm(ctx, appPool, owner, "Firm X", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true}); err != nil {
 		t.Fatalf("CreateDefaultFirm: %v", err)
 	}
 
@@ -223,7 +223,7 @@ func TestListFirms_DoesNotLeakTenantBusinessData(t *testing.T) {
 	const secretAuditMarker = "TOP-SECRET-AUDIT-DETAIL-4b7e2d"
 
 	owner := seedUser(ctx, t, adminPool, "owner-y", "owner-y@example.com")
-	firm, err := wizard.CreateDefaultFirm(ctx, appPool, owner, "Firm Y")
+	firm, err := wizard.CreateDefaultFirm(ctx, appPool, owner, "Firm Y", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true})
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm: %v", err)
 	}
@@ -286,12 +286,12 @@ func TestListFirms_WritesAuditLogEntryPerAccessedFirm(t *testing.T) {
 	ctx := context.Background()
 
 	ownerA := seedUser(ctx, t, adminPool, "owner-audit-a", "owner-audit-a@example.com")
-	firmA, err := wizard.CreateDefaultFirm(ctx, appPool, ownerA, "Firm Audit A")
+	firmA, err := wizard.CreateDefaultFirm(ctx, appPool, ownerA, "Firm Audit A", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true})
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm A: %v", err)
 	}
 	ownerB := seedUser(ctx, t, adminPool, "owner-audit-b", "owner-audit-b@example.com")
-	firmB, err := wizard.CreateDefaultFirm(ctx, appPool, ownerB, "Firm Audit B")
+	firmB, err := wizard.CreateDefaultFirm(ctx, appPool, ownerB, "Firm Audit B", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true})
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm B: %v", err)
 	}

@@ -8,6 +8,7 @@ package wizard_test
 import (
 	"context"
 	"os"
+	"strconv"
 	"testing"
 
 	"github.com/google/uuid"
@@ -68,6 +69,17 @@ func setupTest(t *testing.T) (adminPool, appPool *pgxpool.Pool) {
 	return adminPool, appPool
 }
 
+// sellsAndTracksInventory/sellsTracksAndManagesCRM are SeedSelection
+// fixtures used across this file's tests that only care about one or two
+// specific workflows being seeded - TestSeedSelection_* below is where
+// every yes/no combination is actually exercised (Open Points item 37's
+// "each yes/no combination seeds exactly the expected workflows" test
+// requirement).
+var (
+	sellsAndTracksInventory  = wizard.SeedSelection{Sells: true, TracksInventory: true}
+	sellsTracksAndManagesCRM = wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true}
+)
+
 func seedUser(ctx context.Context, t *testing.T, adminPool *pgxpool.Pool, keycloakSubject string) uuid.UUID {
 	t.Helper()
 	var userID uuid.UUID
@@ -85,7 +97,7 @@ func TestCreateDefaultFirm_CreatesFirmRoleMembershipAndWorkflow(t *testing.T) {
 
 	userID := seedUser(ctx, t, adminPool, "wizard-user-1")
 
-	result, err := wizard.CreateDefaultFirm(ctx, appPool, userID, "Acme Trading Co.")
+	result, err := wizard.CreateDefaultFirm(ctx, appPool, userID, "Acme Trading Co.", sellsAndTracksInventory)
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm: %v", err)
 	}
@@ -131,7 +143,7 @@ func TestCreateDefaultFirm_FlagsOwnerRoleAsOwner(t *testing.T) {
 
 	userID := seedUser(ctx, t, adminPool, "wizard-user-owner-flag")
 
-	result, err := wizard.CreateDefaultFirm(ctx, appPool, userID, "Acme Trading Co.")
+	result, err := wizard.CreateDefaultFirm(ctx, appPool, userID, "Acme Trading Co.", sellsAndTracksInventory)
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm: %v", err)
 	}
@@ -155,7 +167,7 @@ func TestCreateDefaultFirm_SeedsBothDefaultWorkflows(t *testing.T) {
 
 	userID := seedUser(ctx, t, adminPool, "wizard-user-both-workflows")
 
-	result, err := wizard.CreateDefaultFirm(ctx, appPool, userID, "Acme Trading Co.")
+	result, err := wizard.CreateDefaultFirm(ctx, appPool, userID, "Acme Trading Co.", sellsTracksAndManagesCRM)
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm: %v", err)
 	}
@@ -231,7 +243,7 @@ func TestCreateDefaultFirm_GrantsStockToSalePermissionsToOwnerRole(t *testing.T)
 
 	userID := seedUser(ctx, t, adminPool, "wizard-user-2")
 
-	result, err := wizard.CreateDefaultFirm(ctx, appPool, userID, "Acme Trading Co.")
+	result, err := wizard.CreateDefaultFirm(ctx, appPool, userID, "Acme Trading Co.", sellsAndTracksInventory)
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm: %v", err)
 	}
@@ -263,7 +275,7 @@ func TestCreateDefaultFirm_SeedsStockToSaleWorkflow(t *testing.T) {
 
 	userID := seedUser(ctx, t, adminPool, "wizard-user-3")
 
-	result, err := wizard.CreateDefaultFirm(ctx, appPool, userID, "Acme Trading Co.")
+	result, err := wizard.CreateDefaultFirm(ctx, appPool, userID, "Acme Trading Co.", sellsAndTracksInventory)
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm: %v", err)
 	}
@@ -285,7 +297,7 @@ func TestCreateDefaultFirm_WritesAuditLogEntry(t *testing.T) {
 
 	userID := seedUser(ctx, t, adminPool, "wizard-user-4")
 
-	result, err := wizard.CreateDefaultFirm(ctx, appPool, userID, "Acme Trading Co.")
+	result, err := wizard.CreateDefaultFirm(ctx, appPool, userID, "Acme Trading Co.", sellsAndTracksInventory)
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm: %v", err)
 	}
@@ -314,7 +326,7 @@ func TestCreateDefaultFirm_RejectsEmptyFirmName(t *testing.T) {
 
 	userID := seedUser(ctx, t, adminPool, "wizard-user-5")
 
-	if _, err := wizard.CreateDefaultFirm(ctx, appPool, userID, "   "); err == nil {
+	if _, err := wizard.CreateDefaultFirm(ctx, appPool, userID, "   ", sellsAndTracksInventory); err == nil {
 		t.Fatal("expected an error for a blank firm name, got nil")
 	}
 }
@@ -333,7 +345,7 @@ func TestCreateDefaultFirm_RollsBackFullyOnFailure(t *testing.T) {
 	nonexistentUserID := uuid.New()
 	const firmName = "Should Not Persist Co."
 
-	if _, err := wizard.CreateDefaultFirm(ctx, appPool, nonexistentUserID, firmName); err == nil {
+	if _, err := wizard.CreateDefaultFirm(ctx, appPool, nonexistentUserID, firmName, sellsAndTracksInventory); err == nil {
 		t.Fatal("expected CreateDefaultFirm to fail for a user that doesn't exist, got nil")
 	}
 
@@ -343,5 +355,110 @@ func TestCreateDefaultFirm_RollsBackFullyOnFailure(t *testing.T) {
 	}
 	if count != 0 {
 		t.Errorf("expected no firm row to survive the rolled-back transaction, found %d", count)
+	}
+}
+
+// TestSeedSelection_SeedsExactlyExpectedWorkflows is Open Points item 37's
+// concrete resolution proof: for every yes/no combination the wizard's
+// SeedSelection can carry, CreateDefaultFirm seeds exactly the workflows
+// that combination implies - no more (the previous hardcoded pair,
+// regardless of what was asked) and no less. A "no" to everything still
+// creates the firm, just with zero seeded workflow definitions.
+func TestSeedSelection_SeedsExactlyExpectedWorkflows(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	cases := []struct {
+		name string
+		sel  wizard.SeedSelection
+		want map[string]bool
+	}{
+		{
+			name: "everything no",
+			sel:  wizard.SeedSelection{},
+			want: map[string]bool{},
+		},
+		{
+			name: "sells and tracks inventory only",
+			sel:  wizard.SeedSelection{Sells: true, TracksInventory: true},
+			want: map[string]bool{workflow.StockToSaleKey: true},
+		},
+		{
+			name: "sells and manages CRM only",
+			sel:  wizard.SeedSelection{Sells: true, ManagesCRM: true},
+			want: map[string]bool{workflow.CustomerPipelineKey: true},
+		},
+		{
+			name: "sells but neither inventory nor CRM",
+			sel:  wizard.SeedSelection{Sells: true},
+			want: map[string]bool{},
+		},
+		{
+			name: "purchases from suppliers only",
+			sel:  wizard.SeedSelection{PurchasesFromSuppliers: true},
+			want: map[string]bool{workflow.PurchaseOrderKey: true},
+		},
+		{
+			name: "manages tasks only",
+			sel:  wizard.SeedSelection{ManagesTasks: true},
+			want: map[string]bool{workflow.TaskApprovalKey: true},
+		},
+		{
+			name: "everything yes",
+			sel: wizard.SeedSelection{
+				Sells: true, TracksInventory: true, ManagesCRM: true,
+				PurchasesFromSuppliers: true, ManagesTasks: true,
+			},
+			want: map[string]bool{
+				workflow.StockToSaleKey:      true,
+				workflow.CustomerPipelineKey: true,
+				workflow.PurchaseOrderKey:    true,
+				workflow.TaskApprovalKey:     true,
+			},
+		},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			userID := seedUser(ctx, t, adminPool, "wizard-seed-selection-"+strconv.Itoa(i))
+
+			result, err := wizard.CreateDefaultFirm(ctx, appPool, userID, tc.name+" firm", tc.sel)
+			if err != nil {
+				t.Fatalf("CreateDefaultFirm: %v", err)
+			}
+
+			var gotKeys []string
+			err = zdb.WithFirmContext(ctx, appPool, result.FirmID, func(ctx context.Context, tx pgx.Tx) error {
+				rows, err := tx.Query(ctx, `SELECT key FROM workflow_definitions WHERE firm_id = $1`, result.FirmID)
+				if err != nil {
+					return err
+				}
+				defer rows.Close()
+				for rows.Next() {
+					var key string
+					if err := rows.Scan(&key); err != nil {
+						return err
+					}
+					gotKeys = append(gotKeys, key)
+				}
+				return rows.Err()
+			})
+			if err != nil {
+				t.Fatalf("list seeded definitions: %v", err)
+			}
+
+			got := make(map[string]bool, len(gotKeys))
+			for _, key := range gotKeys {
+				got[key] = true
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("expected seeded workflow keys %v, got %v", tc.want, got)
+			}
+			for key := range tc.want {
+				if !got[key] {
+					t.Errorf("expected %q to be seeded, got keys %v", key, got)
+				}
+			}
+		})
 	}
 }

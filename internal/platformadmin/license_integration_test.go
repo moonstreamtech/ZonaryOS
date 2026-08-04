@@ -60,7 +60,7 @@ func TestListFirms_LicenseEnforcementDisabled_BehavesExactlyAsBefore(t *testing.
 	ctx := context.Background()
 
 	owner := seedUser(ctx, t, adminPool, "owner-lic-off", "owner-lic-off@example.com")
-	firm, err := wizard.CreateDefaultFirm(ctx, appPool, owner, "Firm License Off")
+	firm, err := wizard.CreateDefaultFirm(ctx, appPool, owner, "Firm License Off", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true})
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestListFirms_LicenseEnforcementEnabled_ValidToken_NormalOperationContinues
 	ctx := context.Background()
 
 	owner := seedUser(ctx, t, adminPool, "owner-lic-valid", "owner-lic-valid@example.com")
-	firm, err := wizard.CreateDefaultFirm(ctx, appPool, owner, "Firm License Valid")
+	firm, err := wizard.CreateDefaultFirm(ctx, appPool, owner, "Firm License Valid", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true})
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestListFirms_LicenseEnforcementEnabled_ExpiredPastGrace_FailsClosed(t *tes
 	ctx := context.Background()
 
 	owner := seedUser(ctx, t, adminPool, "owner-lic-expired", "owner-lic-expired@example.com")
-	if _, err := wizard.CreateDefaultFirm(ctx, appPool, owner, "Firm License Expired"); err != nil {
+	if _, err := wizard.CreateDefaultFirm(ctx, appPool, owner, "Firm License Expired", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true}); err != nil {
 		t.Fatalf("CreateDefaultFirm: %v", err)
 	}
 

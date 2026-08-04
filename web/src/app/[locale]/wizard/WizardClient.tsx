@@ -53,11 +53,14 @@ export default function WizardClient({ locale }: Props) {
   async function submitAnswer(nodeKey: string, answerValue: string) {
     if (state.status !== "question") return;
 
-    // The wizard's only implemented action (creating the firm) needs a
-    // name; the placeholder branch doesn't. Both answers are offered on
-    // one screen alongside the firm-name field (see render below), so
-    // validation only applies to the branch that actually needs it.
-    if (answerValue === "no" && firmName.trim() === "") {
+    // The wizard now asks a sequence of questions before it can reach the
+    // create-default-firm action (see internal/wizard/tree.go) - unlike
+    // the original single-question tree, "no" no longer means "this
+    // answer creates the firm" (most "no"s just move to the next
+    // question). The firm name is collected once, up front, and carried
+    // through every answer submitted from here on, since any question
+    // could turn out to be the tree's last one.
+    if (firmName.trim() === "") {
       setFirmNameError(true);
       return;
     }
