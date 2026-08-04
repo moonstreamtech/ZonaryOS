@@ -1,11 +1,5 @@
 [
   {
-    "url": "https://github.com/advisories/GHSA-mh99-v99m-4gvg",
-    "package": "brace-expansion",
-    "reason": "High-severity DoS advisory, pulled in transitively via minimatch <- eslint's dependency chain (dev-only tooling, never shipped in the production build). npm's only fix (`npm audit fix --force`) is 'Will install eslint@10.8.0, which is a breaking change' - not something to force through inside a CI-pipeline PR. Needs its own dependency-upgrade PR that also verifies eslint 10's config format against eslint.config.mjs.",
-    "reviewBy": "2026-10-01"
-  },
-  {
     "url": "https://github.com/advisories/GHSA-qx2v-qp2m-jg93",
     "package": "postcss",
     "reason": "High-severity XSS advisory in postcss <=8.5.17, pulled in transitively by next@16.2.12 (a production dependency). npm's only proposed fix (`npm audit fix --force`) is 'Will install next@9.3.3, which is a breaking change' - a ~7-major-version downgrade of Next.js itself, which would both break the app and very likely reintroduce worse, unpatched issues from an EOL release. Needs a real upgrade-path investigation (e.g. Next.js's own postcss pin) as its own PR.",
