@@ -43,6 +43,11 @@
   },
   "Wizard": {
     "title": "Firmanızı oluşturun",
+    "doYouSellProductsOrServices": "Ürün veya hizmet satıyor musunuz?",
+    "doYouTrackPhysicalInventory": "Fiziksel stok takibi yapıyor musunuz?",
+    "doYouManageCustomerRelationships": "Müşteri ilişkileri yönetiyor musunuz?",
+    "doYouPurchaseFromSuppliers": "Tedarikçilerden satın alma yapıyor musunuz?",
+    "doYouManageTasksOrApprovals": "Şirket içi görev veya onay süreçleri yönetiyor musunuz?",
     "doYouManufacture": "Üretim yapıyor musunuz?",
     "answerYes": "Evet",
     "answerNo": "Hayır",

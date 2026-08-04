@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
@@ -625,6 +626,7 @@ func CreateInstance(ctx context.Context, pool *pgxpool.Pool, firmID, userID, def
 	}
 
 	var instanceID uuid.UUID
+	var definitionKey, initialStateKey string
 	err = zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
 		isMember, err := permission.IsMember(ctx, tx, firmID, userID)
 		if err != nil {
@@ -637,8 +639,8 @@ func CreateInstance(ctx context.Context, pool *pgxpool.Pool, firmID, userID, def
 		var createPermissionKey string
 		var payloadSchemaJSON []byte
 		err = tx.QueryRow(ctx, `
-			SELECT create_permission_key, payload_schema FROM workflow_definitions WHERE id = $1
-		`, definitionID).Scan(&createPermissionKey, &payloadSchemaJSON)
+			SELECT create_permission_key, payload_schema, key FROM workflow_definitions WHERE id = $1
+		`, definitionID).Scan(&createPermissionKey, &payloadSchemaJSON, &definitionKey)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrDefinitionNotFound
 		}
@@ -665,7 +667,6 @@ func CreateInstance(ctx context.Context, pool *pgxpool.Pool, firmID, userID, def
 		}
 
 		var initialStateID uuid.UUID
-		var initialStateKey string
 		if err := tx.QueryRow(ctx, `
 			SELECT id, key FROM workflow_states WHERE workflow_definition_id = $1 AND is_initial
 		`, definitionID).Scan(&initialStateID, &initialStateKey); err != nil {
@@ -696,6 +697,23 @@ func CreateInstance(ctx context.Context, pool *pgxpool.Pool, firmID, userID, def
 	if err != nil {
 		return uuid.UUID{}, err
 	}
+
+	// Rule evaluation runs AFTER the instance's own creation has committed
+	// - see EvaluateRules' doc comment (rules.go) for why this is the seam
+	// "immediately after commit where transaction boundaries prevent [inline]"
+	// actually available here, and why an EvaluateRules error is logged,
+	// not propagated: the instance already exists by this point, so there
+	// is nothing left to roll back.
+	if err := EvaluateRules(ctx, pool, firmID, userID, instanceID, definitionKey, TriggerOnCreate, initialStateKey, payload); err != nil {
+		// #nosec G706 -- err can carry firm-authored content (a rule name,
+		// an action key) that reaches this log line, but %q (not %v) Go-
+		// quotes it first, escaping any newline/control character before
+		// it's written - the actual log-forging vector this rule flags is
+		// already closed; this is an operator-facing server log, not
+		// content returned to any caller.
+		log.Printf("workflow rule evaluation failed for instance %s (definition %q, trigger %q): %q", instanceID, definitionKey, TriggerOnCreate, err.Error())
+	}
+
 	return instanceID, nil
 }
 
@@ -723,7 +741,9 @@ func ExecuteTransition(ctx context.Context, pool *pgxpool.Pool, firmID, userID, 
 		return fmt.Errorf("marshal payload: %w", err)
 	}
 
-	return zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+	var definitionKey, toStateKey string
+	var mergedPayload map[string]any
+	err = zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
 		isMember, err := permission.IsMember(ctx, tx, firmID, userID)
 		if err != nil {
 			return err
@@ -734,8 +754,11 @@ func ExecuteTransition(ctx context.Context, pool *pgxpool.Pool, firmID, userID, 
 
 		var definitionID, currentStateID uuid.UUID
 		err = tx.QueryRow(ctx, `
-			SELECT workflow_definition_id, current_state_id FROM workflow_instances WHERE id = $1
-		`, instanceID).Scan(&definitionID, &currentStateID)
+			SELECT wi.workflow_definition_id, wi.current_state_id, wd.key
+			FROM workflow_instances wi
+			JOIN workflow_definitions wd ON wd.id = wi.workflow_definition_id
+			WHERE wi.id = $1
+		`, instanceID).Scan(&definitionID, &currentStateID, &definitionKey)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrInstanceNotFound
 		}
@@ -744,7 +767,7 @@ func ExecuteTransition(ctx context.Context, pool *pgxpool.Pool, firmID, userID, 
 		}
 
 		var toStateID uuid.UUID
-		var toStateKey, permissionKey string
+		var permissionKey string
 		err = tx.QueryRow(ctx, `
 			SELECT wt.to_state_id, ws.key, wt.permission_key
 			FROM workflow_transitions wt
@@ -766,12 +789,17 @@ func ExecuteTransition(ctx context.Context, pool *pgxpool.Pool, firmID, userID, 
 			return ErrPermissionDenied
 		}
 
-		if _, err := tx.Exec(ctx, `
+		var mergedPayloadJSON []byte
+		if err := tx.QueryRow(ctx, `
 			UPDATE workflow_instances
 			SET current_state_id = $1, payload = payload || $2::jsonb, updated_at = now()
 			WHERE id = $3
-		`, toStateID, payloadJSON, instanceID); err != nil {
+			RETURNING payload
+		`, toStateID, payloadJSON, instanceID).Scan(&mergedPayloadJSON); err != nil {
 			return fmt.Errorf("update workflow instance: %w", err)
+		}
+		if err := json.Unmarshal(mergedPayloadJSON, &mergedPayload); err != nil {
+			return fmt.Errorf("unmarshal merged payload: %w", err)
 		}
 
 		changes, err := json.Marshal(map[string]any{"to_state": toStateKey, "payload": payload})
@@ -787,6 +815,21 @@ func ExecuteTransition(ctx context.Context, pool *pgxpool.Pool, firmID, userID, 
 
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+
+	// See CreateInstance's identical post-commit EvaluateRules call for why
+	// this runs after the transition has already committed, and why an
+	// error here is logged rather than propagated.
+	if err := EvaluateRules(ctx, pool, firmID, userID, instanceID, definitionKey, TriggerOnTransition, toStateKey, mergedPayload); err != nil {
+		// #nosec G706 -- see CreateInstance's identical logging call above:
+		// %q Go-quotes err.Error() before it's written, escaping any
+		// newline/control character firm-authored rule content could carry.
+		log.Printf("workflow rule evaluation failed for instance %s (definition %q, trigger %q): %q", instanceID, definitionKey, TriggerOnTransition, err.Error())
+	}
+
+	return nil
 }
 
 // StateInfo names a single state node.

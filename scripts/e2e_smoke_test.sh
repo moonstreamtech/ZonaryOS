@@ -54,6 +54,28 @@ log "login: frontend -> Keycloak redirect wiring confirmed ($LOGIN_REDIRECT)"
 
 auth() { curl -sS -H "Authorization: Bearer $TOKEN" "$@"; }
 
+# wizard_walk drives the wizard's decision tree (internal/wizard/tree.go)
+# from "root" through a sequence of yes/no answers, following each
+# response's own "key" to the next node - the same way the frontend's
+# WizardClient.tsx does, since the tree is now several questions deep
+# (Open Points item 12's wizard content batch) rather than the single
+# "do you manufacture?" question this script originally answered in one
+# shot. Prints the final answer response (expected to carry "result" once
+# the sequence reaches the create-default-firm action).
+wizard_walk() {
+    local firm_name="$1"; shift
+    local node_key="root"
+    local response=""
+    for ans in "$@"; do
+        response=$(auth -X POST "$BACKEND_URL/api/wizard/nodes/$node_key/answer" \
+            -H "Content-Type: application/json" \
+            -d "{\"answer\":\"$ans\",\"firmName\":\"$firm_name\"}")
+        node_key=$(echo "$response" | python3 -c "import sys, json; print(json.load(sys.stdin)['key'])") \
+            || fail "wizard_walk: unexpected response answering '$ans' at node '$node_key': $response"
+    done
+    echo "$response"
+}
+
 # --- Core transaction: wizard -> firm creation -> add stock -> sell -----
 
 log "wizard: reading the root question node"
@@ -62,10 +84,13 @@ echo "$ROOT_NODE" | python3 -c "import sys, json; d = json.load(sys.stdin); asse
     || fail "expected the wizard root node to be a question: $ROOT_NODE"
 
 FIRM_NAME="E2E Smoke Firm $(date +%s)"
-log "wizard: answering 'no' to create a default firm ('$FIRM_NAME')"
-ANSWER_RESPONSE=$(auth -X POST "$BACKEND_URL/api/wizard/nodes/root/answer" \
-    -H "Content-Type: application/json" \
-    -d "{\"answer\":\"no\",\"firmName\":\"$FIRM_NAME\"}")
+# sells=yes, tracks inventory=yes, manages CRM=yes, purchases=no (kept
+# available below for the manual UI-path purchase_order definition),
+# manages tasks=no, manufactures=no -> seeds Stock In -> Sale AND
+# Customer Pipeline, matching what the rest of this script assumes FIRM_ID
+# already has.
+log "wizard: walking sells=yes/inventory=yes/crm=yes/purchase=no/tasks=no/manufacture=no to create a default firm ('$FIRM_NAME')"
+ANSWER_RESPONSE=$(wizard_walk "$FIRM_NAME" yes yes yes no no no)
 FIRM_ID=$(echo "$ANSWER_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['result']['firmId'])")
 [ -n "$FIRM_ID" ] || fail "did not get a firmId back from the wizard answer: $ANSWER_RESPONSE"
 log "firm created: $FIRM_ID"
@@ -140,11 +165,21 @@ assert matches[0]['createPermissionKey'], matches[0]
 " || fail "expected the no-key GET to list stock_to_sale with a createPermissionKey: $DEFINITIONS_LIST"
 log "workflows list (generic path) confirmed"
 
+log "wizard content (Open Points item 12/37): confirming FIRM_ID's wizard answers (sells+inventory+CRM=yes, purchase+tasks=no) seeded EXACTLY stock_to_sale and customer_pipeline - not purchase_order/task_approval, and not the old hardcoded pair regardless of answers"
+echo "$DEFINITIONS_LIST" | python3 -c "
+import sys, json
+defs = json.load(sys.stdin)
+keys = {d['key'] for d in defs}
+assert keys == {'stock_to_sale', 'customer_pipeline'}, keys
+" || fail "expected FIRM_ID to have exactly {stock_to_sale, customer_pipeline} seeded, got: $DEFINITIONS_LIST"
+log "wizard content seeding confirmed"
+
 SECOND_FIRM_NAME="E2E Smoke Firm 2 $(date +%s)"
 log "wizard: creating a second firm for the same user ('$SECOND_FIRM_NAME'), to exercise the firm switcher"
-SECOND_ANSWER_RESPONSE=$(auth -X POST "$BACKEND_URL/api/wizard/nodes/root/answer" \
-    -H "Content-Type: application/json" \
-    -d "{\"answer\":\"no\",\"firmName\":\"$SECOND_FIRM_NAME\"}")
+# This firm only needs to exist for the firm-switch check below - answers
+# "no" all the way through, so it's created with zero seeded workflows
+# (Open Points item 37).
+SECOND_ANSWER_RESPONSE=$(wizard_walk "$SECOND_FIRM_NAME" no no no no)
 SECOND_FIRM_ID=$(echo "$SECOND_ANSWER_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['result']['firmId'])")
 [ -n "$SECOND_FIRM_ID" ] || fail "did not get a firmId back from the second wizard answer: $SECOND_ANSWER_RESPONSE"
 log "second firm created: $SECOND_FIRM_ID"

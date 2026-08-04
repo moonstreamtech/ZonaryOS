@@ -8,10 +8,13 @@
 // authenticated Keycloak user with zero firm memberships (see PR 3's
 // internal/identity.Memberships) is routed here instead of into the main
 // app. Every feature ZonaryOS ever gains is meant to appear as a question
-// on the appropriate branch of this tree (Vision §3) - this slice
-// populates exactly one root question ("do you manufacture?"), but the
-// tree/node mechanism itself is the real deliverable: a second question
-// nests in as another Node without restructuring anything here.
+// on the appropriate branch of this tree (Vision §3) - this batch (Open
+// Points item 12) fills in the tree's real root question sequence, in
+// place of the single "do you manufacture?" placeholder slice originally
+// shipped: questions that unlock features almost every commercial business
+// needs come first (do you sell, do you purchase from suppliers, do you
+// manage tasks/approvals), sector-specific/unusual questions come later
+// (manufacturing, still a dead-end placeholder - out of scope this batch).
 package wizard
 
 import "fmt"
@@ -27,15 +30,51 @@ const (
 	// firm). Terminal.
 	NodeAction
 	// NodePlaceholder is a dead end with nothing to do yet (e.g. the
-	// "manufacturing" branch, which isn't built out in this slice).
+	// "manufacturing" branch, which isn't built out in this batch either).
 	// Terminal, and never has a side effect.
 	NodePlaceholder
 )
 
-// ActionCreateDefaultFirm is the one action this slice's tree can reach:
-// create a new firm, its default role, and seed it with the Stock In ->
-// Sale workflow. See CreateDefaultFirm.
+// ActionCreateDefaultFirm is the one action this tree can reach: create a
+// new firm, its default role, and seed it with whichever workflows
+// SeedSelection (carried by the terminal Node reaching this action - see
+// Node.Seed) says the wizard's answers actually asked for. See
+// CreateDefaultFirm.
 const ActionCreateDefaultFirm = "create_default_firm"
+
+// SeedSelection is the accumulated yes/no answers from every root question
+// that gates a starter workflow, carried on the terminal NodeAction that
+// CreateDefaultFirm eventually reads (see Node.Seed). This is deliberately
+// NOT client-supplied, round-tripped state: this wizard mechanism's HTTP
+// surface (handlers.go) is stateless request/response per node, with no
+// session carrying prior answers forward. Instead, the tree itself is
+// built so every distinct path from RootNode to an action node is its own
+// literal *Node value with its own SeedSelection baked in at tree-
+// construction time (buildTree below) - the path taken to reach a
+// terminal node IS the record of every answer that led there, so nothing
+// needs to be threaded through the HTTP layer.
+type SeedSelection struct {
+	// Sells is root question 1's answer ("do you sell products or
+	// services?"). Gates whether the inventory/CRM sub-questions are asked
+	// at all - it seeds no workflow of its own.
+	Sells bool
+	// TracksInventory is root question 1's "do you track physical
+	// inventory?" sub-question - only asked when Sells is true. true seeds
+	// the Stock In -> Sale workflow (workflow.StockToSaleSpec).
+	TracksInventory bool
+	// ManagesCRM is root question 1's "do you manage customer
+	// relationships?" sub-question - only asked when Sells is true. true
+	// seeds the Customer Pipeline workflow (workflow.CustomerPipelineSpec).
+	ManagesCRM bool
+	// PurchasesFromSuppliers is root question 2. true seeds the Purchase
+	// Order workflow (workflow.PurchaseOrderSpec).
+	PurchasesFromSuppliers bool
+	// ManagesTasks is root question 3 - asked of every firm regardless of
+	// question 1's answer (tasks/approvals are universal, per the design
+	// brief). true seeds the Task / Approval workflow
+	// (workflow.TaskApprovalSpec).
+	ManagesTasks bool
+}
 
 // Answer is one option a NodeQuestion offers. Value is the stable
 // identifier a client submits back (see handlers.go); LabelKey is an
@@ -64,41 +103,146 @@ type Node struct {
 	// ActionKey identifies which side effect to run on reaching this
 	// node. Only set for NodeAction.
 	ActionKey string
+	// Seed is the accumulated SeedSelection for this specific path through
+	// the tree - see SeedSelection's doc comment. Only set for a
+	// NodeAction whose ActionKey is ActionCreateDefaultFirm.
+	Seed *SeedSelection
 
 	// PlaceholderKey is an i18n message key describing why this branch
 	// isn't built out yet. Only set for NodePlaceholder.
 	PlaceholderKey string
 }
 
-// RootNode is the tree's single entry point for this slice: "do you
-// manufacture?" -> "no" creates a default (non-manufacturing) firm;
-// "yes" dead-ends at a "coming soon" placeholder, deliberately not a real
-// manufacturing flow (out of scope - see the PR description).
-var RootNode = &Node{
-	Key:         "root",
-	Kind:        NodeQuestion,
-	QuestionKey: "doYouManufacture",
-	Answers: []Answer{
-		{
-			Value:    "no",
-			LabelKey: "answerNo",
-			Next: &Node{
-				Key:       "create_default_firm",
-				Kind:      NodeAction,
-				ActionKey: ActionCreateDefaultFirm,
-			},
-		},
-		{
-			Value:    "yes",
-			LabelKey: "answerYes",
-			Next: &Node{
-				Key:            "manufacturing_coming_soon",
+// yesNoAnswers builds the two-answer {yes, no} choice every boolean
+// question in this tree uses, pointing at yesNext/noNext respectively -
+// pulled out once so every question-builder below states its branching
+// declaratively instead of repeating the same two-element slice literal.
+func yesNoAnswers(yesNext, noNext *Node) []Answer {
+	return []Answer{
+		{Value: "yes", LabelKey: "answerYes", Next: yesNext},
+		{Value: "no", LabelKey: "answerNo", Next: noNext},
+	}
+}
+
+// buildManufactureNode is root question 4, "do you manufacture products?"
+// - the tree's last question on every path. "no" reaches the
+// create-default-firm action carrying sel (the full accumulated
+// SeedSelection for this path); "yes" dead-ends at the pre-existing
+// "coming soon" placeholder - manufacturing support itself remains out of
+// scope, unchanged from the tree's original single-question slice.
+func buildManufactureNode(keyPrefix string, sel SeedSelection) *Node {
+	return &Node{
+		Key:         keyPrefix + "_manufacture",
+		Kind:        NodeQuestion,
+		QuestionKey: "doYouManufacture",
+		Answers: yesNoAnswers(
+			&Node{
+				Key:            keyPrefix + "_manufacturing_coming_soon",
 				Kind:           NodePlaceholder,
 				PlaceholderKey: "manufacturingComingSoon",
 			},
-		},
-	},
+			&Node{
+				Key:       keyPrefix + "_create_default_firm",
+				Kind:      NodeAction,
+				ActionKey: ActionCreateDefaultFirm,
+				Seed:      &sel,
+			},
+		),
+	}
 }
+
+// buildTasksNode is root question 3, "do you manage tasks or approvals
+// internally?" - asked of every firm regardless of question 1's answer
+// (tasks/approvals are universal), the step right before the final
+// manufacturing question on every path.
+func buildTasksNode(keyPrefix string, sel SeedSelection) *Node {
+	yes, no := sel, sel
+	yes.ManagesTasks, no.ManagesTasks = true, false
+	return &Node{
+		Key:         keyPrefix + "_tasks",
+		Kind:        NodeQuestion,
+		QuestionKey: "doYouManageTasksOrApprovals",
+		Answers: yesNoAnswers(
+			buildManufactureNode(keyPrefix+"Yes", yes),
+			buildManufactureNode(keyPrefix+"No", no),
+		),
+	}
+}
+
+// buildPurchaseNode is root question 2, "do you purchase from suppliers?"
+// - reached directly whether or not question 1 ("do you sell?") was
+// answered yes, since purchasing suppliers is independent of the
+// sell/inventory/CRM sub-branch.
+func buildPurchaseNode(keyPrefix string, sel SeedSelection) *Node {
+	yes, no := sel, sel
+	yes.PurchasesFromSuppliers, no.PurchasesFromSuppliers = true, false
+	return &Node{
+		Key:         keyPrefix + "_purchase",
+		Kind:        NodeQuestion,
+		QuestionKey: "doYouPurchaseFromSuppliers",
+		Answers: yesNoAnswers(
+			buildTasksNode(keyPrefix+"Yes", yes),
+			buildTasksNode(keyPrefix+"No", no),
+		),
+	}
+}
+
+// buildCRMNode is root question 1's second sub-question, "do you manage
+// customer relationships?" - only reached when Sells is true.
+func buildCRMNode(keyPrefix string, sel SeedSelection) *Node {
+	yes, no := sel, sel
+	yes.ManagesCRM, no.ManagesCRM = true, false
+	return &Node{
+		Key:         keyPrefix + "_crm",
+		Kind:        NodeQuestion,
+		QuestionKey: "doYouManageCustomerRelationships",
+		Answers: yesNoAnswers(
+			buildPurchaseNode(keyPrefix+"Yes", yes),
+			buildPurchaseNode(keyPrefix+"No", no),
+		),
+	}
+}
+
+// buildInventoryNode is root question 1's first sub-question, "do you
+// track physical inventory?" - only reached when Sells is true.
+func buildInventoryNode(keyPrefix string, sel SeedSelection) *Node {
+	yes, no := sel, sel
+	yes.TracksInventory, no.TracksInventory = true, false
+	return &Node{
+		Key:         keyPrefix + "_inventory",
+		Kind:        NodeQuestion,
+		QuestionKey: "doYouTrackPhysicalInventory",
+		Answers: yesNoAnswers(
+			buildCRMNode(keyPrefix+"Yes", yes),
+			buildCRMNode(keyPrefix+"No", no),
+		),
+	}
+}
+
+// buildTree constructs the whole decision tree rooted at "do you sell
+// products or services?" - every distinct answer path ends at its own
+// literal Node carrying the SeedSelection that path accumulated (see
+// SeedSelection's doc comment). "yes" opens the inventory/CRM sub-
+// questions before continuing to purchasing; "no" skips straight to
+// purchasing (docs/VISION.md's ordering principle: universal questions
+// first, and a "no" to selling still needs purchasing/tasks/manufacturing
+// asked - none of those are conditioned on selling).
+func buildTree() *Node {
+	sellsYes := SeedSelection{Sells: true}
+	sellsNo := SeedSelection{Sells: false}
+	return &Node{
+		Key:         "root",
+		Kind:        NodeQuestion,
+		QuestionKey: "doYouSellProductsOrServices",
+		Answers: yesNoAnswers(
+			buildInventoryNode("sellsYes", sellsYes),
+			buildPurchaseNode("sellsNo", sellsNo),
+		),
+	}
+}
+
+// RootNode is the tree's single entry point.
+var RootNode = buildTree()
 
 // nodesByKey indexes every node reachable from RootNode, built once at
 // package init so handlers.go can resolve a client-supplied node key

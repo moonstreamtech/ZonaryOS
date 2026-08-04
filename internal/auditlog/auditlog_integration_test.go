@@ -114,7 +114,7 @@ func TestList_ReportsWriteAndViewEntriesWithAttribution(t *testing.T) {
 
 	ownerUserID := seedUser(ctx, t, adminPool, "owner-1")
 
-	firm, err := wizard.CreateDefaultFirm(ctx, appPool, ownerUserID, "Acme Trading Co.")
+	firm, err := wizard.CreateDefaultFirm(ctx, appPool, ownerUserID, "Acme Trading Co.", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true})
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm: %v", err)
 	}
@@ -169,13 +169,13 @@ func TestList_CrossFirmIsolation(t *testing.T) {
 	ctx := context.Background()
 
 	ownerA := seedUser(ctx, t, adminPool, "owner-a")
-	firmA, err := wizard.CreateDefaultFirm(ctx, appPool, ownerA, "Firm A")
+	firmA, err := wizard.CreateDefaultFirm(ctx, appPool, ownerA, "Firm A", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true})
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm A: %v", err)
 	}
 
 	ownerB := seedUser(ctx, t, adminPool, "owner-b")
-	firmB, err := wizard.CreateDefaultFirm(ctx, appPool, ownerB, "Firm B")
+	firmB, err := wizard.CreateDefaultFirm(ctx, appPool, ownerB, "Firm B", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true})
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm B: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestList_RequiresReadPermission(t *testing.T) {
 	ctx := context.Background()
 
 	owner := seedUser(ctx, t, adminPool, "owner-c")
-	firm, err := wizard.CreateDefaultFirm(ctx, appPool, owner, "Firm C")
+	firm, err := wizard.CreateDefaultFirm(ctx, appPool, owner, "Firm C", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true})
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm: %v", err)
 	}
@@ -265,7 +265,7 @@ func TestPurgeOlderThan_DeletesOnlyRowsOlderThanCutoff(t *testing.T) {
 	ctx := context.Background()
 
 	userID := seedUser(ctx, t, adminPool, "purge-user")
-	firm, err := wizard.CreateDefaultFirm(ctx, appPool, userID, "Firm E")
+	firm, err := wizard.CreateDefaultFirm(ctx, appPool, userID, "Firm E", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true})
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm: %v", err)
 	}
@@ -378,7 +378,7 @@ func TestList_PaginatesInOccurredAtDescOrderWithCorrectBoundaries(t *testing.T) 
 	ctx := context.Background()
 
 	owner := seedUser(ctx, t, adminPool, "owner-page")
-	firm, err := wizard.CreateDefaultFirm(ctx, appPool, owner, "Firm Page")
+	firm, err := wizard.CreateDefaultFirm(ctx, appPool, owner, "Firm Page", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true})
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm: %v", err)
 	}
@@ -441,7 +441,7 @@ func TestList_FiltersByDateRange(t *testing.T) {
 	ctx := context.Background()
 
 	owner := seedUser(ctx, t, adminPool, "owner-daterange")
-	firm, err := wizard.CreateDefaultFirm(ctx, appPool, owner, "Firm DateRange")
+	firm, err := wizard.CreateDefaultFirm(ctx, appPool, owner, "Firm DateRange", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true})
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm: %v", err)
 	}
@@ -489,7 +489,7 @@ func TestList_FiltersByWorkflowDefinition(t *testing.T) {
 	ctx := context.Background()
 
 	owner := seedUser(ctx, t, adminPool, "owner-defn-filter")
-	firm, err := wizard.CreateDefaultFirm(ctx, appPool, owner, "Firm DefnFilter")
+	firm, err := wizard.CreateDefaultFirm(ctx, appPool, owner, "Firm DefnFilter", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true})
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm: %v", err)
 	}

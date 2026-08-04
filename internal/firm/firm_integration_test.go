@@ -104,7 +104,7 @@ func TestUpdateName_OwnerCanRenameTheFirm(t *testing.T) {
 	ctx := context.Background()
 
 	ownerID := seedUser(ctx, t, adminPool, "owner-rename")
-	created, err := wizard.CreateDefaultFirm(ctx, appPool, ownerID, "Original Name")
+	created, err := wizard.CreateDefaultFirm(ctx, appPool, ownerID, "Original Name", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true})
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestUpdateName_NonOwnerMemberIsDenied(t *testing.T) {
 	ctx := context.Background()
 
 	ownerID := seedUser(ctx, t, adminPool, "owner-nonowner-test")
-	created, err := wizard.CreateDefaultFirm(ctx, appPool, ownerID, "Original Name")
+	created, err := wizard.CreateDefaultFirm(ctx, appPool, ownerID, "Original Name", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true})
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm: %v", err)
 	}
@@ -168,12 +168,12 @@ func TestUpdateName_NonMemberIsDenied(t *testing.T) {
 	ctx := context.Background()
 
 	ownerAID := seedUser(ctx, t, adminPool, "owner-a-firm-test")
-	firmA, err := wizard.CreateDefaultFirm(ctx, appPool, ownerAID, "Firm A")
+	firmA, err := wizard.CreateDefaultFirm(ctx, appPool, ownerAID, "Firm A", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true})
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm A: %v", err)
 	}
 	outsiderID := seedUser(ctx, t, adminPool, "owner-b-firm-test")
-	if _, err := wizard.CreateDefaultFirm(ctx, appPool, outsiderID, "Firm B"); err != nil {
+	if _, err := wizard.CreateDefaultFirm(ctx, appPool, outsiderID, "Firm B", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true}); err != nil {
 		t.Fatalf("CreateDefaultFirm B: %v", err)
 	}
 
@@ -187,7 +187,7 @@ func TestUpdateName_EmptyNameIsRejected(t *testing.T) {
 	ctx := context.Background()
 
 	ownerID := seedUser(ctx, t, adminPool, "owner-empty-name-test")
-	created, err := wizard.CreateDefaultFirm(ctx, appPool, ownerID, "Original Name")
+	created, err := wizard.CreateDefaultFirm(ctx, appPool, ownerID, "Original Name", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true})
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestUpdate_OwnerCanSetAllMetadataFields(t *testing.T) {
 	ctx := context.Background()
 
 	ownerID := seedUser(ctx, t, adminPool, "owner-metadata")
-	created, err := wizard.CreateDefaultFirm(ctx, appPool, ownerID, "Metadata Firm")
+	created, err := wizard.CreateDefaultFirm(ctx, appPool, ownerID, "Metadata Firm", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true})
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestUpdate_NonOwnerMemberIsDeniedForMetadata(t *testing.T) {
 	ctx := context.Background()
 
 	ownerID := seedUser(ctx, t, adminPool, "owner-metadata-nonowner")
-	created, err := wizard.CreateDefaultFirm(ctx, appPool, ownerID, "Original Name")
+	created, err := wizard.CreateDefaultFirm(ctx, appPool, ownerID, "Original Name", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true})
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm: %v", err)
 	}
@@ -297,7 +297,7 @@ func TestUpdate_OversizedFieldIsRejected(t *testing.T) {
 	ctx := context.Background()
 
 	ownerID := seedUser(ctx, t, adminPool, "owner-oversized")
-	created, err := wizard.CreateDefaultFirm(ctx, appPool, ownerID, "Original Name")
+	created, err := wizard.CreateDefaultFirm(ctx, appPool, ownerID, "Original Name", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true})
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm: %v", err)
 	}
@@ -327,7 +327,7 @@ func TestUpdate_OmittingMetadataFieldsIsBackwardCompatible(t *testing.T) {
 	ctx := context.Background()
 
 	ownerID := seedUser(ctx, t, adminPool, "owner-backcompat")
-	created, err := wizard.CreateDefaultFirm(ctx, appPool, ownerID, "Original Name")
+	created, err := wizard.CreateDefaultFirm(ctx, appPool, ownerID, "Original Name", wizard.SeedSelection{Sells: true, TracksInventory: true, ManagesCRM: true})
 	if err != nil {
 		t.Fatalf("CreateDefaultFirm: %v", err)
 	}

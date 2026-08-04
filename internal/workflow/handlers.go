@@ -64,6 +64,11 @@ func RegisterRoutes(mux *http.ServeMux, verifier *identity.Verifier, pool *pgxpo
 	mux.Handle("GET /api/firms/{firmID}/workflow-definitions/{definitionID}/instances", auth(http.HandlerFunc(handleListInstances(pool))))
 	mux.Handle("GET /api/firms/{firmID}/workflow-instances/{instanceID}", auth(http.HandlerFunc(handleCurrentState(pool))))
 	mux.Handle("POST /api/firms/{firmID}/workflow-instances/{instanceID}/transitions/{actionKey}", auth(http.HandlerFunc(handleExecuteTransition(pool))))
+	// Read-only rule listing (Open Points item 7's HTTP surface for this
+	// batch): a rule IS visible in the UI (e.g. on the workflow definition
+	// page), even though the rule-creation form itself is deferred to a
+	// later batch - see internal/workflow/rules.go's ListRulesForDefinition.
+	mux.Handle("GET /api/firms/{firmID}/workflow-definitions/{definitionKey}/rules", auth(http.HandlerFunc(handleListRules(pool))))
 }
 
 type stateInfoResponse struct {
@@ -644,6 +649,135 @@ func handleCurrentState(pool *pgxpool.Pool) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(toInstanceStateResponse(state))
+	}
+}
+
+// expressionNodeResponse/actionResponse are ExpressionNode/Action's
+// (rules.go) JSON wire shapes - both types already carry `json:"...,omitempty"`
+// tags fit for direct API exposure, so these are 1:1 field-for-field
+// mirrors, kept as their own types only for the same reason every other
+// response type in this file is separate from its internal/workflow
+// counterpart (e.g. stateInfoResponse vs. StateInfo) rather than
+// exporting the internal type directly over the wire.
+type expressionNodeResponse struct {
+	Op              string                   `json:"op,omitempty"`
+	Children        []expressionNodeResponse `json:"children,omitempty"`
+	Type            string                   `json:"type,omitempty"`
+	Field           string                   `json:"field,omitempty"`
+	Value           any                      `json:"value,omitempty"`
+	DefinitionKey   string                   `json:"definitionKey,omitempty"`
+	InstanceIDField string                   `json:"instanceIdField,omitempty"`
+	State           string                   `json:"state,omitempty"`
+	FieldA          string                   `json:"fieldA,omitempty"`
+	FieldB          string                   `json:"fieldB,omitempty"`
+}
+
+func toExpressionNodeResponse(n ExpressionNode) expressionNodeResponse {
+	resp := expressionNodeResponse{
+		Op:              n.Op,
+		Type:            string(n.Type),
+		Field:           n.Field,
+		Value:           n.Value,
+		DefinitionKey:   n.DefinitionKey,
+		InstanceIDField: n.InstanceIDField,
+		State:           n.State,
+		FieldA:          n.FieldA,
+		FieldB:          n.FieldB,
+	}
+	for _, c := range n.Children {
+		resp.Children = append(resp.Children, toExpressionNodeResponse(c))
+	}
+	return resp
+}
+
+type actionResponse struct {
+	Type            string `json:"type"`
+	ActionKey       string `json:"actionKey,omitempty"`
+	Channel         string `json:"channel,omitempty"`
+	MessageTemplate string `json:"messageTemplate,omitempty"`
+	Field           string `json:"field,omitempty"`
+	Value           any    `json:"value,omitempty"`
+}
+
+func toActionResponse(a Action) actionResponse {
+	return actionResponse{
+		Type:            string(a.Type),
+		ActionKey:       a.ActionKey,
+		Channel:         string(a.Channel),
+		MessageTemplate: a.MessageTemplate,
+		Field:           a.Field,
+		Value:           a.Value,
+	}
+}
+
+type ruleResponse struct {
+	ID            string                 `json:"id"`
+	DefinitionKey string                 `json:"definitionKey"`
+	Name          string                 `json:"name"`
+	Trigger       string                 `json:"trigger"`
+	ConditionTree expressionNodeResponse `json:"conditionTree"`
+	Actions       []actionResponse       `json:"actions"`
+	Autonomous    bool                   `json:"autonomous"`
+	Enabled       bool                   `json:"enabled"`
+}
+
+func toRuleResponse(r Rule) ruleResponse {
+	resp := ruleResponse{
+		ID:            r.ID.String(),
+		DefinitionKey: r.DefinitionKey,
+		Name:          r.Name,
+		Trigger:       string(r.Trigger),
+		ConditionTree: toExpressionNodeResponse(r.ConditionTree),
+		Autonomous:    r.Autonomous,
+		Enabled:       r.Enabled,
+	}
+	for _, a := range r.Actions {
+		resp.Actions = append(resp.Actions, toActionResponse(a))
+	}
+	return resp
+}
+
+// handleListRules serves GET .../workflow-definitions/{definitionKey}/rules
+// - the minimal read-only listing endpoint this batch adds so a rule IS
+// visible in the UI (e.g. on the workflow definition page) even though the
+// rule-creation form is deferred to a later batch. Membership-checked
+// (ListRulesForDefinition), not filtered by any rule-specific permission -
+// there is no rule-management permission tier yet (that's part of the
+// deferred builder UI's own design).
+func handleListRules(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := identity.FromContext(r.Context())
+		if !ok {
+			http.Error(w, "missing identity", http.StatusInternalServerError)
+			return
+		}
+
+		firmID, err := uuid.Parse(r.PathValue("firmID"))
+		if err != nil {
+			http.Error(w, "invalid firm id", http.StatusBadRequest)
+			return
+		}
+		definitionKey := r.PathValue("definitionKey")
+
+		userID, err := identity.ResolveOrCreateUser(r.Context(), pool, id)
+		if err != nil {
+			http.Error(w, "failed to resolve user", http.StatusInternalServerError)
+			return
+		}
+
+		rules, err := ListRulesForDefinition(r.Context(), pool, firmID, userID, definitionKey)
+		if err != nil {
+			writeEngineError(w, err)
+			return
+		}
+
+		resp := make([]ruleResponse, 0, len(rules))
+		for _, rule := range rules {
+			resp = append(resp, toRuleResponse(rule))
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
 	}
 }
 

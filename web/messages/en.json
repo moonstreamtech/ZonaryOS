@@ -43,6 +43,11 @@
   },
   "Wizard": {
     "title": "Set up your firm",
+    "doYouSellProductsOrServices": "Do you sell products or services?",
+    "doYouTrackPhysicalInventory": "Do you track physical inventory?",
+    "doYouManageCustomerRelationships": "Do you manage customer relationships?",
+    "doYouPurchaseFromSuppliers": "Do you purchase from suppliers?",
+    "doYouManageTasksOrApprovals": "Do you manage tasks or approvals internally?",
     "doYouManufacture": "Do you manufacture products?",
     "answerYes": "Yes",
     "answerNo": "No",

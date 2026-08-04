@@ -146,7 +146,11 @@ func handleAnswerNode(pool *pgxpool.Pool) http.HandlerFunc {
 				return
 			}
 
-			result, err := CreateDefaultFirm(r.Context(), pool, userID, req.FirmName)
+			var sel SeedSelection
+			if next.Seed != nil {
+				sel = *next.Seed
+			}
+			result, err := CreateDefaultFirm(r.Context(), pool, userID, req.FirmName, sel)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
