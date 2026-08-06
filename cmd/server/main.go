@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/moonstreamtech/ZonaryOS/internal/accounting"
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
 	"github.com/moonstreamtech/ZonaryOS/internal/discovery"
 	"github.com/moonstreamtech/ZonaryOS/internal/firm"
@@ -124,6 +125,7 @@ func main() {
 	auditlog.RegisterRoutes(mux, verifier, pool)
 	firm.RegisterRoutes(mux, verifier, pool)
 	invite.RegisterRoutes(mux, verifier, pool)
+	accounting.RegisterRoutes(mux, verifier, pool)
 	platformadmin.RegisterRoutes(mux, verifier, pool, platformadmin.NewAllowlist(cfg.PlatformAdminEmails), licenseVerifier)
 	// Only actually registers the two /telemetry/* endpoints when
 	// telemetryReporter is non-nil (enabled) - see

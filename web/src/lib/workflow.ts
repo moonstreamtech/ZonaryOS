@@ -70,6 +70,35 @@ export type ListInstancesPage = {
   total: number;
 };
 
+// LineTemplateInput/JournalTemplateInfo are internal/workflow.LineTemplate/
+// JournalTemplate's (spec.go) wire shape - the financial management
+// core's workflow-to-ledger bridge, read-only on the frontend this batch
+// (see WorkflowDefinitionView.tsx): a transition either carries one or it
+// doesn't (journal is omitted entirely, matching the backend's own
+// `journal,omitempty`).
+export type LineTemplateInfo = {
+  accountCode: string;
+  side: "debit" | "credit";
+  amountField: string;
+};
+
+export type JournalTemplateInfo = {
+  description: string;
+  lines: LineTemplateInfo[];
+};
+
+// TransitionInfo is internal/workflow.TransitionInfo's wire shape - one
+// transition in a definition's full state graph, with its OPTIONAL
+// journal template attached (see JournalTemplateInfo above).
+export type TransitionInfo = {
+  actionKey: string;
+  name: string;
+  fromState: StateInfo;
+  toState: StateInfo;
+  permissionKey: string;
+  journal?: JournalTemplateInfo;
+};
+
 export type WorkflowDefinition = {
   definitionId: string;
   key: string;
@@ -82,6 +111,11 @@ export type WorkflowDefinition = {
   // CreateInstanceForm branches on this: present -> typed fields, absent
   // -> today's free-form key/value editor, unchanged.
   fields?: FieldSpecInput[];
+  // Transitions is OPTIONAL (undefined for a definition with none, though
+  // every real definition has at least one) - the financial management
+  // core batch's addition, letting the workflow definition page show each
+  // transition's journal template, read-only, without a second endpoint.
+  transitions?: TransitionInfo[];
 };
 
 // The request body shape for POST .../workflow-definitions - a 1:1 wire

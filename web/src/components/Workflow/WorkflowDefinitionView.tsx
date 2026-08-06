@@ -148,6 +148,48 @@ export default async function WorkflowDefinitionView({
         />
       </div>
 
+      {definition.transitions?.some((tr) => tr.journal) && (
+        <div className="flex w-full max-w-2xl flex-col gap-3">
+          <h2 className="text-xl font-semibold tracking-tight text-black dark:text-zinc-50">
+            {t("journalTemplatesTitle")}
+          </h2>
+          <ul className="flex flex-col gap-3">
+            {definition.transitions
+              .filter((tr) => tr.journal)
+              .map((tr) => (
+                <li
+                  key={tr.actionKey}
+                  className="rounded-md border border-zinc-300 p-3 text-sm dark:border-zinc-700"
+                >
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <span className="font-medium text-black dark:text-zinc-50">{tr.name}</span>
+                    <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                      {tr.fromState.name} → {tr.toState.name}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
+                    {tr.journal!.description}
+                  </p>
+                  <ul className="mt-2 flex flex-col gap-1">
+                    {tr.journal!.lines.map((line, idx) => (
+                      <li
+                        key={idx}
+                        className="flex items-center justify-between font-mono text-xs text-zinc-700 dark:text-zinc-300"
+                      >
+                        <span>
+                          {line.side === "debit" ? t("debitLabel") : t("creditLabel")}{" "}
+                          {line.accountCode}
+                        </span>
+                        <span>{line.amountField}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </li>
+              ))}
+          </ul>
+        </div>
+      )}
+
       {rules !== null && (
         <div className="flex w-full max-w-2xl flex-col items-center gap-3">
           <h2 className="text-xl font-semibold tracking-tight text-black dark:text-zinc-50">

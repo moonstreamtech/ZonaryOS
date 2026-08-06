@@ -39,6 +39,53 @@ type TransitionSpec struct {
 	ActionKey    string
 	Name         string
 	Permission   PermissionSpec
+	// Journal is OPTIONAL: the workflow-to-ledger bridge (Vision §3's
+	// financial management core). When set, ExecuteTransition
+	// automatically posts a journal entry (internal/accounting.PostJournalEntryTx)
+	// alongside the state change itself, resolved from the transition's
+	// merged instance payload - see engine.go's resolveJournalLines. A nil
+	// Journal (every TransitionSpec that existed before this field was
+	// added) keeps behaving exactly as before: no ledger entry is ever
+	// posted for it.
+	Journal *JournalTemplate `json:"journal,omitempty"`
+}
+
+// JournalTemplate describes the journal entry a transition should post -
+// the declarative shape a workflow definition carries; engine.go resolves
+// it against one specific instance's payload at ExecuteTransition time,
+// it is never evaluated ahead of time.
+type JournalTemplate struct {
+	// Description may include "{{field}}" placeholders, substituted from
+	// the transition's merged instance payload (see engine.go's
+	// interpolateTemplate) - e.g. "Sale of {{item}}".
+	Description string
+	Lines       []LineTemplate
+}
+
+// LineTemplate is one debit or credit leg of a JournalTemplate.
+type LineTemplate struct {
+	// AccountCode is resolved against the firm's own chart of accounts
+	// (accounts.code, see internal/accounting) at posting time - not
+	// validated when the workflow definition itself is defined, the same
+	// deferred-validation reasoning FieldSpec.ReferenceDefinitionKey uses
+	// for cross-referencing another workflow definition: a firm's chart of
+	// accounts can change after the workflow was defined, so this is
+	// re-resolved fresh on every transition, not baked in once.
+	AccountCode string
+	// Side is "debit" or "credit" (mirrors internal/accounting.Side).
+	Side string
+	// AmountField names the field in the instance's payload that holds
+	// this line's amount. It MAY instead be two field names joined by
+	// "*" (e.g. "quantity*unit_price") - the one payload-derived
+	// computation this bridge supports natively, since "quantity times a
+	// price field" is the realistic shape of a sale/purchase amount (see
+	// stock_to_sale.go's own JournalTemplate for the concrete example) -
+	// see engine.go's resolveAmountField for exactly how each form is
+	// evaluated. If the named field(s) are absent from the instance's
+	// payload, the whole JournalTemplate is skipped for that transition
+	// (not an error - see resolveJournalLines's doc comment for why this
+	// must stay non-breaking for a transition with no such field).
+	AmountField string
 }
 
 // FieldType is a payload field's declared value type. Open Points item 35
@@ -194,6 +241,11 @@ func (d DefinitionSpec) Validate() error {
 		if t.Permission.Key == "" {
 			return fmt.Errorf("workflow definition %q: transition %q must have a permission key", d.Key, t.ActionKey)
 		}
+		if t.Journal != nil {
+			if err := validateJournalTemplate(d.Key, t.ActionKey, *t.Journal); err != nil {
+				return err
+			}
+		}
 		dedupeKey := t.FromStateKey + "\x00" + t.ActionKey
 		if _, exists := transitionKeys[dedupeKey]; exists {
 			return fmt.Errorf("workflow definition %q: duplicate transition action %q from state %q", d.Key, t.ActionKey, t.FromStateKey)
@@ -217,6 +269,39 @@ func (d DefinitionSpec) Validate() error {
 		}
 	}
 
+	return nil
+}
+
+// validateJournalTemplate checks one TransitionSpec's optional
+// JournalTemplate is structurally sound: a non-empty description, at
+// least two lines (an entry can never balance with fewer), and every
+// line naming an account code, a debit/credit side, and an amount field.
+// It deliberately cannot check that AccountCode resolves to a real
+// account, or that the amounts it would compute actually balance -
+// both require a firm's live chart of accounts and a real instance
+// payload, neither of which exists at spec-definition time (the same
+// "pure, DB-free function" limitation FieldSpec.ReferenceDefinitionKey's
+// own doc comment describes) - see engine.go's resolveJournalLines/
+// internal/accounting.PostJournalEntryTx for where those checks actually
+// run, at posting time.
+func validateJournalTemplate(defKey, actionKey string, jt JournalTemplate) error {
+	if jt.Description == "" {
+		return fmt.Errorf("workflow definition %q: transition %q: journal template description must not be empty", defKey, actionKey)
+	}
+	if len(jt.Lines) < 2 {
+		return fmt.Errorf("workflow definition %q: transition %q: journal template must have at least two lines", defKey, actionKey)
+	}
+	for i, l := range jt.Lines {
+		if l.AccountCode == "" {
+			return fmt.Errorf("workflow definition %q: transition %q: journal line %d: account code must not be empty", defKey, actionKey, i)
+		}
+		if l.Side != "debit" && l.Side != "credit" {
+			return fmt.Errorf("workflow definition %q: transition %q: journal line %d: side must be \"debit\" or \"credit\", got %q", defKey, actionKey, i, l.Side)
+		}
+		if l.AmountField == "" {
+			return fmt.Errorf("workflow definition %q: transition %q: journal line %d: amount field must not be empty", defKey, actionKey, i)
+		}
+	}
 	return nil
 }
 

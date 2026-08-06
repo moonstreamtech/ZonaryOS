@@ -176,12 +176,71 @@ func toFieldSpecResponses(fields []FieldSpec) []fieldSpecResponse {
 	return resp
 }
 
+// lineTemplateResponse/journalTemplateResponse are LineTemplate/
+// JournalTemplate's (spec.go) JSON wire shape - included on
+// transitionInfoResponse (below) so the workflow definition page can
+// render the journal template each transition carries, read-only, without
+// a second endpoint. omitempty on transitionInfoResponse.Journal means a
+// transition with no template (every transition defined before this
+// batch) serializes with no "journal" key at all - purely additive, same
+// convention fieldSpecResponse's own doc comment establishes for item 35.
+type lineTemplateResponse struct {
+	AccountCode string `json:"accountCode"`
+	Side        string `json:"side"`
+	AmountField string `json:"amountField"`
+}
+
+type journalTemplateResponse struct {
+	Description string                 `json:"description"`
+	Lines       []lineTemplateResponse `json:"lines"`
+}
+
+func toJournalTemplateResponse(jt *JournalTemplate) *journalTemplateResponse {
+	if jt == nil {
+		return nil
+	}
+	lines := make([]lineTemplateResponse, 0, len(jt.Lines))
+	for _, l := range jt.Lines {
+		lines = append(lines, lineTemplateResponse{AccountCode: l.AccountCode, Side: l.Side, AmountField: l.AmountField})
+	}
+	return &journalTemplateResponse{Description: jt.Description, Lines: lines}
+}
+
+// transitionInfoResponse is TransitionInfo's (engine.go) JSON wire shape.
+type transitionInfoResponse struct {
+	ActionKey     string                   `json:"actionKey"`
+	Name          string                   `json:"name"`
+	FromState     stateInfoResponse        `json:"fromState"`
+	ToState       stateInfoResponse        `json:"toState"`
+	PermissionKey string                   `json:"permissionKey"`
+	Journal       *journalTemplateResponse `json:"journal,omitempty"`
+}
+
+func toTransitionInfoResponses(transitions []TransitionInfo) []transitionInfoResponse {
+	if len(transitions) == 0 {
+		return nil
+	}
+	resp := make([]transitionInfoResponse, 0, len(transitions))
+	for _, t := range transitions {
+		resp = append(resp, transitionInfoResponse{
+			ActionKey:     t.ActionKey,
+			Name:          t.Name,
+			FromState:     stateInfoResponse{Key: t.FromState.Key, Name: t.FromState.Name},
+			ToState:       stateInfoResponse{Key: t.ToState.Key, Name: t.ToState.Name},
+			PermissionKey: t.PermissionKey,
+			Journal:       toJournalTemplateResponse(t.Journal),
+		})
+	}
+	return resp
+}
+
 type definitionInfoResponse struct {
-	DefinitionID        string              `json:"definitionId"`
-	Key                 string              `json:"key"`
-	Name                string              `json:"name"`
-	CreatePermissionKey string              `json:"createPermissionKey"`
-	Fields              []fieldSpecResponse `json:"fields,omitempty"`
+	DefinitionID        string                   `json:"definitionId"`
+	Key                 string                   `json:"key"`
+	Name                string                   `json:"name"`
+	CreatePermissionKey string                   `json:"createPermissionKey"`
+	Fields              []fieldSpecResponse      `json:"fields,omitempty"`
+	Transitions         []transitionInfoResponse `json:"transitions,omitempty"`
 }
 
 func toDefinitionInfoResponse(info DefinitionInfo) definitionInfoResponse {
@@ -191,6 +250,7 @@ func toDefinitionInfoResponse(info DefinitionInfo) definitionInfoResponse {
 		Name:                info.Name,
 		CreatePermissionKey: info.CreatePermissionKey,
 		Fields:              toFieldSpecResponses(info.Fields),
+		Transitions:         toTransitionInfoResponses(info.Transitions),
 	}
 }
 

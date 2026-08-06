@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/moonstreamtech/ZonaryOS/internal/accounting"
 )
 
 // StockToSaleKey is the workflow_definitions.key for this PR's concrete
@@ -50,6 +52,35 @@ var StockToSaleSpec = DefinitionSpec{
 			Permission: PermissionSpec{
 				Key:         RecordSalePermission,
 				Description: "Record the sale of an in-stock item.",
+			},
+			// The workflow-to-ledger bridge's real working example
+			// (Vision §3's financial management core): recording a sale
+			// posts DR Trade Receivables / CR Sales Revenue, for
+			// quantity * unit_price - both fields realistically present
+			// on a sale ("quantity" is the field this package's own
+			// tests already use for stock_to_sale instances, see
+			// rules_integration_test.go; "unit_price" is this batch's
+			// addition, since a sale amount needs a price, not just a
+			// quantity). Account codes 1100/4000 match the core chart of
+			// accounts internal/wizard.CreateDefaultFirm seeds via
+			// internal/accounting.SeedDefaultChartOfAccountsTx whenever a
+			// firm answers "yes" to selling products - the same
+			// precondition (Sells && TracksInventory) that seeds this
+			// workflow in the first place, so the accounts this template
+			// names are always present when this workflow exists. Left
+			// unset (nil) on any transition means "post nothing" - see
+			// TransitionSpec.Journal's own doc comment - so a caller that
+			// executes record_sale without supplying quantity/unit_price
+			// (every call site that predates this batch) keeps working
+			// exactly as before; the entry is only posted once both
+			// fields are actually present (see resolveJournalLines in
+			// engine.go).
+			Journal: &JournalTemplate{
+				Description: "Sale of {{item}}",
+				Lines: []LineTemplate{
+					{AccountCode: accounting.TradeReceivablesAccountCode, Side: "debit", AmountField: "quantity*unit_price"},
+					{AccountCode: accounting.SalesRevenueAccountCode, Side: "credit", AmountField: "quantity*unit_price"},
+				},
 			},
 		},
 	},

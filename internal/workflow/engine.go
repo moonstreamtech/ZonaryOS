@@ -11,6 +11,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/moonstreamtech/ZonaryOS/internal/accounting"
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
@@ -63,6 +68,17 @@ const defineWorkflowAuditAction = "create"
 // its own named constant rather than inlined so the engine and any future
 // caller (e.g. a date-typed field in a different form) parse the same way.
 const payloadDateLayout = "2006-01-02"
+
+// templatePlaceholder matches a "{{field}}" placeholder in a
+// JournalTemplate.Description - see interpolateTemplate.
+var templatePlaceholder = regexp.MustCompile(`\{\{\w+\}\}`)
+
+// journalEntitySourceType is the internal/accounting journal_entries.source_type
+// value the workflow-to-ledger bridge posts under - lets a reader of the
+// ledger trace an entry back to the workflow_instances row that produced
+// it (source_id), the same "entity_type/entity_id, validated by the
+// writer" pattern audit_log itself already uses.
+const journalEntitySourceType = "workflow_instance"
 
 // payloadFieldRow is FieldSpec's jsonb wire shape for the
 // workflow_definitions.payload_schema column - kept separate from
@@ -332,6 +348,159 @@ func checkReferenceField(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, f Fie
 	return nil
 }
 
+// marshalJournalTemplate encodes jt for storage in
+// workflow_transitions.journal_template - a nil jt returns a nil []byte
+// (SQL NULL), the same "nil in, NULL column, no schema at all" contract
+// marshalPayloadSchema uses for a definition's payload schema.
+func marshalJournalTemplate(jt *JournalTemplate) ([]byte, error) {
+	if jt == nil {
+		return nil, nil
+	}
+	return json.Marshal(jt)
+}
+
+// unmarshalJournalTemplate decodes workflow_transitions.journal_template
+// back into a *JournalTemplate - nil for a SQL NULL column (a transition
+// with no journal template), same convention as unmarshalPayloadSchema.
+func unmarshalJournalTemplate(data []byte) (*JournalTemplate, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var jt JournalTemplate
+	if err := json.Unmarshal(data, &jt); err != nil {
+		return nil, fmt.Errorf("unmarshal journal template: %w", err)
+	}
+	return &jt, nil
+}
+
+// interpolateTemplate substitutes every "{{field}}" placeholder in s with
+// payload[field]'s value (formatted via fmt.Sprint) - JournalTemplate.Description's
+// only templating mechanism, deliberately simple: no expressions, no
+// nested lookups, matching internal/workflow/rules.go's own
+// MessageTemplate substitution style for notify actions. A placeholder
+// naming a field that isn't present in payload is left as literal text
+// ("{{field}}") rather than silently blanked - a visibly wrong
+// description is a more honest failure mode than data quietly vanishing
+// from an accounting record.
+func interpolateTemplate(s string, payload map[string]any) string {
+	return templatePlaceholder.ReplaceAllStringFunc(s, func(match string) string {
+		field := match[2 : len(match)-2]
+		v, ok := payload[field]
+		if !ok {
+			return match
+		}
+		return fmt.Sprint(v)
+	})
+}
+
+// resolveAmountField resolves one LineTemplate.AmountField against
+// payload: either a single field name whose value must be numeric, or two
+// field names joined by "*" (e.g. "quantity*unit_price") - the one
+// payload-derived computation this bridge supports natively, see
+// LineTemplate.AmountField's own doc comment for why. Returns ok=false
+// (not an error) when the named field(s) are simply absent from payload -
+// resolveJournalLines treats that as "this template doesn't apply to this
+// particular transition call", not a failure. Returns an error only when
+// a named field IS present but isn't a number - genuinely malformed data,
+// not merely missing.
+func resolveAmountField(payload map[string]any, field string) (amount string, ok bool, err error) {
+	if a, b, isProduct := strings.Cut(field, "*"); isProduct {
+		x, xOK, err := lookupNumberField(payload, strings.TrimSpace(a))
+		if err != nil || !xOK {
+			return "", false, err
+		}
+		y, yOK, err := lookupNumberField(payload, strings.TrimSpace(b))
+		if err != nil || !yOK {
+			return "", false, err
+		}
+		amount, err := formatAmount(x * y)
+		if err != nil {
+			return "", false, err
+		}
+		return amount, true, nil
+	}
+
+	f, present, err := lookupNumberField(payload, field)
+	if err != nil || !present {
+		return "", false, err
+	}
+	amount, err = formatAmount(f)
+	if err != nil {
+		return "", false, err
+	}
+	return amount, true, nil
+}
+
+// lookupNumberField reads payload[name] and requires it to be a JSON
+// number if present at all - present=false (no error) when the field is
+// simply absent, matching resolveAmountField's own "missing means skip,
+// not fail" contract.
+func lookupNumberField(payload map[string]any, name string) (value float64, present bool, err error) {
+	v, ok := payload[name]
+	if !ok || v == nil {
+		return 0, false, nil
+	}
+	switch n := v.(type) {
+	case float64:
+		return n, true, nil
+	case float32:
+		return float64(n), true, nil
+	case int:
+		return float64(n), true, nil
+	case int64:
+		return float64(n), true, nil
+	default:
+		return 0, false, fmt.Errorf("%w: field %q must be a number to use in a journal amount", ErrPayloadValidation, name)
+	}
+}
+
+// formatAmount rounds f to 4 fraction digits (numeric(19,4), matching
+// internal/accounting's own amountPattern) and renders it as a plain
+// decimal string - never scientific notation, since strconv's 'f' format
+// never produces it. Rejects a non-positive result: a journal line's
+// amount is always positive (see the financial-core migration's own
+// journal_lines.amount CHECK), so a zero/negative computed amount is a
+// data problem worth failing the transition over, not a silent skip.
+func formatAmount(f float64) (string, error) {
+	rounded := math.Round(f*10000) / 10000
+	if rounded <= 0 {
+		return "", fmt.Errorf("%w: computed journal amount %v is not positive", ErrPayloadValidation, rounded)
+	}
+	return strconv.FormatFloat(rounded, 'f', 4, 64), nil
+}
+
+// resolveJournalLines resolves every LineTemplate in jt against payload
+// into internal/accounting.LineInput values ready for PostJournalEntryTx.
+// ok=false (not an error) means at least one line's amount field wasn't
+// present in payload - the whole template is skipped for this call,
+// deliberately non-fatal: many existing/legitimate ExecuteTransition
+// callers for a definition that later gains a JournalTemplate (e.g.
+// stock_to_sale's record_sale, wired up by this same batch) don't supply
+// every financially-relevant field on every call, and this bridge must
+// never turn "the caller didn't send a price" into a broken state
+// transition - Never-Violate Rule 6 in spirit, even though this isn't the
+// versioned HTTP contract itself. An error return, by contrast, means a
+// field WAS present but malformed - a real data problem worth failing the
+// transition (and rolling back the state change with it) over.
+func resolveJournalLines(jt *JournalTemplate, payload map[string]any) ([]accounting.LineInput, bool, error) {
+	lines := make([]accounting.LineInput, 0, len(jt.Lines))
+	for _, lt := range jt.Lines {
+		amount, ok, err := resolveAmountField(payload, lt.AmountField)
+		if err != nil {
+			return nil, false, err
+		}
+		if !ok {
+			return nil, false, nil
+		}
+		lines = append(lines, accounting.LineInput{
+			AccountCode: lt.AccountCode,
+			Side:        accounting.Side(lt.Side),
+			Amount:      amount,
+		})
+	}
+	return lines, true, nil
+}
+
 // DefineWorkflow writes spec as rows in workflow_definitions/states/
 // transitions, all in one WithFirmContext transaction, upserting any
 // permission keys it references into the global permissions catalog along
@@ -462,11 +631,15 @@ func DefineWorkflowTx(ctx context.Context, tx pgx.Tx, firmID, granteeRoleID uuid
 	}
 
 	for _, t := range spec.Transitions {
+		journalTemplateJSON, err := marshalJournalTemplate(t.Journal)
+		if err != nil {
+			return uuid.UUID{}, fmt.Errorf("marshal journal template for transition %q: %w", t.ActionKey, err)
+		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO workflow_transitions
-				(firm_id, workflow_definition_id, from_state_id, to_state_id, action_key, name, permission_key)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)
-		`, firmID, definitionID, stateIDs[t.FromStateKey], stateIDs[t.ToStateKey], t.ActionKey, t.Name, t.Permission.Key); err != nil {
+				(firm_id, workflow_definition_id, from_state_id, to_state_id, action_key, name, permission_key, journal_template)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		`, firmID, definitionID, stateIDs[t.FromStateKey], stateIDs[t.ToStateKey], t.ActionKey, t.Name, t.Permission.Key, journalTemplateJSON); err != nil {
 			return uuid.UUID{}, fmt.Errorf("insert workflow transition %q: %w", t.ActionKey, err)
 		}
 	}
@@ -768,17 +941,22 @@ func ExecuteTransition(ctx context.Context, pool *pgxpool.Pool, firmID, userID, 
 
 		var toStateID uuid.UUID
 		var permissionKey string
+		var journalTemplateJSON []byte
 		err = tx.QueryRow(ctx, `
-			SELECT wt.to_state_id, ws.key, wt.permission_key
+			SELECT wt.to_state_id, ws.key, wt.permission_key, wt.journal_template
 			FROM workflow_transitions wt
 			JOIN workflow_states ws ON ws.id = wt.to_state_id
 			WHERE wt.workflow_definition_id = $1 AND wt.from_state_id = $2 AND wt.action_key = $3
-		`, definitionID, currentStateID, actionKey).Scan(&toStateID, &toStateKey, &permissionKey)
+		`, definitionID, currentStateID, actionKey).Scan(&toStateID, &toStateKey, &permissionKey, &journalTemplateJSON)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNoSuchTransition
 		}
 		if err != nil {
 			return fmt.Errorf("look up transition: %w", err)
+		}
+		journalTemplate, err := unmarshalJournalTemplate(journalTemplateJSON)
+		if err != nil {
+			return err
 		}
 
 		allowed, err := permission.Has(ctx, tx, firmID, userID, permissionKey)
@@ -811,6 +989,36 @@ func ExecuteTransition(ctx context.Context, pool *pgxpool.Pool, firmID, userID, 
 			VALUES ($1, $2, 'workflow_instance', $3, $4, $5)
 		`, firmID, userID, instanceID, actionKey, changes); err != nil {
 			return fmt.Errorf("write audit log: %w", err)
+		}
+
+		// The workflow-to-ledger bridge: when this transition carries a
+		// JournalTemplate, resolve it against the merged payload and post
+		// the resulting entry in the SAME transaction as the state change
+		// itself - either both commit together or neither does, so the
+		// ledger can never end up out of sync with the workflow instance
+		// that produced it. resolveJournalLines' ok=false (not an error)
+		// means the template's fields simply weren't supplied on this
+		// call - skipped, not failed, see its own doc comment for why
+		// that matters for Rule 6. A genuine resolution error (a present
+		// field with the wrong type) or a posting failure (unknown
+		// account code, or - structurally unreachable here since this
+		// bridge always emits a balanced set of lines, but still handled
+		// - an unbalanced entry) fails the whole transition, rolling
+		// back the state change with it: once there's enough information
+		// to post, a broken posting is a real error, not something to
+		// silently swallow the way EvaluateRules' post-commit failures
+		// are (see CreateInstance's doc comment for that different case).
+		if journalTemplate != nil {
+			lines, ok, err := resolveJournalLines(journalTemplate, mergedPayload)
+			if err != nil {
+				return err
+			}
+			if ok {
+				description := interpolateTemplate(journalTemplate.Description, mergedPayload)
+				if _, err := accounting.PostJournalEntryTx(ctx, tx, firmID, userID, description, journalEntitySourceType, &instanceID, lines); err != nil {
+					return err
+				}
+			}
 		}
 
 		return nil
@@ -1090,6 +1298,60 @@ type DefinitionInfo struct {
 	// CreateInstanceForm) can render typed fields instead of the freeform
 	// key/value editor without a second round trip.
 	Fields []FieldSpec
+	// Transitions is every transition this definition has, including its
+	// OPTIONAL Journal template - the read-only surface the workflow
+	// definition page (item: extend /workflows/[key] to show the journal
+	// template for each transition that has one) renders from, without a
+	// second endpoint dedicated just to transitions.
+	Transitions []TransitionInfo
+}
+
+// TransitionInfo is one workflow_transitions row, read back with its
+// endpoints' state keys resolved and its OPTIONAL JournalTemplate
+// attached - the structural counterpart to AvailableAction (which is
+// scoped to one instance's current state) at the definition level,
+// scoped to the whole transition graph instead.
+type TransitionInfo struct {
+	ActionKey     string
+	Name          string
+	FromState     StateInfo
+	ToState       StateInfo
+	PermissionKey string
+	Journal       *JournalTemplate
+}
+
+// fetchTransitionInfos loads every workflow_transitions row for
+// definitionID, in action-key order - shared by LookupDefinitionByKey and
+// ListDefinitions so both expose the exact same transition/journal-template
+// read path.
+func fetchTransitionInfos(ctx context.Context, tx pgx.Tx, definitionID uuid.UUID) ([]TransitionInfo, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT wt.action_key, wt.name, src.key, src.name, dst.key, dst.name, wt.permission_key, wt.journal_template
+		FROM workflow_transitions wt
+		JOIN workflow_states src ON src.id = wt.from_state_id
+		JOIN workflow_states dst ON dst.id = wt.to_state_id
+		WHERE wt.workflow_definition_id = $1
+		ORDER BY wt.action_key
+	`, definitionID)
+	if err != nil {
+		return nil, fmt.Errorf("look up transitions: %w", err)
+	}
+	defer rows.Close()
+
+	var infos []TransitionInfo
+	for rows.Next() {
+		var ti TransitionInfo
+		var journalTemplateJSON []byte
+		if err := rows.Scan(&ti.ActionKey, &ti.Name, &ti.FromState.Key, &ti.FromState.Name, &ti.ToState.Key, &ti.ToState.Name, &ti.PermissionKey, &journalTemplateJSON); err != nil {
+			return nil, err
+		}
+		ti.Journal, err = unmarshalJournalTemplate(journalTemplateJSON)
+		if err != nil {
+			return nil, err
+		}
+		infos = append(infos, ti)
+	}
+	return infos, rows.Err()
 }
 
 // LookupDefinitionByKey resolves firmID's workflow_definitions row by its
@@ -1119,7 +1381,10 @@ func LookupDefinitionByKey(ctx context.Context, pool *pgxpool.Pool, firmID, user
 		if err != nil {
 			return err
 		}
-		info.Fields, err = unmarshalPayloadSchema(payloadSchemaJSON)
+		if info.Fields, err = unmarshalPayloadSchema(payloadSchemaJSON); err != nil {
+			return err
+		}
+		info.Transitions, err = fetchTransitionInfos(ctx, tx, info.ID)
 		return err
 	})
 	if err != nil {
@@ -1157,19 +1422,36 @@ func ListDefinitions(ctx context.Context, pool *pgxpool.Pool, firmID, userID uui
 		if err != nil {
 			return fmt.Errorf("list workflow definitions: %w", err)
 		}
-		defer rows.Close()
 		for rows.Next() {
 			var d DefinitionInfo
 			var payloadSchemaJSON []byte
 			if err := rows.Scan(&d.ID, &d.Key, &d.Name, &d.CreatePermissionKey, &payloadSchemaJSON); err != nil {
+				rows.Close()
 				return err
 			}
 			if d.Fields, err = unmarshalPayloadSchema(payloadSchemaJSON); err != nil {
+				rows.Close()
 				return err
 			}
 			results = append(results, d)
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		rows.Close()
+
+		// A second round trip per definition, only after the first
+		// result set is fully drained and closed - pgx does not support
+		// an interleaved Query() on the same transaction/connection
+		// while a previous Rows is still open (the same reason
+		// ListInstances, further down this file, fully closes its own
+		// transitionRows before opening instanceRows).
+		for i := range results {
+			if results[i].Transitions, err = fetchTransitionInfos(ctx, tx, results[i].ID); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err

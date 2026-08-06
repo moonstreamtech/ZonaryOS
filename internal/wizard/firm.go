@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/moonstreamtech/ZonaryOS/internal/accounting"
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
 	"github.com/moonstreamtech/ZonaryOS/internal/workflow"
 )
@@ -130,6 +131,25 @@ func CreateDefaultFirm(ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID
 	// Mode without any code change.
 	if err := auditlog.RegisterReadPermissionTx(ctx, tx, result.FirmID, result.RoleID); err != nil {
 		return CreateDefaultFirmResult{}, fmt.Errorf("register audit log read permission: %w", err)
+	}
+
+	// Vision §3's financial management core: seed a minimal but real
+	// starter chart of accounts, parametrically, from the same wizard
+	// answers that gate which starter workflows get seeded below - see
+	// internal/accounting.SeedDefaultChartOfAccountsTx's own doc comment
+	// for why sel.Sells/sel.PurchasesFromSuppliers (not
+	// internal/wizard.SeedSelection itself) are what's passed through.
+	// Seeded before the workflows below so a firm's chart of accounts is
+	// always in place by the time any workflow that might post against it
+	// (e.g. stock_to_sale's record_sale) is seeded - though nothing here
+	// actually depends on that ordering today, since a JournalTemplate is
+	// only ever resolved at ExecuteTransition time, long after firm
+	// creation completes.
+	if err := accounting.SeedDefaultChartOfAccountsTx(ctx, tx, result.FirmID, accounting.SeedChartOptions{
+		Sells:                  sel.Sells,
+		PurchasesFromSuppliers: sel.PurchasesFromSuppliers,
+	}); err != nil {
+		return CreateDefaultFirmResult{}, fmt.Errorf("seed default chart of accounts: %w", err)
 	}
 
 	// Granting the owner role every permission a seeded workflow

@@ -110,12 +110,28 @@ echo "$INSTANCE_RESPONSE" | python3 -c "import sys, json; d = json.load(sys.stdi
     || fail "expected the new instance's state to be in_stock: $INSTANCE_RESPONSE"
 log "stock added: instance $INSTANCE_ID, state in_stock"
 
-log "sell: executing the record_sale transition"
+log "sell: executing the record_sale transition (with unit_price, so the workflow-to-ledger bridge posts a real journal entry)"
 SALE_RESPONSE=$(auth -X POST "$BACKEND_URL/api/firms/$FIRM_ID/workflow-instances/$INSTANCE_ID/transitions/record_sale" \
-    -H "Content-Type: application/json" -d '{}')
+    -H "Content-Type: application/json" -d '{"payload":{"unit_price":19.99}}')
 echo "$SALE_RESPONSE" | python3 -c "import sys, json; d = json.load(sys.stdin); assert d['state']['key'] == 'sold', d" \
     || fail "expected the instance's state to be sold after record_sale: $SALE_RESPONSE"
 log "sale recorded: instance $INSTANCE_ID is now sold"
+
+log "financial management core: confirming record_sale posted a real journal entry via GET .../journal-entries"
+JOURNAL_ENTRIES=$(auth "$BACKEND_URL/api/firms/$FIRM_ID/journal-entries")
+echo "$JOURNAL_ENTRIES" | python3 -c "
+import sys, json
+entries = json.load(sys.stdin)
+matches = [e for e in entries if e.get('sourceType') == 'workflow_instance' and e.get('sourceId') == '$INSTANCE_ID']
+assert len(matches) == 1, entries
+entry = matches[0]
+lines = {(l['accountCode'], l['side']): l['amount'] for l in entry['lines']}
+assert len(lines) == 2, entry
+# quantity(1) * unit_price(19.99) = 19.99, both legs.
+assert lines[('1100', 'debit')] == '19.9900', entry
+assert lines[('4000', 'credit')] == '19.9900', entry
+" || fail "expected a balanced journal entry (DR 1100 / CR 4000, 19.9900) posted for instance $INSTANCE_ID: $JOURNAL_ENTRIES"
+log "journal entry confirmed: DR Trade Receivables / CR Sales Revenue, 19.9900"
 
 log "bonus: confirming the audit trail (PR 8) recorded this transaction"
 AUDIT_LOG=$(auth "$BACKEND_URL/api/firms/$FIRM_ID/audit-log")
