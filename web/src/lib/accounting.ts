@@ -46,6 +46,47 @@ export type ListJournalEntriesPage = {
   total: number;
 };
 
+// ReportLine is internal/accounting.ReportLine's wire shape - one
+// account's own contribution to a P&L or Balance Sheet report, shared by
+// both report types below (PnLReport.revenue/expenses,
+// BalanceSheetReport.assets/liabilities/equity).
+export type ReportLine = {
+  accountId: string;
+  code: string;
+  name: string;
+  amount: string;
+};
+
+export type PnLReport = {
+  from?: string;
+  to?: string;
+  revenue: ReportLine[];
+  expenses: ReportLine[];
+  totalRevenue: string;
+  totalExpenses: string;
+  netIncome: string;
+};
+
+export type BalanceSheetReport = {
+  asOf: string;
+  assets: ReportLine[];
+  liabilities: ReportLine[];
+  equity: ReportLine[];
+  // currentEarnings is net income accrued since the last closing entry
+  // (there is no period-closing mechanism yet), folded into totalEquity -
+  // see internal/accounting.GetBalanceSheet's own doc comment for why
+  // this is the correct interim accounting treatment, not a shortcut.
+  currentEarnings: string;
+  totalAssets: string;
+  totalLiabilities: string;
+  totalEquity: string;
+  // balanced/difference is the literal Assets = Liabilities + Equity
+  // check, computed server-side - a genuine data-integrity signal (see
+  // GetBalanceSheet's doc comment), not merely cosmetic.
+  balanced: boolean;
+  difference: string;
+};
+
 function apiBase(): string {
   return process.env.ZONARYOS_API_BASE_URL ?? "http://localhost:8080";
 }
@@ -161,6 +202,58 @@ export async function updateAccount(
     return { ok: true, account: (await res.json()) as Account };
   } catch {
     return { ok: false, error: "network error", status: 0 };
+  }
+}
+
+/**
+ * Calls the Go backend's `GET /api/firms/{firmId}/reports/pnl?from=&to=`
+ * (both optional, RFC3339 timestamps) - the /financials page's P&L tab
+ * data source. Returns null on failure, same convention as fetchAccounts.
+ */
+export async function fetchPnLReport(
+  token: string,
+  firmId: string,
+  opts: { from?: string; to?: string } = {},
+): Promise<PnLReport | null> {
+  try {
+    const params = new URLSearchParams();
+    if (opts.from) params.set("from", opts.from);
+    if (opts.to) params.set("to", opts.to);
+    const qs = params.toString();
+    const res = await fetch(
+      `${apiBase()}/api/firms/${encodeURIComponent(firmId)}/reports/pnl${qs ? `?${qs}` : ""}`,
+      { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" },
+    );
+    if (!res.ok) return null;
+    return (await res.json()) as PnLReport;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Calls the Go backend's `GET /api/firms/{firmId}/reports/balance-sheet?as_of=`
+ * (optional RFC3339 timestamp; the backend defaults to now when omitted) -
+ * the /financials page's Balance Sheet tab data source. Returns null on
+ * failure, same convention as fetchAccounts.
+ */
+export async function fetchBalanceSheetReport(
+  token: string,
+  firmId: string,
+  opts: { asOf?: string } = {},
+): Promise<BalanceSheetReport | null> {
+  try {
+    const params = new URLSearchParams();
+    if (opts.asOf) params.set("as_of", opts.asOf);
+    const qs = params.toString();
+    const res = await fetch(
+      `${apiBase()}/api/firms/${encodeURIComponent(firmId)}/reports/balance-sheet${qs ? `?${qs}` : ""}`,
+      { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" },
+    );
+    if (!res.ok) return null;
+    return (await res.json()) as BalanceSheetReport;
+  } catch {
+    return null;
   }
 }
 

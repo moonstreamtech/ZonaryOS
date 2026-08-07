@@ -507,6 +507,90 @@ MEMBER_COUNT=$(echo "$MEMBERS_RESPONSE" | python3 -c "import sys, json; print(le
 [ "$MEMBER_COUNT" = "2" ] || fail "expected 2 members after the invite was accepted, got $MEMBER_COUNT: $MEMBERS_RESPONSE"
 log "invites: full self-registration -> invite -> accept flow verified end-to-end ($MEMBER_COUNT members now in the firm)"
 
+# --- Financial management core: the Purchase Order workflow's own
+# --- workflow-to-ledger bridge (internal/workflow/purchase_order.go) -----
+#
+# A separate firm, with purchases=yes (unlike FIRM_ID above, which
+# answered purchase=no), so the real, Go-defined PurchaseOrderSpec is
+# actually seeded - the earlier "define workflow (UI path)" section
+# defines its own DIFFERENT, unrelated "purchase_order"-keyed spec (draft
+# -> approved -> received, no journal template) on FIRM_ID purely to
+# prove the generic UI renders a second, structurally different
+# definition; it is not the workflow this section exercises.
+
+log "purchase order: walking sells=no/purchase=yes/tasks=no/manufacture=no to create a firm that seeds the real Purchase Order workflow"
+PO_ANSWER_RESPONSE=$(wizard_walk "E2E PO Firm $(date +%s)" no yes no no)
+PO_FIRM_ID=$(echo "$PO_ANSWER_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['result']['firmId'])")
+[ -n "$PO_FIRM_ID" ] || fail "did not get a firmId back from the wizard answer: $PO_ANSWER_RESPONSE"
+log "purchase order firm created: $PO_FIRM_ID"
+
+log "purchase order: confirming the wizard seeded Inventory (1200) and Trade Payables (2000) even though this firm answered sells=no"
+PO_FIRM_ACCOUNTS=$(auth "$BACKEND_URL/api/firms/$PO_FIRM_ID/accounts")
+echo "$PO_FIRM_ACCOUNTS" | python3 -c "
+import sys, json
+accounts = {a['code'] for a in json.load(sys.stdin)}
+assert '1200' in accounts, accounts
+assert '2000' in accounts, accounts
+" || fail "expected Inventory (1200) and Trade Payables (2000) to be seeded for a purchases-only firm: $PO_FIRM_ACCOUNTS"
+log "purchase order: chart of accounts confirmed (Inventory/Trade Payables present without sells=yes)"
+
+log "resolving the purchase_order workflow definition"
+PO_DEFINITION_RESPONSE=$(auth "$BACKEND_URL/api/firms/$PO_FIRM_ID/workflow-definitions?key=purchase_order")
+PO_REAL_DEFINITION_ID=$(echo "$PO_DEFINITION_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['definitionId'])")
+[ -n "$PO_REAL_DEFINITION_ID" ] || fail "did not resolve the purchase_order definition: $PO_DEFINITION_RESPONSE"
+
+log "purchase order: creating a draft purchase order instance"
+PO_REAL_INSTANCE_RESPONSE=$(auth -X POST "$BACKEND_URL/api/firms/$PO_FIRM_ID/workflow-definitions/$PO_REAL_DEFINITION_ID/instances" \
+    -H "Content-Type: application/json" \
+    -d '{"payload":{"supplier_name":"Acme Supply Co","total_amount":349.50}}')
+PO_REAL_INSTANCE_ID=$(echo "$PO_REAL_INSTANCE_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['instanceId'])")
+[ -n "$PO_REAL_INSTANCE_ID" ] || fail "did not get an instanceId back: $PO_REAL_INSTANCE_RESPONSE"
+echo "$PO_REAL_INSTANCE_RESPONSE" | python3 -c "import sys, json; d = json.load(sys.stdin); assert d['state']['key'] == 'draft', d" \
+    || fail "expected the new purchase order instance's state to be draft: $PO_REAL_INSTANCE_RESPONSE"
+log "purchase order created: instance $PO_REAL_INSTANCE_ID, state draft"
+
+log "purchase order: executing the send transition (must NOT post a journal entry - see PurchaseOrderSpec's own accounting reasoning)"
+auth -X POST "$BACKEND_URL/api/firms/$PO_FIRM_ID/workflow-instances/$PO_REAL_INSTANCE_ID/transitions/send" \
+    -H "Content-Type: application/json" -d '{}' > /dev/null
+
+PO_ENTRIES_AFTER_SEND=$(auth "$BACKEND_URL/api/firms/$PO_FIRM_ID/journal-entries")
+echo "$PO_ENTRIES_AFTER_SEND" | python3 -c "
+import sys, json
+entries = json.load(sys.stdin)
+assert len(entries) == 0, entries
+" || fail "expected 'send' to post no journal entry: $PO_ENTRIES_AFTER_SEND"
+log "purchase order: confirmed 'send' posted nothing"
+
+log "purchase order: executing the receive transition (must post DR Inventory / CR Trade Payables)"
+PO_RECEIVE_RESPONSE=$(auth -X POST "$BACKEND_URL/api/firms/$PO_FIRM_ID/workflow-instances/$PO_REAL_INSTANCE_ID/transitions/receive" \
+    -H "Content-Type: application/json" -d '{}')
+echo "$PO_RECEIVE_RESPONSE" | python3 -c "import sys, json; d = json.load(sys.stdin); assert d['state']['key'] == 'received', d" \
+    || fail "expected the instance's state to be received: $PO_RECEIVE_RESPONSE"
+
+PO_ENTRIES_AFTER_RECEIVE=$(auth "$BACKEND_URL/api/firms/$PO_FIRM_ID/journal-entries")
+echo "$PO_ENTRIES_AFTER_RECEIVE" | python3 -c "
+import sys, json
+entries = json.load(sys.stdin)
+matches = [e for e in entries if e.get('sourceType') == 'workflow_instance' and e.get('sourceId') == '$PO_REAL_INSTANCE_ID']
+assert len(matches) == 1, entries
+entry = matches[0]
+assert entry['description'] == 'Received purchase order from Acme Supply Co', entry
+lines = {(l['accountCode'], l['side']): l['amount'] for l in entry['lines']}
+assert len(lines) == 2, entry
+assert lines[('1200', 'debit')] == '349.5000', entry
+assert lines[('2000', 'credit')] == '349.5000', entry
+" || fail "expected a balanced journal entry (DR 1200 / CR 2000, 349.5000) posted for instance $PO_REAL_INSTANCE_ID: $PO_ENTRIES_AFTER_RECEIVE"
+log "purchase order: journal entry confirmed on receive - DR Inventory / CR Trade Payables, 349.5000"
+
+log "purchase order: confirming the Balance Sheet still balances after this real purchase"
+PO_BALANCE_SHEET=$(auth "$BACKEND_URL/api/firms/$PO_FIRM_ID/reports/balance-sheet")
+echo "$PO_BALANCE_SHEET" | python3 -c "
+import sys, json
+r = json.load(sys.stdin)
+assert r['balanced'] is True, r
+" || fail "expected the purchase order firm's balance sheet to balance: $PO_BALANCE_SHEET"
+log "purchase order: balance sheet confirmed balanced"
+
 # --- Session refresh (Open Points item 41): a real, expired access token
 # --- is silently refreshed by src/proxy.ts, no re-login prompt ----------
 #

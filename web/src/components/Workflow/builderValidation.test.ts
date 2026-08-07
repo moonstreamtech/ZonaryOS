@@ -30,6 +30,9 @@ function transition(overrides: Partial<BuilderTransitionRow>): BuilderTransition
     name: "",
     permissionKey: "",
     permissionDescription: "",
+    journalEnabled: false,
+    journalDescription: "",
+    journalLines: [],
     ...overrides,
   };
 }
@@ -353,6 +356,129 @@ describe("validateBuilderSpec", () => {
         fields: [field({ id: 1, name: "tags", type: "array", arrayItemType: "" as never })],
       });
       expect(validateBuilderSpec(spec)).toContainEqual({ code: "arrayItemTypeRequired", name: "tags" });
+    });
+  });
+
+  describe("journal templates", () => {
+    it("accepts a well-formed journal template", () => {
+      const spec = baseSpec({
+        states: [
+          state({ id: 1, key: "in_stock", isInitial: true }),
+          state({ id: 2, key: "sold" }),
+        ],
+        transitions: [
+          transition({
+            fromStateKey: "in_stock",
+            toStateKey: "sold",
+            actionKey: "record_sale",
+            permissionKey: "workflow.stock_to_sale.record_sale",
+            journalEnabled: true,
+            journalDescription: "Sale of {{item}}",
+            journalLines: [
+              { id: 1, accountCode: "1100", side: "debit", amountField: "quantity*unit_price" },
+              { id: 2, accountCode: "4000", side: "credit", amountField: "quantity*unit_price" },
+            ],
+          }),
+        ],
+      });
+      expect(validateBuilderSpec(spec)).toEqual([]);
+    });
+
+    it("ignores a disabled journal template entirely", () => {
+      const spec = baseSpec({
+        states: [
+          state({ id: 1, key: "in_stock", isInitial: true }),
+          state({ id: 2, key: "sold" }),
+        ],
+        transitions: [
+          transition({
+            fromStateKey: "in_stock",
+            toStateKey: "sold",
+            actionKey: "record_sale",
+            permissionKey: "workflow.stock_to_sale.record_sale",
+            journalEnabled: false,
+            journalLines: [],
+          }),
+        ],
+      });
+      expect(validateBuilderSpec(spec)).toEqual([]);
+    });
+
+    it("flags an enabled journal template with an empty description", () => {
+      const spec = baseSpec({
+        states: [
+          state({ id: 1, key: "in_stock", isInitial: true }),
+          state({ id: 2, key: "sold" }),
+        ],
+        transitions: [
+          transition({
+            fromStateKey: "in_stock",
+            toStateKey: "sold",
+            actionKey: "record_sale",
+            permissionKey: "workflow.stock_to_sale.record_sale",
+            journalEnabled: true,
+            journalDescription: "",
+            journalLines: [
+              { id: 1, accountCode: "1100", side: "debit", amountField: "quantity" },
+              { id: 2, accountCode: "4000", side: "credit", amountField: "quantity" },
+            ],
+          }),
+        ],
+      });
+      expect(validateBuilderSpec(spec)).toContainEqual({
+        code: "journalDescriptionRequired",
+        actionKey: "record_sale",
+      });
+    });
+
+    it("flags an enabled journal template with fewer than two lines", () => {
+      const spec = baseSpec({
+        states: [
+          state({ id: 1, key: "in_stock", isInitial: true }),
+          state({ id: 2, key: "sold" }),
+        ],
+        transitions: [
+          transition({
+            fromStateKey: "in_stock",
+            toStateKey: "sold",
+            actionKey: "record_sale",
+            permissionKey: "workflow.stock_to_sale.record_sale",
+            journalEnabled: true,
+            journalDescription: "Sale",
+            journalLines: [{ id: 1, accountCode: "1100", side: "debit", amountField: "quantity" }],
+          }),
+        ],
+      });
+      expect(validateBuilderSpec(spec)).toContainEqual({
+        code: "journalNeedsTwoLines",
+        actionKey: "record_sale",
+      });
+    });
+
+    it("flags a journal line missing an account code or amount field", () => {
+      const spec = baseSpec({
+        states: [
+          state({ id: 1, key: "in_stock", isInitial: true }),
+          state({ id: 2, key: "sold" }),
+        ],
+        transitions: [
+          transition({
+            fromStateKey: "in_stock",
+            toStateKey: "sold",
+            actionKey: "record_sale",
+            permissionKey: "workflow.stock_to_sale.record_sale",
+            journalEnabled: true,
+            journalDescription: "Sale",
+            journalLines: [
+              { id: 1, accountCode: "", side: "debit", amountField: "quantity" },
+              { id: 2, accountCode: "4000", side: "credit", amountField: "" },
+            ],
+          }),
+        ],
+      });
+      const errors = validateBuilderSpec(spec);
+      expect(errors).toContainEqual({ code: "journalLineAccountCodeRequired", actionKey: "record_sale" });
+      expect(errors).toContainEqual({ code: "journalLineAmountFieldRequired", actionKey: "record_sale" });
     });
   });
 });

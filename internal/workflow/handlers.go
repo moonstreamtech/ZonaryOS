@@ -195,6 +195,24 @@ type journalTemplateResponse struct {
 	Lines       []lineTemplateResponse `json:"lines"`
 }
 
+// toJournalTemplateSpec converts a defineJournalTemplateRequest (this
+// file's request-side wire shape) into the spec.go JournalTemplate
+// DefineWorkflowForFirm/DefineWorkflowTx actually consume - handleDefineWorkflow's
+// counterpart to toJournalTemplateResponse below. nil in, nil out -
+// DefinitionSpec.Validate already rejects a non-nil JournalTemplate with
+// fewer than two lines or a missing field, so no additional validation
+// happens here.
+func toJournalTemplateSpec(req *defineJournalTemplateRequest) *JournalTemplate {
+	if req == nil {
+		return nil
+	}
+	lines := make([]LineTemplate, 0, len(req.Lines))
+	for _, l := range req.Lines {
+		lines = append(lines, LineTemplate{AccountCode: l.AccountCode, Side: l.Side, AmountField: l.AmountField})
+	}
+	return &JournalTemplate{Description: req.Description, Lines: lines}
+}
+
 func toJournalTemplateResponse(jt *JournalTemplate) *journalTemplateResponse {
 	if jt == nil {
 		return nil
@@ -406,6 +424,25 @@ type defineTransitionRequest struct {
 	ActionKey    string                  `json:"actionKey"`
 	Name         string                  `json:"name"`
 	Permission   definePermissionRequest `json:"permission"`
+	// Journal is OPTIONAL (the financial management core's workflow-to-
+	// ledger bridge, spec.go's TransitionSpec.Journal) - mirrors
+	// lineTemplateResponse/journalTemplateResponse's shape (this file's
+	// response side) on the request side, the same "separate request/
+	// response struct pair" convention defineFieldRequest/fieldSpecResponse
+	// already use. Omitted entirely (or nil) means "post nothing", exactly
+	// TransitionSpec.Journal's own zero-value contract.
+	Journal *defineJournalTemplateRequest `json:"journal,omitempty"`
+}
+
+type defineLineTemplateRequest struct {
+	AccountCode string `json:"accountCode"`
+	Side        string `json:"side"`
+	AmountField string `json:"amountField"`
+}
+
+type defineJournalTemplateRequest struct {
+	Description string                      `json:"description"`
+	Lines       []defineLineTemplateRequest `json:"lines"`
 }
 
 // defineFieldRequest is FieldSpec's (spec.go) JSON wire shape for the
@@ -505,6 +542,7 @@ func handleDefineWorkflow(pool *pgxpool.Pool) http.HandlerFunc {
 					Key:         t.Permission.Key,
 					Description: t.Permission.Description,
 				},
+				Journal: toJournalTemplateSpec(t.Journal),
 			})
 		}
 		if len(req.Fields) > 0 {

@@ -7,10 +7,12 @@
 import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
+import type { Account } from "@/lib/accounting";
 import type { DefinitionSpecInput } from "@/lib/workflow";
 import {
   validateBuilderSpec,
   type BuilderFieldRow,
+  type BuilderJournalLineRow,
   type BuilderStateRow,
   type BuilderTransitionRow,
   type BuilderValidationError,
@@ -30,6 +32,16 @@ type Props = {
   // reference field type has nothing to offer yet - see its own
   // rendering below.
   existingDefinitionKeys: string[];
+  // accounts is the firm's real chart of accounts (internal/accounting.ListAccounts,
+  // fetched once by app/[locale]/workflows/page.tsx and handed down here,
+  // same convention as existingDefinitionKeys above) - a journal
+  // template's account-code picker below chooses from this real list,
+  // never free text, matching internal/accounting.PostJournalEntryTx's
+  // own account-code lookup server-side. Empty (a firm with no accounts
+  // yet, which shouldn't normally happen since the wizard always seeds a
+  // core chart) simply means the journal editor has nothing to offer -
+  // the expander itself still opens, but with an empty dropdown.
+  accounts: Account[];
 };
 
 let nextRowId = 0;
@@ -45,7 +57,13 @@ function emptyTransition(): BuilderTransitionRow {
     name: "",
     permissionKey: "",
     permissionDescription: "",
+    journalEnabled: false,
+    journalDescription: "",
+    journalLines: [],
   };
+}
+function emptyJournalLine(): BuilderJournalLineRow {
+  return { id: nextRowId++, accountCode: "", side: "debit", amountField: "" };
 }
 function emptyField(): BuilderFieldRow {
   return {
@@ -78,7 +96,7 @@ function emptyField(): BuilderFieldRow {
 // catalog (internal/permission.Has), it's the structural is_owner check
 // DefineWorkflowForFirm itself enforces, same category as Permission
 // Audit Mode's own toggle.
-export default function DefinitionBuilder({ firmId, existingDefinitionKeys }: Props) {
+export default function DefinitionBuilder({ firmId, existingDefinitionKeys, accounts }: Props) {
   const t = useTranslations("Workflow");
   const router = useRouter();
 
@@ -117,6 +135,53 @@ export default function DefinitionBuilder({ firmId, existingDefinitionKeys }: Pr
   }
   function removeField(id: number) {
     setFields((prev) => prev.filter((f) => f.id !== id));
+  }
+
+  function toggleJournal(transitionId: number) {
+    setTransitions((prev) =>
+      prev.map((tr) =>
+        tr.id === transitionId
+          ? {
+              ...tr,
+              journalEnabled: !tr.journalEnabled,
+              // Opening the expander for the first time seeds two empty
+              // lines - the minimum a balanced entry needs (Never-Violate:
+              // an entry can never balance with fewer than two legs) -
+              // rather than making the owner click "add line" twice
+              // before anything useful can be entered.
+              journalLines:
+                !tr.journalEnabled && tr.journalLines.length === 0
+                  ? [emptyJournalLine(), emptyJournalLine()]
+                  : tr.journalLines,
+            }
+          : tr,
+      ),
+    );
+  }
+  function updateJournalLine(transitionId: number, lineId: number, patch: Partial<BuilderJournalLineRow>) {
+    setTransitions((prev) =>
+      prev.map((tr) =>
+        tr.id === transitionId
+          ? { ...tr, journalLines: tr.journalLines.map((l) => (l.id === lineId ? { ...l, ...patch } : l)) }
+          : tr,
+      ),
+    );
+  }
+  function addJournalLine(transitionId: number) {
+    setTransitions((prev) =>
+      prev.map((tr) =>
+        tr.id === transitionId ? { ...tr, journalLines: [...tr.journalLines, emptyJournalLine()] } : tr,
+      ),
+    );
+  }
+  function removeJournalLine(transitionId: number, lineId: number) {
+    setTransitions((prev) =>
+      prev.map((tr) =>
+        tr.id === transitionId
+          ? { ...tr, journalLines: tr.journalLines.filter((l) => l.id !== lineId) }
+          : tr,
+      ),
+    );
   }
 
   function errorMessage(error: BuilderValidationError): string {
@@ -162,6 +227,14 @@ export default function DefinitionBuilder({ firmId, existingDefinitionKeys }: Pr
         return t("builderErrorReferenceDefinitionKeyRequired", { name: error.name });
       case "arrayItemTypeRequired":
         return t("builderErrorArrayItemTypeRequired", { name: error.name });
+      case "journalDescriptionRequired":
+        return t("builderErrorJournalDescriptionRequired", { actionKey: error.actionKey });
+      case "journalNeedsTwoLines":
+        return t("builderErrorJournalNeedsTwoLines", { actionKey: error.actionKey });
+      case "journalLineAccountCodeRequired":
+        return t("builderErrorJournalLineAccountCodeRequired", { actionKey: error.actionKey });
+      case "journalLineAmountFieldRequired":
+        return t("builderErrorJournalLineAmountFieldRequired", { actionKey: error.actionKey });
     }
   }
 
@@ -220,6 +293,21 @@ export default function DefinitionBuilder({ firmId, existingDefinitionKeys }: Pr
         actionKey: tr.actionKey,
         name: tr.name,
         permission: { key: tr.permissionKey, description: tr.permissionDescription },
+        // Omitted entirely when the expander was never enabled, mirroring
+        // `fields` below and TransitionSpec.Journal's own nil/omitted
+        // means "post nothing" contract server-side.
+        ...(tr.journalEnabled
+          ? {
+              journal: {
+                description: tr.journalDescription,
+                lines: tr.journalLines.map((l) => ({
+                  accountCode: l.accountCode,
+                  side: l.side,
+                  amountField: l.amountField,
+                })),
+              },
+            }
+          : {}),
       })),
       // Omitted entirely when empty (rather than sent as `[]`) so a
       // definition built with no payload fields round-trips as "no
@@ -467,6 +555,106 @@ export default function DefinitionBuilder({ firmId, existingDefinitionKeys }: Pr
             >
               {t("removeFieldButton")}
             </button>
+
+            {/* Financial management core: an optional journal template
+                per transition (internal/workflow/spec.go's
+                TransitionSpec.Journal) - the workflow-to-ledger bridge.
+                Collapsed by default, matching the payload-fields
+                section's own "optional, additive" presentation below. */}
+            <div className="w-full pl-2">
+              <button
+                type="button"
+                data-permission-public="true"
+                onClick={() => toggleJournal(tr.id)}
+                className="text-xs font-medium text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
+              >
+                {tr.journalEnabled ? t("builderJournalCollapse") : t("builderJournalExpand")}
+              </button>
+
+              {tr.journalEnabled && (
+                <div className="mt-2 flex flex-col gap-2 border-l-2 border-zinc-200 pl-3 dark:border-zinc-800">
+                  <Field label={t("builderJournalDescriptionLabel")}>
+                    <input
+                      type="text"
+                      value={tr.journalDescription}
+                      onChange={(e) =>
+                        updateTransition(tr.id, { journalDescription: e.target.value })
+                      }
+                      placeholder={t("builderJournalDescriptionPlaceholder")}
+                      className={inputClass}
+                    />
+                  </Field>
+
+                  {tr.journalLines.map((line) => (
+                    <div key={line.id} className="flex flex-wrap items-end gap-2">
+                      <Field label={t("builderJournalAccountLabel")}>
+                        {accounts.length === 0 ? (
+                          <p className="text-xs text-zinc-500 dark:text-zinc-500">
+                            {t("builderJournalNoAccounts")}
+                          </p>
+                        ) : (
+                          <select
+                            value={line.accountCode}
+                            onChange={(e) =>
+                              updateJournalLine(tr.id, line.id, { accountCode: e.target.value })
+                            }
+                            className={inputClass}
+                          >
+                            <option value="">{t("builderFieldReferenceUnselected")}</option>
+                            {accounts.map((a) => (
+                              <option key={a.id} value={a.code}>
+                                {a.code} — {a.name}
+                              </option>
+                            ))}
+                          </select>
+                        )}
+                      </Field>
+                      <Field label={t("builderJournalSideLabel")}>
+                        <select
+                          value={line.side}
+                          onChange={(e) =>
+                            updateJournalLine(tr.id, line.id, {
+                              side: e.target.value as BuilderJournalLineRow["side"],
+                            })
+                          }
+                          className={inputClass}
+                        >
+                          <option value="debit">{t("builderJournalSideDebit")}</option>
+                          <option value="credit">{t("builderJournalSideCredit")}</option>
+                        </select>
+                      </Field>
+                      <Field label={t("builderJournalAmountFieldLabel")}>
+                        <input
+                          type="text"
+                          value={line.amountField}
+                          onChange={(e) =>
+                            updateJournalLine(tr.id, line.id, { amountField: e.target.value })
+                          }
+                          placeholder={t("builderJournalAmountFieldPlaceholder")}
+                          className={inputClass}
+                        />
+                      </Field>
+                      <button
+                        type="button"
+                        data-permission-public="true"
+                        onClick={() => removeJournalLine(tr.id, line.id)}
+                        className="rounded-md border border-zinc-300 px-2 py-1.5 text-xs text-zinc-600 dark:border-zinc-700 dark:text-zinc-400"
+                      >
+                        {t("removeFieldButton")}
+                      </button>
+                    </div>
+                  ))}
+                  <button
+                    type="button"
+                    data-permission-public="true"
+                    onClick={() => addJournalLine(tr.id)}
+                    className="self-start text-xs font-medium text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
+                  >
+                    {t("builderJournalAddLineButton")}
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         ))}
         <button

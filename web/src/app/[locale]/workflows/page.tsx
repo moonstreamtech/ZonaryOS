@@ -7,6 +7,7 @@ import { getTranslations, setRequestLocale } from "next-intl/server";
 import { requireFirmContext } from "@/lib/firmContext";
 import { fetchRoleInFirm } from "@/lib/me";
 import { fetchDefinitions } from "@/lib/workflow";
+import { fetchAccounts } from "@/lib/accounting";
 import { Link } from "@/i18n/navigation";
 import DefinitionBuilder from "@/components/Workflow/DefinitionBuilder";
 
@@ -49,6 +50,12 @@ export default async function WorkflowsPage({ params }: PageProps) {
             // the same `definitions` list already fetched above for the
             // listing itself, just also handed to the builder.
             existingDefinitionKeys={(definitions ?? []).map((d) => d.key)}
+            // The financial management core's journal-template editor:
+            // its account-code picker is populated from the firm's real
+            // chart of accounts, never free text - only fetched here
+            // (inside the owner-only branch), since only an owner ever
+            // sees the builder that needs it.
+            accounts={(await fetchAccounts(sessionToken, firm.firmId)) ?? []}
           />
         </div>
       )}

@@ -8,18 +8,21 @@ package accounting
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
-// coreAccountCode/salesRevenueAccountCode/tradeReceivablesAccountCode are
-// exported so internal/workflow's own concrete workflow specs (e.g.
-// stock_to_sale.go's record_sale JournalTemplate) can reference the exact
+// These account-code constants are exported so internal/workflow's own
+// concrete workflow specs (e.g. stock_to_sale.go's record_sale/
+// purchase_order.go's receive JournalTemplate) can reference the exact
 // same codes this package seeds, instead of duplicating the literal
 // strings in a second package with no compile-time link between them.
 const (
 	TradeReceivablesAccountCode = "1100"
+	InventoryAccountCode        = "1200"
+	TradePayablesAccountCode    = "2000"
 	SalesRevenueAccountCode     = "4000"
 )
 
@@ -39,7 +42,7 @@ type seedAccount struct {
 var coreAccounts = []seedAccount{
 	{code: "1000", name: "Cash", typ: AccountTypeAsset},
 	{code: TradeReceivablesAccountCode, name: "Trade Receivables", typ: AccountTypeAsset},
-	{code: "2000", name: "Trade Payables", typ: AccountTypeLiability},
+	{code: TradePayablesAccountCode, name: "Trade Payables", typ: AccountTypeLiability},
 	{code: "3000", name: "Owner Equity", typ: AccountTypeEquity},
 	{code: "3100", name: "Retained Earnings", typ: AccountTypeEquity},
 }
@@ -50,16 +53,30 @@ var coreAccounts = []seedAccount{
 // sel.Sells && sel.TracksInventory), so stock_to_sale.go's record_sale
 // JournalTemplate (which posts against TradeReceivablesAccountCode/
 // SalesRevenueAccountCode) can always assume these accounts exist
-// whenever that workflow does.
+// whenever that workflow does. InventoryAccountCode is ALSO seeded by
+// purchasesAccounts below (deduplicated by SeedDefaultChartOfAccountsTx,
+// see its own doc comment) - a firm can track inventory without also
+// purchasing from suppliers (e.g. manufacturing its own stock, not
+// modeled yet either) or purchase from suppliers without selling
+// products at all (e.g. a service firm buying non-resale supplies), so
+// neither flag alone is a reliable precondition for the other.
 var sellsAccounts = []seedAccount{
-	{code: "1200", name: "Inventory", typ: AccountTypeAsset},
+	{code: InventoryAccountCode, name: "Inventory", typ: AccountTypeAsset},
 	{code: SalesRevenueAccountCode, name: "Sales Revenue", typ: AccountTypeRevenue},
 	{code: "5000", name: "Cost of Goods Sold", typ: AccountTypeExpense},
 }
 
 // purchasesAccounts are seeded when the firm's wizard answers say it
-// purchases from suppliers.
+// purchases from suppliers. InventoryAccountCode is included here too
+// (not just in sellsAccounts) so purchase_order.go's receive
+// JournalTemplate (DR Inventory / CR Trade Payables - goods actually
+// received from a supplier) can always assume it exists whenever the
+// Purchase Order workflow does, regardless of whether the firm also
+// answered "yes" to selling products - see this batch's report for the
+// full reasoning (a purchase_order-without-Inventory firm would otherwise
+// hit ErrAccountNotFound the first time it executed "receive").
 var purchasesAccounts = []seedAccount{
+	{code: InventoryAccountCode, name: "Inventory", typ: AccountTypeAsset},
 	{code: "2100", name: "Accounts Payable", typ: AccountTypeLiability},
 	{code: "5100", name: "Purchase Expense", typ: AccountTypeExpense},
 }
@@ -104,16 +121,36 @@ type SeedChartOptions struct {
 // same transaction - never reachable with a caller-supplied firmID via an
 // HTTP handler.
 func SeedDefaultChartOfAccountsTx(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, opts SeedChartOptions) error {
-	accounts := make([]seedAccount, 0, len(coreAccounts)+len(sellsAccounts)+len(purchasesAccounts))
-	accounts = append(accounts, coreAccounts...)
+	// Deduplicated by code, not a plain concatenated slice: InventoryAccountCode
+	// appears in both sellsAccounts and purchasesAccounts (see their own
+	// doc comments above) - a firm that answered "yes" to both would
+	// otherwise hit accounts' UNIQUE (firm_id, code) constraint trying to
+	// insert "1200" twice. A map keyed by code, converted to a
+	// code-sorted slice for a deterministic insert order, handles this
+	// cleanly regardless of which combination of groups is active.
+	byCode := make(map[string]seedAccount, len(coreAccounts)+len(sellsAccounts)+len(purchasesAccounts))
+	for _, a := range coreAccounts {
+		byCode[a.code] = a
+	}
 	if opts.Sells {
-		accounts = append(accounts, sellsAccounts...)
+		for _, a := range sellsAccounts {
+			byCode[a.code] = a
+		}
 	}
 	if opts.PurchasesFromSuppliers {
-		accounts = append(accounts, purchasesAccounts...)
+		for _, a := range purchasesAccounts {
+			byCode[a.code] = a
+		}
 	}
 
-	for _, a := range accounts {
+	codes := make([]string, 0, len(byCode))
+	for code := range byCode {
+		codes = append(codes, code)
+	}
+	sort.Strings(codes)
+
+	for _, code := range codes {
+		a := byCode[code]
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO accounts (firm_id, code, name, type) VALUES ($1, $2, $3, $4)
 		`, firmID, a.code, a.name, string(a.typ)); err != nil {

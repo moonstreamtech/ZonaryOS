@@ -140,6 +140,13 @@ export type TransitionSpecInput = {
   actionKey: string;
   name: string;
   permission: PermissionSpecInput;
+  // journal is OPTIONAL - the financial management core's workflow-to-
+  // ledger bridge (see JournalTemplateInfo above, this type's read-side
+  // counterpart; the two shapes are identical, reused directly here
+  // rather than duplicated under a second "Input" name). Omitted means
+  // "post nothing", exactly TransitionSpec.Journal's own zero-value
+  // contract server-side.
+  journal?: JournalTemplateInfo;
 };
 
 export type DefinitionSpecInput = {

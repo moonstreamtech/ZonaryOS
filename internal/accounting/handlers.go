@@ -50,6 +50,8 @@ func RegisterRoutes(mux *http.ServeMux, verifier *identity.Verifier, pool *pgxpo
 	mux.Handle("GET /api/firms/{firmID}/accounts/{accountID}/balance", auth(http.HandlerFunc(handleAccountBalance(pool))))
 	mux.Handle("GET /api/firms/{firmID}/journal-entries", auth(http.HandlerFunc(handleListJournalEntries(pool))))
 	mux.Handle("POST /api/firms/{firmID}/journal-entries", auth(http.HandlerFunc(handlePostJournalEntry(pool))))
+	mux.Handle("GET /api/firms/{firmID}/reports/pnl", auth(http.HandlerFunc(handlePnLReport(pool))))
+	mux.Handle("GET /api/firms/{firmID}/reports/balance-sheet", auth(http.HandlerFunc(handleBalanceSheetReport(pool))))
 }
 
 // writeAccountingError maps this package's sentinel errors to the HTTP
@@ -417,5 +419,177 @@ func handlePostJournalEntry(pool *pgxpool.Pool) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]string{"id": entryID.String()})
+	}
+}
+
+// reportLineResponse is ReportLine's JSON wire shape.
+type reportLineResponse struct {
+	AccountID string `json:"accountId"`
+	Code      string `json:"code"`
+	Name      string `json:"name"`
+	Amount    string `json:"amount"`
+}
+
+func toReportLineResponses(lines []ReportLine) []reportLineResponse {
+	resp := make([]reportLineResponse, 0, len(lines))
+	for _, l := range lines {
+		resp = append(resp, reportLineResponse{AccountID: l.AccountID.String(), Code: l.Code, Name: l.Name, Amount: l.Amount})
+	}
+	return resp
+}
+
+type pnlReportResponse struct {
+	From          *string              `json:"from,omitempty"`
+	To            *string              `json:"to,omitempty"`
+	Revenue       []reportLineResponse `json:"revenue"`
+	Expenses      []reportLineResponse `json:"expenses"`
+	TotalRevenue  string               `json:"totalRevenue"`
+	TotalExpenses string               `json:"totalExpenses"`
+	NetIncome     string               `json:"netIncome"`
+}
+
+func toPnLReportResponse(r PnLReport) pnlReportResponse {
+	resp := pnlReportResponse{
+		Revenue:       toReportLineResponses(r.Revenue),
+		Expenses:      toReportLineResponses(r.Expenses),
+		TotalRevenue:  r.TotalRevenue,
+		TotalExpenses: r.TotalExpenses,
+		NetIncome:     r.NetIncome,
+	}
+	if r.From != nil {
+		s := r.From.Format(time.RFC3339)
+		resp.From = &s
+	}
+	if r.To != nil {
+		s := r.To.Format(time.RFC3339)
+		resp.To = &s
+	}
+	return resp
+}
+
+// handlePnLReport serves GET .../reports/pnl?from=&to= (both optional,
+// RFC3339 timestamps - an omitted bound leaves that side of the period
+// open, same convention as internal/auditlog's own ?from=/?to=).
+func handlePnLReport(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := identity.FromContext(r.Context())
+		if !ok {
+			http.Error(w, "missing identity", http.StatusInternalServerError)
+			return
+		}
+		firmID, err := uuid.Parse(r.PathValue("firmID"))
+		if err != nil {
+			http.Error(w, "invalid firm id", http.StatusBadRequest)
+			return
+		}
+		from, to, err := parseReportDateRange(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		userID, err := identity.ResolveOrCreateUser(r.Context(), pool, id)
+		if err != nil {
+			http.Error(w, "failed to resolve user", http.StatusInternalServerError)
+			return
+		}
+
+		report, err := GetProfitAndLoss(r.Context(), pool, firmID, userID, from, to)
+		if err != nil {
+			writeAccountingError(w, err)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(toPnLReportResponse(report))
+	}
+}
+
+// parseReportDateRange reads ?from=/?to= off r as optional RFC3339
+// timestamps - shared by handlePnLReport's period bounds.
+func parseReportDateRange(r *http.Request) (from, to *time.Time, err error) {
+	q := r.URL.Query()
+	if raw := q.Get("from"); raw != "" {
+		t, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			return nil, nil, errors.New("invalid from")
+		}
+		from = &t
+	}
+	if raw := q.Get("to"); raw != "" {
+		t, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			return nil, nil, errors.New("invalid to")
+		}
+		to = &t
+	}
+	return from, to, nil
+}
+
+type balanceSheetReportResponse struct {
+	AsOf             string               `json:"asOf"`
+	Assets           []reportLineResponse `json:"assets"`
+	Liabilities      []reportLineResponse `json:"liabilities"`
+	Equity           []reportLineResponse `json:"equity"`
+	CurrentEarnings  string               `json:"currentEarnings"`
+	TotalAssets      string               `json:"totalAssets"`
+	TotalLiabilities string               `json:"totalLiabilities"`
+	TotalEquity      string               `json:"totalEquity"`
+	Balanced         bool                 `json:"balanced"`
+	Difference       string               `json:"difference"`
+}
+
+func toBalanceSheetReportResponse(r BalanceSheetReport) balanceSheetReportResponse {
+	return balanceSheetReportResponse{
+		AsOf:             r.AsOf.Format(time.RFC3339),
+		Assets:           toReportLineResponses(r.Assets),
+		Liabilities:      toReportLineResponses(r.Liabilities),
+		Equity:           toReportLineResponses(r.Equity),
+		CurrentEarnings:  r.CurrentEarnings,
+		TotalAssets:      r.TotalAssets,
+		TotalLiabilities: r.TotalLiabilities,
+		TotalEquity:      r.TotalEquity,
+		Balanced:         r.Balanced,
+		Difference:       r.Difference,
+	}
+}
+
+// handleBalanceSheetReport serves GET .../reports/balance-sheet?as_of=
+// (optional RFC3339 timestamp; defaults to now - a balance sheet always
+// has a point in time, unlike the P&L's optional-both-bounds period).
+func handleBalanceSheetReport(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := identity.FromContext(r.Context())
+		if !ok {
+			http.Error(w, "missing identity", http.StatusInternalServerError)
+			return
+		}
+		firmID, err := uuid.Parse(r.PathValue("firmID"))
+		if err != nil {
+			http.Error(w, "invalid firm id", http.StatusBadRequest)
+			return
+		}
+		asOf := time.Now()
+		if raw := r.URL.Query().Get("as_of"); raw != "" {
+			parsed, err := time.Parse(time.RFC3339, raw)
+			if err != nil {
+				http.Error(w, "invalid as_of", http.StatusBadRequest)
+				return
+			}
+			asOf = parsed
+		}
+		userID, err := identity.ResolveOrCreateUser(r.Context(), pool, id)
+		if err != nil {
+			http.Error(w, "failed to resolve user", http.StatusInternalServerError)
+			return
+		}
+
+		report, err := GetBalanceSheet(r.Context(), pool, firmID, userID, asOf)
+		if err != nil {
+			writeAccountingError(w, err)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(toBalanceSheetReportResponse(report))
 	}
 }
