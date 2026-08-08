@@ -28,6 +28,7 @@
     "suppliers": "Suppliers",
     "logistics": "Logistics",
     "customers": "Customers",
+    "invoices": "Invoices",
     "logout": "Log out",
     "firmSwitcherLabel": "Active firm"
   },
@@ -465,7 +466,9 @@
       "lowStockProducts": "Low-stock products",
       "totalInventoryValue": "Total inventory value",
       "pendingDeliveries": "Pending deliveries",
-      "activeCustomers": "Active customers"
+      "activeCustomers": "Active customers",
+      "overdueInvoices": "Overdue invoices",
+      "totalOutstanding": "Total outstanding"
     }
   },
   "Financials": {
@@ -483,6 +486,11 @@
     "tabBalances": "Account Balances",
     "tabPnL": "Profit & Loss",
     "tabBalanceSheet": "Balance Sheet",
+    "tabAging": "Receivables Aging",
+    "agingTitle": "Receivables aging",
+    "agingBucket": "Days overdue",
+    "agingCount": "Invoices",
+    "agingOutstanding": "Outstanding",
     "fromLabel": "From",
     "toLabel": "To",
     "asOfLabel": "As of",
@@ -665,5 +673,49 @@
     "phone": "Phone",
     "address": "Address",
     "fromPipeline": "From Customer Pipeline"
+  },
+  "Invoices": {
+    "title": "Invoices",
+    "loadError": "Couldn't load this data. Please try again.",
+    "empty": "No invoices yet.",
+    "invoicesTitle": "Invoices",
+    "newInvoice": "+ New invoice",
+    "cancel": "Cancel",
+    "create": "Create",
+    "createRequired": "Please fill in the issued date, line description, quantity, and unit price.",
+    "createError": "Couldn't create this invoice. Please try again.",
+    "customer": "Customer",
+    "customerNone": "No customer",
+    "issuedDate": "Issued date",
+    "dueDate": "Due date",
+    "lineDescription": "Description",
+    "lineQuantity": "Quantity",
+    "lineUnitPrice": "Unit price",
+    "lineTotal": "Line total",
+    "columnNumber": "Invoice #",
+    "columnStatus": "Status",
+    "columnTotal": "Total",
+    "columnIssuedDate": "Issued",
+    "subtotalAndTax": "Subtotal + tax",
+    "changeStatus": "Change status:",
+    "statusUpdateError": "Couldn't update the invoice's status. Please try again.",
+    "linesTitle": "Lines",
+    "paymentsTitle": "Payments",
+    "noPayments": "No payments recorded yet.",
+    "recordPaymentTitle": "Record a payment",
+    "recordPayment": "Record payment",
+    "paymentAmount": "Amount",
+    "paymentDate": "Paid on",
+    "paymentMethod": "Method",
+    "paymentReference": "Reference",
+    "paymentRequired": "Please enter an amount and a payment date.",
+    "paymentError": "Couldn't record this payment. Please try again.",
+    "status": {
+      "draft": "Draft",
+      "sent": "Sent",
+      "paid": "Paid",
+      "overdue": "Overdue",
+      "cancelled": "Cancelled"
+    }
   }
 }

@@ -133,6 +133,94 @@ assert lines[('4000', 'credit')] == '19.9900', entry
 " || fail "expected a balanced journal entry (DR 1100 / CR 4000, 19.9900) posted for instance $INSTANCE_ID: $JOURNAL_ENTRIES"
 log "journal entry confirmed: DR Trade Receivables / CR Sales Revenue, 19.9900"
 
+# --- Invoicing, payment tracking, and receivables management: the same
+# --- record_sale call above (quantity=1 from add-stock, unit_price=19.99
+# --- from record_sale itself, both present in the merged payload) should
+# --- have ALSO auto-created a draft invoice via the workflow-to-invoicing
+# --- bridge (InvoiceTemplate) - confirm it, then record a payment against
+# --- it and confirm it closes to 'paid' with a real DR Cash / CR Trade
+# --- Receivables journal entry, per the design brief's own E2E section. -
+
+log "invoicing: confirming record_sale also auto-created a draft invoice via the workflow-to-invoicing bridge"
+INVOICES_RESPONSE=$(auth "$BACKEND_URL/api/firms/$FIRM_ID/invoices")
+INVOICE_ID=$(echo "$INVOICES_RESPONSE" | python3 -c "
+import sys, json
+invoices = json.load(sys.stdin)
+matches = [i for i in invoices if i.get('sourceWorkflowInstance') == '$INSTANCE_ID']
+assert len(matches) == 1, invoices
+inv = matches[0]
+assert inv['status'] == 'draft', inv
+assert inv['total'] == '19.9900', inv
+assert inv['invoiceNumber'].startswith('INV-'), inv
+print(inv['id'])
+")
+[ -n "$INVOICE_ID" ] || fail "expected record_sale to auto-create a draft invoice: $INVOICES_RESPONSE"
+log "invoice auto-created: $INVOICE_ID (draft, total 19.9900)"
+
+log "invoicing: confirming GET .../invoices/{id} returns the invoice's one line"
+INVOICE_DETAIL=$(auth "$BACKEND_URL/api/firms/$FIRM_ID/invoices/$INVOICE_ID")
+echo "$INVOICE_DETAIL" | python3 -c "
+import sys, json
+inv = json.load(sys.stdin)
+assert len(inv['lines']) == 1, inv
+line = inv['lines'][0]
+assert line['description'] == 'Sale of E2E Smoke Widget', line
+assert line['quantity'] == '1.0000' and line['unitPrice'] == '19.9900', line
+" || fail "expected the invoice's one line to match the sale: $INVOICE_DETAIL"
+log "invoice line confirmed"
+
+log "invoicing (UI path): confirming /invoices renders the new invoice"
+INVOICES_PAGE_HTML=$(curl -sS -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$FIRM_ID" "$FRONTEND_URL/en/invoices")
+echo "$INVOICES_PAGE_HTML" | grep -q "$(echo "$INVOICE_DETAIL" | python3 -c "import sys, json; print(json.load(sys.stdin)['invoiceNumber'])")" \
+    || fail "expected /invoices to render the new invoice's number"
+log "invoicing (UI path) confirmed"
+
+log "invoicing: sending the invoice (draft -> sent) via PATCH"
+auth -X PATCH "$BACKEND_URL/api/firms/$FIRM_ID/invoices/$INVOICE_ID" \
+    -H "Content-Type: application/json" -d '{"status":"sent"}' >/dev/null
+
+log "invoicing: recording a payment that fully covers the invoice"
+PAYMENT_RESPONSE=$(auth -X POST "$BACKEND_URL/api/firms/$FIRM_ID/invoices/$INVOICE_ID/payments" \
+    -H "Content-Type: application/json" \
+    -d '{"amount":"19.99","paidAt":"2026-01-01T00:00:00Z","method":"bank_transfer","reference":"E2E-PAY-1"}')
+echo "$PAYMENT_RESPONSE" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['invoice']['status'] == 'paid', d
+" || fail "expected the invoice to auto-close to paid once the payment covers its total: $PAYMENT_RESPONSE"
+log "invoicing: payment recorded, invoice closed to paid"
+
+log "invoicing: confirming the payment's DR Cash / CR Trade Receivables journal entry was posted"
+CLOSING_JOURNAL=$(auth "$BACKEND_URL/api/firms/$FIRM_ID/journal-entries")
+echo "$CLOSING_JOURNAL" | python3 -c "
+import sys, json
+entries = json.load(sys.stdin)
+matches = [e for e in entries if e.get('sourceType') == 'invoice' and e.get('sourceId') == '$INVOICE_ID']
+assert len(matches) == 1, entries
+entry = matches[0]
+lines = {(l['accountCode'], l['side']): l['amount'] for l in entry['lines']}
+assert len(lines) == 2, entry
+assert lines[('1000', 'debit')] == '19.9900', entry
+assert lines[('1100', 'credit')] == '19.9900', entry
+" || fail "expected a balanced journal entry (DR 1000 Cash / CR 1100 Trade Receivables, 19.9900) posted for invoice $INVOICE_ID: $CLOSING_JOURNAL"
+log "invoicing: payment-closing journal entry confirmed (DR Cash / CR Trade Receivables, 19.9900)"
+
+log "invoicing: confirming GET .../reports/receivables-aging responds with the four fixed buckets"
+AGING_RESPONSE=$(auth "$BACKEND_URL/api/firms/$FIRM_ID/reports/receivables-aging")
+echo "$AGING_RESPONSE" | python3 -c "
+import sys, json
+buckets = json.load(sys.stdin)
+labels = {b['label'] for b in buckets}
+assert labels == {'0-30', '31-60', '61-90', '90+'}, buckets
+" || fail "expected the aging report to always list all four fixed buckets: $AGING_RESPONSE"
+log "invoicing: receivables aging report confirmed"
+
+log "financials (UI path): confirming /financials?tab=aging renders"
+AGING_PAGE_HTML=$(curl -sS -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$FIRM_ID" "$FRONTEND_URL/en/financials?tab=aging")
+echo "$AGING_PAGE_HTML" | grep -qi "0-30" \
+    || fail "expected /financials?tab=aging to render the 0-30 bucket"
+log "financials (UI path) confirmed"
+
 log "bonus: confirming the audit trail (PR 8) recorded this transaction"
 AUDIT_LOG=$(auth "$BACKEND_URL/api/firms/$FIRM_ID/audit-log")
 echo "$AUDIT_LOG" | python3 -c "
@@ -1043,4 +1131,4 @@ trap - EXIT
 log "session refresh: realm's accessTokenLifespan restored to its original (unset/default) value"
 
 echo ""
-echo "E2E SMOKE TEST PASSED: login + wizard -> firm creation -> add stock -> sell, plus UI-path add stock, firm switch, audit log view, a real second workflow defined + rendered through the generic UI, the Customer Pipeline default workflow walked lead -> qualified -> customer, (new) the convert transition's CustomerTemplate auto-creating a real customer record confirmed via /customers, a customer-linked sale whose DeliveryTemplate auto-created a delivery confirmed via /logistics and whose journal entry description names the customer, the activeCustomers/pendingDeliveries KPIs, the dashboard's counts-by-state overview, quick-create, global search, a full self-registration -> invite -> accept flow bringing a second real user into the firm with no email infrastructure, a purchase order walked draft -> sent -> received posting the correct ledger entry only on receive, (new) HR core (person + contract creation), a task assigned to that person confirmed via /tasks' cross-module join and the /reports KPI dashboard, (new) Inventory management - a product created, stock topped up via the purchase_order 'purchase_receive' hook, an insufficient-stock sale rejected then a real sale decreasing stock and appending a movement row, confirmed via /inventory and /suppliers and the inventory KPI dashboard - and a genuine session-refresh proof - a real Keycloak access token actually expires, gets silently refreshed by src/proxy.ts with no re-login prompt, and the terminal (invalid refresh token) case cleanly falls through to a real login redirect - all against a real stack"
+echo "E2E SMOKE TEST PASSED: login + wizard -> firm creation -> add stock -> sell, plus UI-path add stock, firm switch, audit log view, a real second workflow defined + rendered through the generic UI, the Customer Pipeline default workflow walked lead -> qualified -> customer, the convert transition's CustomerTemplate auto-creating a real customer record confirmed via /customers, a customer-linked sale whose DeliveryTemplate auto-created a delivery confirmed via /logistics and whose journal entry description names the customer, the activeCustomers/pendingDeliveries KPIs, (new) Invoicing/payment tracking - the same sale's InvoiceTemplate auto-creating a draft invoice with a matching line confirmed via /invoices, sent then paid via a recorded payment that auto-closed it and posted a real DR Cash / CR Trade Receivables journal entry, and the receivables aging report confirmed both via the API and /financials?tab=aging, the dashboard's counts-by-state overview, quick-create, global search, a full self-registration -> invite -> accept flow bringing a second real user into the firm with no email infrastructure, a purchase order walked draft -> sent -> received posting the correct ledger entry only on receive, (new) HR core (person + contract creation), a task assigned to that person confirmed via /tasks' cross-module join and the /reports KPI dashboard, (new) Inventory management - a product created, stock topped up via the purchase_order 'purchase_receive' hook, an insufficient-stock sale rejected then a real sale decreasing stock and appending a movement row, confirmed via /inventory and /suppliers and the inventory KPI dashboard - and a genuine session-refresh proof - a real Keycloak access token actually expires, gets silently refreshed by src/proxy.ts with no re-login prompt, and the terminal (invalid refresh token) case cleanly falls through to a real login redirect - all against a real stack"

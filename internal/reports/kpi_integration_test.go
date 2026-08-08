@@ -49,7 +49,7 @@ func setupTest(t *testing.T) (adminPool, appPool *pgxpool.Pool) {
 			accounts, journal_entries, journal_lines,
 			workflow_definitions, workflow_states, workflow_transitions, workflow_instances,
 			people, contracts, products, stock_levels, stock_movements, suppliers,
-			deliveries, customers, audit_log, permissions CASCADE
+			deliveries, customers, invoices, invoice_lines, payments, invoice_sequences, audit_log, permissions CASCADE
 	`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
@@ -332,6 +332,95 @@ func TestGetDashboardKPIs_LogisticsCRMMetrics(t *testing.T) {
 	}
 }
 
+// TestGetDashboardKPIs_ReceivablesMetrics seeds a small mix of invoices
+// (draft, sent-not-yet-due, sent-and-overdue, explicitly overdue, paid,
+// cancelled - plus one sent invoice with a partial payment) and confirms
+// overdueInvoices/totalOutstanding both reflect exactly the invoices that
+// should count.
+func TestGetDashboardKPIs_ReceivablesMetrics(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	firmID, userID, _ := seedOwner(ctx, t, adminPool, appPool, "Firm Receivables KPI", "kpi-receivables-owner")
+
+	// draft: not a real receivable yet - excluded from both metrics.
+	if _, err := adminPool.Exec(ctx, `
+		INSERT INTO invoices (firm_id, invoice_number, issued_date, due_date, status, subtotal, tax_amount, total)
+		VALUES ($1, 'INV-D1', CURRENT_DATE, CURRENT_DATE + 30, 'draft', 100, 0, 100)
+	`, firmID); err != nil {
+		t.Fatalf("seed draft invoice: %v", err)
+	}
+
+	// sent, due_date in the future: outstanding, but NOT overdue.
+	if _, err := adminPool.Exec(ctx, `
+		INSERT INTO invoices (firm_id, invoice_number, issued_date, due_date, status, subtotal, tax_amount, total)
+		VALUES ($1, 'INV-S1', CURRENT_DATE, CURRENT_DATE + 30, 'sent', 100, 0, 100)
+	`, firmID); err != nil {
+		t.Fatalf("seed not-yet-due invoice: %v", err)
+	}
+
+	// sent, due_date in the past: overdue IN SUBSTANCE even though status
+	// is still 'sent' - must count toward overdueInvoices.
+	if _, err := adminPool.Exec(ctx, `
+		INSERT INTO invoices (firm_id, invoice_number, issued_date, due_date, status, subtotal, tax_amount, total)
+		VALUES ($1, 'INV-S2', CURRENT_DATE - 60, CURRENT_DATE - 30, 'sent', 200, 0, 200)
+	`, firmID); err != nil {
+		t.Fatalf("seed substantively-overdue invoice: %v", err)
+	}
+
+	// explicitly 'overdue' status.
+	if _, err := adminPool.Exec(ctx, `
+		INSERT INTO invoices (firm_id, invoice_number, issued_date, due_date, status, subtotal, tax_amount, total)
+		VALUES ($1, 'INV-O1', CURRENT_DATE - 90, CURRENT_DATE - 60, 'overdue', 300, 0, 300)
+	`, firmID); err != nil {
+		t.Fatalf("seed overdue invoice: %v", err)
+	}
+
+	// sent, with a partial payment: outstanding = total - paid, not just total.
+	var partiallyPaidID uuid.UUID
+	if err := adminPool.QueryRow(ctx, `
+		INSERT INTO invoices (firm_id, invoice_number, issued_date, due_date, status, subtotal, tax_amount, total)
+		VALUES ($1, 'INV-S3', CURRENT_DATE, CURRENT_DATE + 30, 'sent', 500, 0, 500)
+		RETURNING id
+	`, firmID).Scan(&partiallyPaidID); err != nil {
+		t.Fatalf("seed partially-paid invoice: %v", err)
+	}
+	if _, err := adminPool.Exec(ctx, `
+		INSERT INTO payments (firm_id, invoice_id, amount, paid_at) VALUES ($1, $2, 150, now())
+	`, firmID, partiallyPaidID); err != nil {
+		t.Fatalf("seed partial payment: %v", err)
+	}
+
+	// paid and cancelled: no longer outstanding - excluded from both metrics.
+	if _, err := adminPool.Exec(ctx, `
+		INSERT INTO invoices (firm_id, invoice_number, issued_date, due_date, status, subtotal, tax_amount, total)
+		VALUES ($1, 'INV-P1', CURRENT_DATE - 10, CURRENT_DATE - 5, 'paid', 400, 0, 400)
+	`, firmID); err != nil {
+		t.Fatalf("seed paid invoice: %v", err)
+	}
+	if _, err := adminPool.Exec(ctx, `
+		INSERT INTO invoices (firm_id, invoice_number, issued_date, due_date, status, subtotal, tax_amount, total)
+		VALUES ($1, 'INV-C1', CURRENT_DATE - 10, CURRENT_DATE - 5, 'cancelled', 999, 0, 999)
+	`, firmID); err != nil {
+		t.Fatalf("seed cancelled invoice: %v", err)
+	}
+
+	results, err := reports.GetDashboardKPIs(ctx, appPool, firmID, userID)
+	if err != nil {
+		t.Fatalf("GetDashboardKPIs: %v", err)
+	}
+
+	// Overdue: INV-S2 (sent, past due) + INV-O1 (explicitly overdue) = 2.
+	if v := kpiValue(t, results, "overdueInvoices"); v != "2" {
+		t.Errorf("expected overdueInvoices 2, got %q", v)
+	}
+	// Outstanding: 100 (INV-S1) + 200 (INV-S2) + 300 (INV-O1) + 350 (INV-S3
+	// net of its 150 payment) = 950.0000. Draft/paid/cancelled excluded.
+	if v := kpiValue(t, results, "totalOutstanding"); v != "950.0000" {
+		t.Errorf("expected totalOutstanding 950.0000, got %q", v)
+	}
+}
+
 // TestGetDashboardKPIs_EmptyFirmReadsZeros confirms a brand-new firm with
 // no accounts/workflows/people yet reads back real zeros, not errors -
 // see GetDashboardKPIs' own doc comment for why that's the correct
@@ -346,8 +435,8 @@ func TestGetDashboardKPIs_EmptyFirmReadsZeros(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetDashboardKPIs: %v", err)
 	}
-	if len(results) != 10 {
-		t.Fatalf("expected 10 KPI results, got %d: %+v", len(results), results)
+	if len(results) != 12 {
+		t.Fatalf("expected 12 KPI results, got %d: %+v", len(results), results)
 	}
 	for _, r := range results {
 		// A plain "0" or a zero-valued decimal string ("0.0000") both mean

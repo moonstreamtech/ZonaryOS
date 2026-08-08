@@ -13,13 +13,14 @@ import {
   fetchBalanceSheetReport,
   type ReportLine,
 } from "@/lib/accounting";
+import { fetchReceivablesAging } from "@/lib/invoicing";
 
 type PageProps = {
   params: Promise<{ locale: string }>;
   searchParams: Promise<{ tab?: string; from?: string; to?: string; asOf?: string }>;
 };
 
-type Tab = "balances" | "pnl" | "balance-sheet";
+type Tab = "balances" | "pnl" | "balance-sheet" | "aging";
 
 // The date `<input type="date">` fields below submit a plain "YYYY-MM-DD"
 // via a real GET navigation (see this file's own doc comment on why),
@@ -58,7 +59,8 @@ export default async function FinancialsPage({ params, searchParams }: PageProps
   setRequestLocale(locale);
   const t = await getTranslations("Financials");
   const sp = await searchParams;
-  const tab: Tab = sp.tab === "pnl" ? "pnl" : sp.tab === "balance-sheet" ? "balance-sheet" : "balances";
+  const tab: Tab =
+    sp.tab === "pnl" ? "pnl" : sp.tab === "balance-sheet" ? "balance-sheet" : sp.tab === "aging" ? "aging" : "balances";
 
   const { sessionToken, firm } = await requireFirmContext(locale);
 
@@ -77,6 +79,7 @@ export default async function FinancialsPage({ params, searchParams }: PageProps
             active={tab === "balance-sheet"}
             label={t("tabBalanceSheet")}
           />
+          <TabLink locale={locale} tab="aging" active={tab === "aging"} label={t("tabAging")} />
         </nav>
       </div>
 
@@ -89,6 +92,7 @@ export default async function FinancialsPage({ params, searchParams }: PageProps
       {tab === "balance-sheet" && (
         <BalanceSheetTab sessionToken={sessionToken} firmId={firm.firmId} asOf={sp.asOf} />
       )}
+      {tab === "aging" && <AgingTab sessionToken={sessionToken} firmId={firm.firmId} />}
     </main>
   );
 }
@@ -503,6 +507,50 @@ async function BalanceSheetTab({
             </table>
           </div>
         </>
+      )}
+    </div>
+  );
+}
+
+// AgingTab (Invoicing/payment tracking batch): the receivables aging
+// report - every unpaid invoice (status 'sent'/'overdue') grouped into
+// one of four fixed age buckets by internal/invoicing.ReceivablesAging,
+// "needed for any real financial management" (design brief). No date
+// filter of its own - unlike PnLTab/BalanceSheetTab, the bucket
+// boundaries are fixed and the report is always "as of right now" (see
+// ReceivablesAging's own doc comment on why age is computed in SQL
+// against CURRENT_DATE, not a caller-supplied instant).
+async function AgingTab({ sessionToken, firmId }: { sessionToken: string; firmId: string }) {
+  const t = await getTranslations("Financials");
+  const buckets = await fetchReceivablesAging(sessionToken, firmId);
+
+  return (
+    <div className="flex w-full max-w-4xl flex-col gap-4">
+      <h2 className="text-xl font-semibold tracking-tight text-black dark:text-zinc-50">{t("agingTitle")}</h2>
+
+      {buckets === null ? (
+        <p className="text-red-600 dark:text-red-400">{t("loadError")}</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-left text-sm">
+            <thead>
+              <tr className="border-b border-zinc-300 text-zinc-600 dark:border-zinc-700 dark:text-zinc-400">
+                <th className="py-2 pr-4 font-medium">{t("agingBucket")}</th>
+                <th className="py-2 pr-4 font-medium">{t("agingCount")}</th>
+                <th className="py-2 font-medium">{t("agingOutstanding")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {buckets.map((b) => (
+                <tr key={b.label} className="border-b border-zinc-200 text-black dark:border-zinc-800 dark:text-zinc-50">
+                  <td className="py-2 pr-4 font-mono">{b.label}</td>
+                  <td className="py-2 pr-4">{b.count}</td>
+                  <td className="py-2 font-mono">{b.outstanding}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

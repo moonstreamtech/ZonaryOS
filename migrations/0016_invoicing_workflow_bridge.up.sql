@@ -1,0 +1,12 @@
+-- The workflow-to-invoicing bridge (internal/workflow/spec.go's
+-- TransitionSpec.Invoice): the same shape
+-- 0009_financial_management_core.up.sql's journal_template,
+-- 0012_inventory_workflow_bridge.up.sql's stock_adjustment, and
+-- 0014_logistics_crm_workflow_bridge.up.sql's delivery_template/
+-- customer_template columns already established, not a new mechanism.
+-- NULL (every transition defined before this column existed) means
+-- "create nothing", unchanged behavior - see TransitionSpec.Invoice's own
+-- doc comment for why this is the fifth such bridge, and this batch's
+-- report for the design tension that crosses TransitionSpec's own
+-- documented "fifth or sixth bridge" refactor threshold.
+ALTER TABLE workflow_transitions ADD COLUMN invoice_template jsonb;

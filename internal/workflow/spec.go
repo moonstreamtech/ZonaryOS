@@ -37,35 +37,43 @@ type StateSpec struct {
 // Side-effect templates: a transition can carry any number of the
 // declarative, OPTIONAL "bridge" templates below - Journal (the ledger
 // bridge), StockAdjustment (the inventory bridge), Delivery (the
-// logistics bridge), Customer (the CRM bridge). All four share one shape
-// and one contract, deliberately: each is a `*XTemplate` pointer, nil by
-// default (every TransitionSpec that predates a given template keeps
-// behaving exactly as before - Rule 6), resolved by ExecuteTransition
-// against the transition's merged instance payload at transition time
-// (never baked in ahead of time), and applied in the SAME database
-// transaction as the state change itself, through that module's own `*Tx`
-// primitive (PostJournalEntryTx / AdjustStockTx / CreateDeliveryTx /
-// CreateCustomerTx) - so a side effect can never end up out of sync with
-// the transition that produced it. A transition can carry several at
-// once (e.g. stock_to_sale's record_sale carries Journal AND
-// StockAdjustment AND Delivery) - they are independent, each resolved and
-// applied on its own, not a single combined mechanism.
+// logistics bridge), Customer (the CRM bridge), Invoice (the invoicing
+// bridge). All five share one shape and one contract, deliberately: each
+// is a `*XTemplate` pointer, nil by default (every TransitionSpec that
+// predates a given template keeps behaving exactly as before - Rule 6),
+// resolved by ExecuteTransition against the transition's merged instance
+// payload at transition time (never baked in ahead of time), and applied
+// in the SAME database transaction as the state change itself, through
+// that module's own `*Tx` primitive (PostJournalEntryTx / AdjustStockTx /
+// CreateDeliveryTx / CreateCustomerTx / CreateInvoiceTx) - so a side
+// effect can never end up out of sync with the transition that produced
+// it. A transition can carry several at once (e.g. stock_to_sale's
+// record_sale carries Journal AND StockAdjustment AND Delivery AND
+// Invoice) - they are independent, each resolved and applied on its own,
+// not a single combined mechanism.
 //
-// Why four separate named fields rather than one generic
-// `Effects []TransitionEffect` slice: with four, a reader can see a
-// transition's full side-effect surface at a glance in the struct
-// literal (as stock_to_sale.go's record_sale does) and the compiler
-// catches a typo'd field name - a real, concrete advantage a
-// `[]TransitionEffect` (interface-typed, JSON-discriminated by a `Kind`
-// string, resolved through a `switch` in engine.go) would trade away for
-// open-endedness this codebase doesn't need yet: every bridge so far is a
-// small, closed set the product vision itself enumerates (ledger,
-// inventory, logistics, CRM), not something firms define arbitrarily the
-// way States/Transitions/Fields are. If a fifth or sixth such bridge
-// arrives and this struct starts feeling like a junk drawer, that is the
-// signal to switch to the generic `Effects` shape - not before, since
-// premature genericization here would only replace four self-documenting
-// fields with one indirection layer for no present benefit.
+// Why five separate named fields rather than one generic
+// `Effects []TransitionEffect` slice - and why this field, Invoice, is
+// added as a fifth named field despite this doc comment's own
+// previously-stated threshold ("a fifth or sixth such bridge... is the
+// signal to switch"): with five, a reader can still see a transition's
+// full side-effect surface at a glance in the struct literal (as
+// stock_to_sale.go's record_sale does) and the compiler still catches a
+// typo'd field name - the concrete advantage a `[]TransitionEffect`
+// (interface-typed, JSON-discriminated by a `Kind` string, resolved
+// through a `switch` in engine.go) trades away for open-endedness this
+// codebase doesn't need yet. This struct genuinely IS now at the
+// documented trigger point, and that is deliberately not being treated as
+// silent permission to ignore the threshold: adding Invoice here without
+// refactoring is a conscious, reported trade-off (see this batch's own
+// report) between finishing the requested feature now versus a
+// structural refactor (migrating four existing, already-shipped,
+// already-tested bridges to a new shape) that touches far more of the
+// codebase than this batch's actual scope - and it comes with a firm
+// line drawn under it: the NEXT bridge added the same way, without first
+// doing that refactor, would be the actual overreach. If a sixth such
+// template is ever proposed, the Effects-slice refactor happens first,
+// not after.
 type TransitionSpec struct {
 	FromStateKey string
 	ToStateKey   string
@@ -106,6 +114,16 @@ type TransitionSpec struct {
 	// customers row (with SourceWorkflowInstance set) in the same
 	// transaction as the state change - see engine.go's resolveCustomer.
 	Customer *CustomerTemplate `json:"customer,omitempty"`
+	// Invoice is OPTIONAL: the workflow-to-invoicing bridge (Invoicing/
+	// payment tracking batch), the same shape as the templates above but
+	// for internal/invoicing.CreateInvoiceTx. When set, ExecuteTransition
+	// resolves it against the merged payload and, if a quantity and unit
+	// price are both present, creates a draft invoice (with one line) in
+	// the same transaction as the state change - see engine.go's
+	// resolveInvoice. This is the fifth such template - see this struct's
+	// own doc comment above for why it's added as a named field rather
+	// than triggering the documented Effects-slice refactor.
+	Invoice *InvoiceTemplate `json:"invoice,omitempty"`
 }
 
 // DeliveryTemplate describes the deliveries row a transition should
@@ -154,6 +172,47 @@ type CustomerTemplate struct {
 	EmailField   string
 	PhoneField   string
 	AddressField string
+}
+
+// InvoiceTemplate describes the draft invoice (with one line) a
+// transition should create - the declarative shape a workflow definition
+// carries; engine.go resolves it against one specific instance's payload
+// at ExecuteTransition time, the same "resolved fresh per call, never
+// baked in ahead of time" reasoning every other template in this file
+// gives.
+type InvoiceTemplate struct {
+	// Description becomes the created line's description, with
+	// "{{field}}" placeholders substituted from the transition's merged
+	// instance payload - the same interpolateTemplate mechanism
+	// JournalTemplate.Description already uses (e.g. "Sale of {{item}}").
+	Description string
+	// ProductField OPTIONALLY names the payload field holding the line's
+	// product ID (a string UUID) - e.g. "product_id". Absent simply
+	// leaves invoice_lines.product_id NULL, the same "missing optional
+	// field means NULL column, not a skip" contract
+	// DeliveryTemplate.OriginAddressField's own doc comment gives.
+	ProductField string
+	// QuantityField/UnitPriceField name the payload fields holding the
+	// line's quantity and unit price - e.g. "quantity"/"unit_price".
+	// BOTH must be present (and numeric) on a given transition call for
+	// the whole template to apply; either absent skips it entirely (not
+	// an error) - the same Rule-6-in-spirit reasoning
+	// StockAdjustmentTemplate.ProductField's own doc comment gives: many
+	// existing/legitimate callers of a transition that later gains an
+	// InvoiceTemplate won't supply a price on every call, and this bridge
+	// must never turn "the caller didn't send a price" into a broken
+	// state transition.
+	QuantityField  string
+	UnitPriceField string
+	// CustomerField OPTIONALLY names the payload field holding the
+	// invoice's customer ID (a string UUID) - e.g. "customer_id". Absent
+	// simply leaves invoices.customer_id NULL. Declared explicitly here
+	// (unlike resolveJournalDescription's hardcoded customer_id
+	// convention, engine.go) since a firm-defined workflow carrying an
+	// InvoiceTemplate may use any field name for its own customer
+	// reference, not just the one well-known convention stock_to_sale
+	// happens to use.
+	CustomerField string
 }
 
 // StockAdjustmentTemplate describes the stock_levels change a transition
@@ -426,6 +485,11 @@ func (d DefinitionSpec) Validate() error {
 				return err
 			}
 		}
+		if t.Invoice != nil {
+			if err := validateInvoiceTemplate(d.Key, t.ActionKey, *t.Invoice); err != nil {
+				return err
+			}
+		}
 		dedupeKey := t.FromStateKey + "\x00" + t.ActionKey
 		if _, exists := transitionKeys[dedupeKey]; exists {
 			return fmt.Errorf("workflow definition %q: duplicate transition action %q from state %q", d.Key, t.ActionKey, t.FromStateKey)
@@ -640,6 +704,26 @@ func validateDeliveryTemplate(defKey, actionKey string, dt DeliveryTemplate) err
 func validateCustomerTemplate(defKey, actionKey string, ct CustomerTemplate) error {
 	if ct.NameField == "" {
 		return fmt.Errorf("workflow definition %q: transition %q: customer template must name a name field", defKey, actionKey)
+	}
+	return nil
+}
+
+// validateInvoiceTemplate checks one TransitionSpec's optional
+// InvoiceTemplate is structurally sound: a non-empty description, a
+// quantity field name, and a unit price field name. Same "cannot check
+// the referenced field's value at spec-definition time" limitation every
+// other template validator in this file documents - that happens at
+// ExecuteTransition time instead (engine.go's resolveInvoice), against a
+// real instance payload.
+func validateInvoiceTemplate(defKey, actionKey string, it InvoiceTemplate) error {
+	if it.Description == "" {
+		return fmt.Errorf("workflow definition %q: transition %q: invoice template description must not be empty", defKey, actionKey)
+	}
+	if it.QuantityField == "" {
+		return fmt.Errorf("workflow definition %q: transition %q: invoice template must name a quantity field", defKey, actionKey)
+	}
+	if it.UnitPriceField == "" {
+		return fmt.Errorf("workflow definition %q: transition %q: invoice template must name a unit price field", defKey, actionKey)
 	}
 	return nil
 }

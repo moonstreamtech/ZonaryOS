@@ -27,6 +27,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/crm"
 	"github.com/moonstreamtech/ZonaryOS/internal/hr"
 	"github.com/moonstreamtech/ZonaryOS/internal/inventory"
+	"github.com/moonstreamtech/ZonaryOS/internal/invoicing"
 	"github.com/moonstreamtech/ZonaryOS/internal/logistics"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
@@ -695,6 +696,24 @@ func unmarshalCustomerTemplate(data []byte) (*CustomerTemplate, error) {
 	return &ct, nil
 }
 
+func marshalInvoiceTemplate(it *InvoiceTemplate) ([]byte, error) {
+	if it == nil {
+		return nil, nil
+	}
+	return json.Marshal(it)
+}
+
+func unmarshalInvoiceTemplate(data []byte) (*InvoiceTemplate, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var it InvoiceTemplate
+	if err := json.Unmarshal(data, &it); err != nil {
+		return nil, fmt.Errorf("unmarshal invoice template: %w", err)
+	}
+	return &it, nil
+}
+
 // lookupStringField reads payload[name] and requires it to be a JSON
 // string if present at all - present=false (no error) when the field is
 // simply absent OR name itself is empty (an unset OPTIONAL template
@@ -786,6 +805,68 @@ func resolveCustomer(ct *CustomerTemplate, payload map[string]any) (crm.CreateCu
 	}
 
 	return crm.CreateCustomerTxInput{Name: name, Email: email, Phone: phone, Address: address}, true, nil
+}
+
+// resolveInvoice resolves it against payload into the arguments
+// internal/invoicing.CreateInvoiceTx needs. ok=false (not an error) means
+// QuantityField or UnitPriceField was absent from payload, or either
+// resolved value wasn't numeric - the whole template is skipped for this
+// call, the same non-breaking "missing means skip, not fail" contract
+// resolveDelivery/resolveCustomer already document, for the identical
+// Rule-6-in-spirit reason (see InvoiceTemplate's own doc comment, spec.go).
+// ProductField/CustomerField are OPTIONAL and simply resolve to a nil
+// pointer (a NULL column) when absent.
+func resolveInvoice(it *InvoiceTemplate, payload map[string]any) (invoicing.CreateInvoiceTxInput, bool, error) {
+	quantity, quantityPresent, err := lookupNumberField(payload, it.QuantityField)
+	if err != nil {
+		return invoicing.CreateInvoiceTxInput{}, false, err
+	}
+	unitPrice, unitPricePresent, err := lookupNumberField(payload, it.UnitPriceField)
+	if err != nil {
+		return invoicing.CreateInvoiceTxInput{}, false, err
+	}
+	if !quantityPresent || !unitPricePresent {
+		return invoicing.CreateInvoiceTxInput{}, false, nil
+	}
+	quantityStr, err := formatAmount(quantity)
+	if err != nil {
+		return invoicing.CreateInvoiceTxInput{}, false, err
+	}
+	unitPriceStr, err := formatAmount(unitPrice)
+	if err != nil {
+		return invoicing.CreateInvoiceTxInput{}, false, err
+	}
+
+	var productID *uuid.UUID
+	productIDStr, present, err := lookupStringField(payload, it.ProductField)
+	if err != nil {
+		return invoicing.CreateInvoiceTxInput{}, false, err
+	}
+	if present {
+		id, err := uuid.Parse(productIDStr)
+		if err != nil {
+			return invoicing.CreateInvoiceTxInput{}, false, fmt.Errorf("%w: field %q must be a valid product id", ErrPayloadValidation, it.ProductField)
+		}
+		productID = &id
+	}
+
+	var customerID *uuid.UUID
+	customerIDStr, present, err := lookupStringField(payload, it.CustomerField)
+	if err != nil {
+		return invoicing.CreateInvoiceTxInput{}, false, err
+	}
+	if present {
+		id, err := uuid.Parse(customerIDStr)
+		if err != nil {
+			return invoicing.CreateInvoiceTxInput{}, false, fmt.Errorf("%w: field %q must be a valid customer id", ErrPayloadValidation, it.CustomerField)
+		}
+		customerID = &id
+	}
+
+	return invoicing.CreateInvoiceTxInput{
+		CustomerID: customerID, Description: interpolateTemplate(it.Description, payload),
+		Quantity: quantityStr, UnitPrice: unitPriceStr, ProductID: productID, IssuedDate: time.Now(),
+	}, true, nil
 }
 
 // interpolateTemplate substitutes every "{{field}}" placeholder in s with
@@ -1125,12 +1206,16 @@ func DefineWorkflowTx(ctx context.Context, tx pgx.Tx, firmID, granteeRoleID uuid
 		if err != nil {
 			return uuid.UUID{}, fmt.Errorf("marshal customer template for transition %q: %w", t.ActionKey, err)
 		}
+		invoiceTemplateJSON, err := marshalInvoiceTemplate(t.Invoice)
+		if err != nil {
+			return uuid.UUID{}, fmt.Errorf("marshal invoice template for transition %q: %w", t.ActionKey, err)
+		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO workflow_transitions
-				(firm_id, workflow_definition_id, from_state_id, to_state_id, action_key, name, permission_key, journal_template, stock_adjustment, delivery_template, customer_template)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+				(firm_id, workflow_definition_id, from_state_id, to_state_id, action_key, name, permission_key, journal_template, stock_adjustment, delivery_template, customer_template, invoice_template)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		`, firmID, definitionID, stateIDs[t.FromStateKey], stateIDs[t.ToStateKey], t.ActionKey, t.Name, t.Permission.Key,
-			journalTemplateJSON, stockAdjustmentJSON, deliveryTemplateJSON, customerTemplateJSON); err != nil {
+			journalTemplateJSON, stockAdjustmentJSON, deliveryTemplateJSON, customerTemplateJSON, invoiceTemplateJSON); err != nil {
 			return uuid.UUID{}, fmt.Errorf("insert workflow transition %q: %w", t.ActionKey, err)
 		}
 	}
@@ -1432,13 +1517,13 @@ func ExecuteTransition(ctx context.Context, pool *pgxpool.Pool, firmID, userID, 
 
 		var toStateID uuid.UUID
 		var permissionKey string
-		var journalTemplateJSON, stockAdjustmentJSON, deliveryTemplateJSON, customerTemplateJSON []byte
+		var journalTemplateJSON, stockAdjustmentJSON, deliveryTemplateJSON, customerTemplateJSON, invoiceTemplateJSON []byte
 		err = tx.QueryRow(ctx, `
-			SELECT wt.to_state_id, ws.key, wt.permission_key, wt.journal_template, wt.stock_adjustment, wt.delivery_template, wt.customer_template
+			SELECT wt.to_state_id, ws.key, wt.permission_key, wt.journal_template, wt.stock_adjustment, wt.delivery_template, wt.customer_template, wt.invoice_template
 			FROM workflow_transitions wt
 			JOIN workflow_states ws ON ws.id = wt.to_state_id
 			WHERE wt.workflow_definition_id = $1 AND wt.from_state_id = $2 AND wt.action_key = $3
-		`, definitionID, currentStateID, actionKey).Scan(&toStateID, &toStateKey, &permissionKey, &journalTemplateJSON, &stockAdjustmentJSON, &deliveryTemplateJSON, &customerTemplateJSON)
+		`, definitionID, currentStateID, actionKey).Scan(&toStateID, &toStateKey, &permissionKey, &journalTemplateJSON, &stockAdjustmentJSON, &deliveryTemplateJSON, &customerTemplateJSON, &invoiceTemplateJSON)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNoSuchTransition
 		}
@@ -1458,6 +1543,10 @@ func ExecuteTransition(ctx context.Context, pool *pgxpool.Pool, firmID, userID, 
 			return err
 		}
 		customerTemplate, err := unmarshalCustomerTemplate(customerTemplateJSON)
+		if err != nil {
+			return err
+		}
+		invoiceTemplate, err := unmarshalInvoiceTemplate(invoiceTemplateJSON)
 		if err != nil {
 			return err
 		}
@@ -1590,6 +1679,26 @@ func ExecuteTransition(ctx context.Context, pool *pgxpool.Pool, firmID, userID, 
 			if ok {
 				customerInput.SourceWorkflowInstance = instanceID
 				if _, err := crm.CreateCustomerTx(ctx, tx, firmID, customerInput); err != nil {
+					return err
+				}
+			}
+		}
+
+		// The workflow-to-invoicing bridge: same shape, through
+		// internal/invoicing.CreateInvoiceTx - stock_to_sale's own
+		// record_sale transition is this batch's real working example
+		// (see stock_to_sale.go): a sale now auto-creates a draft
+		// invoice, sourced to this instance, in the SAME transaction as
+		// the state change. ok=false means QuantityField/UnitPriceField
+		// simply weren't both supplied - skipped, not failed
+		// (resolveInvoice's own doc comment).
+		if invoiceTemplate != nil {
+			invoiceInput, ok, err := resolveInvoice(invoiceTemplate, mergedPayload)
+			if err != nil {
+				return err
+			}
+			if ok {
+				if _, err := invoicing.CreateInvoiceTx(ctx, tx, firmID, instanceID, invoiceInput); err != nil {
 					return err
 				}
 			}
@@ -1895,6 +2004,7 @@ type TransitionInfo struct {
 	StockAdjustment *StockAdjustmentTemplate
 	Delivery        *DeliveryTemplate
 	Customer        *CustomerTemplate
+	Invoice         *InvoiceTemplate
 }
 
 // fetchTransitionInfos loads every workflow_transitions row for
@@ -1903,7 +2013,7 @@ type TransitionInfo struct {
 // read path.
 func fetchTransitionInfos(ctx context.Context, tx pgx.Tx, definitionID uuid.UUID) ([]TransitionInfo, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT wt.action_key, wt.name, src.key, src.name, dst.key, dst.name, wt.permission_key, wt.journal_template, wt.stock_adjustment, wt.delivery_template, wt.customer_template
+		SELECT wt.action_key, wt.name, src.key, src.name, dst.key, dst.name, wt.permission_key, wt.journal_template, wt.stock_adjustment, wt.delivery_template, wt.customer_template, wt.invoice_template
 		FROM workflow_transitions wt
 		JOIN workflow_states src ON src.id = wt.from_state_id
 		JOIN workflow_states dst ON dst.id = wt.to_state_id
@@ -1918,9 +2028,9 @@ func fetchTransitionInfos(ctx context.Context, tx pgx.Tx, definitionID uuid.UUID
 	var infos []TransitionInfo
 	for rows.Next() {
 		var ti TransitionInfo
-		var journalTemplateJSON, stockAdjustmentJSON, deliveryTemplateJSON, customerTemplateJSON []byte
+		var journalTemplateJSON, stockAdjustmentJSON, deliveryTemplateJSON, customerTemplateJSON, invoiceTemplateJSON []byte
 		if err := rows.Scan(&ti.ActionKey, &ti.Name, &ti.FromState.Key, &ti.FromState.Name, &ti.ToState.Key, &ti.ToState.Name,
-			&ti.PermissionKey, &journalTemplateJSON, &stockAdjustmentJSON, &deliveryTemplateJSON, &customerTemplateJSON); err != nil {
+			&ti.PermissionKey, &journalTemplateJSON, &stockAdjustmentJSON, &deliveryTemplateJSON, &customerTemplateJSON, &invoiceTemplateJSON); err != nil {
 			return nil, err
 		}
 		ti.Journal, err = unmarshalJournalTemplate(journalTemplateJSON)
@@ -1936,6 +2046,10 @@ func fetchTransitionInfos(ctx context.Context, tx pgx.Tx, definitionID uuid.UUID
 			return nil, err
 		}
 		ti.Customer, err = unmarshalCustomerTemplate(customerTemplateJSON)
+		if err != nil {
+			return nil, err
+		}
+		ti.Invoice, err = unmarshalInvoiceTemplate(invoiceTemplateJSON)
 		if err != nil {
 			return nil, err
 		}

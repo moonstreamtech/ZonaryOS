@@ -393,6 +393,57 @@ go test ./internal/workflow/... -run 'RecordSaleCreatesDelivery|RecordSaleWithou
 go test ./internal/reports/... -run LogisticsCRMMetrics -v
 ```
 
+## Invoicing, payment tracking, and receivables management
+
+`internal/invoicing` connects the accounting, customer, and sales modules into a real receivables cycle: an invoice (`invoices`/`invoice_lines`) generated against a sale, closed by a recorded payment (`payments`) that auto-posts a real ledger entry. Invoices are created two ways: directly, owner-gated, via `CreateInvoice`; or automatically, by the workflow-to-invoicing bridge (`TransitionSpec.Invoice`, see below), via `CreateInvoiceTx`, when a transition carrying an `InvoiceTemplate` fires with a resolvable quantity and unit price. `SourceWorkflowInstance` distinguishes the latter from the former, the same role `customers.source_workflow_instance`/`deliveries.source_id` already play. `invoices`/`invoice_lines`/`invoice_sequences` are mutable (`zonaryos_app` gets `SELECT, INSERT, UPDATE, DELETE`); `payments` is append-only (`SELECT, INSERT` only), the same immutability principle `journal_entries`/`stock_movements` already establish - a recorded payment is a historical fact, corrected by a new/reversing payment, never rewritten. `IsMember` gates every read; `IsMember` then `IsOwner` gates every write.
+
+- HTTP surface: `GET`/`POST /api/firms/{firmID}/invoices`, `GET`/`PATCH /api/firms/{firmID}/invoices/{invoiceID}` (`PATCH` changes status only), `POST`/`PATCH`/`DELETE /api/firms/{firmID}/invoices/{invoiceID}/lines[/{lineID}]`, `POST`/`GET /api/firms/{firmID}/invoices/{invoiceID}/payments`, `GET /api/firms/{firmID}/reports/receivables-aging`.
+- Frontend: `/invoices` (`components/Invoicing/InvoicesManager.tsx`) - an invoice list with a deliberately minimal one-line create form (full line-item editing stays a backend-only capability for now, matching this codebase's "functional, not polished" first-pass convention); `/invoices/{invoiceID}` (`components/Invoicing/InvoiceDetail.tsx`) - line detail, a manual status-change control (gated by the same allowed-transitions set the backend enforces), recorded payments, and the "Record Payment" form; `/financials` gained a fourth tab, Receivables Aging.
+
+**Sequential invoice numbering, collision-free under concurrency**: `nextInvoiceNumberTx` (`invoices.go`) allocates `INV-0001`, `INV-0002`, ... via a single UPSERT against a dedicated per-firm counter table, `invoice_sequences (firm_id PRIMARY KEY, next_number)` - not a Postgres `SEQUENCE` object (database-wide, not firm-scoped) and not `count(*) + 1` against `invoices` itself (racy under concurrent inserts, and wrong after any invoice is ever deleted): `INSERT INTO invoice_sequences (firm_id, next_number) VALUES ($1, 2) ON CONFLICT (firm_id) DO UPDATE SET next_number = invoice_sequences.next_number + 1 RETURNING next_number - 1`. The `ON CONFLICT ... DO UPDATE` arm takes a row-level lock on that firm's one counter row for the rest of the transaction - a second, concurrent call for the same firm blocks at this statement until the first transaction commits or rolls back, so it can never read the same `next_number` the first call just claimed. `TestNextInvoiceNumberTx_ConcurrentCallsGetDistinctNumbers` (`invoicing_integration_test.go`) fires 10 concurrent `CreateInvoice` calls against the same firm and asserts all 10 succeed with 10 distinct numbers.
+
+**The payment-closes-receivables cycle**: `RecordPayment` (`payments.go`) inserts a `payments` row against an invoice, then - in the SAME transaction - checks whether that invoice's total recorded payments (computed via Postgres's own exact `numeric` `SUM`, never a Go float) now cover its own `total`. If so, it moves the invoice to `'paid'` AND posts a real `DR Cash (1000) / CR Trade Receivables (1100)` journal entry (`internal/accounting.PostJournalEntryTx`), sourced as `"invoice"`/`invoiceID` (not `"workflow_instance"`, since an invoice - not a workflow instance - is what actually closed here). Both the payment and the closing side effects commit or roll back together. A partial payment leaves the invoice exactly as it was (still whatever status it already had); only a payment that brings the running total to `>= total` triggers the close. Status can otherwise only move through a small, hand-validated state machine (`allowedStatusTransitions`, `invoices.go`) - `draft -> sent/cancelled`, `sent -> overdue/cancelled`, `overdue -> sent/cancelled` - deliberately NOT `internal/workflow`'s generic engine (the design brief's own "keep this simple, no separate workflow"): `'paid'` is reachable only through `RecordPayment`, never a manual `PATCH`.
+
+**The receivables aging report** (`reports.go`): `ReceivablesAging` groups every unpaid invoice (`status IN ('sent', 'overdue')`) into one of four fixed buckets - `0-30`/`31-60`/`61-90`/`90+` - by `CURRENT_DATE - COALESCE(due_date, issued_date)`, computed entirely in SQL so the report is always "as of right now," not a value that could go stale between the query and the response being formatted:
+
+```sql
+WITH aged AS (
+    SELECT total, (CURRENT_DATE - COALESCE(due_date, issued_date)) AS days_overdue
+    FROM invoices WHERE status IN ('sent', 'overdue')
+),
+bucketed AS (
+    SELECT CASE
+        WHEN days_overdue <= 30 THEN '0-30'
+        WHEN days_overdue <= 60 THEN '31-60'
+        WHEN days_overdue <= 90 THEN '61-90'
+        ELSE '90+'
+    END AS label, total
+    FROM aged
+)
+SELECT label, count(*), COALESCE(SUM(total), 0)::text FROM bucketed GROUP BY label
+```
+
+Every one of the four labels always appears in the response (`count=0`/`outstanding="0.0000"` if nothing fell into it), the same "every key always appears, zero when empty" convention `internal/reports.computeKPI`'s own callers already rely on.
+
+**The workflow-to-invoicing bridge and the fifth-template design tension**: `TransitionSpec` (`spec.go`) gained a fifth optional template, `Invoice *InvoiceTemplate` - the exact same shape (a `*XTemplate` pointer, resolved by `ExecuteTransition` against the merged instance payload, applied through `internal/invoicing.CreateInvoiceTx` in the SAME transaction as the state change) `Journal`/`StockAdjustment`/`Delivery`/`Customer` already established. This is deliberately flagged, not silently absorbed: `TransitionSpec`'s own doc comment, written during the Logistics/CRM batch, states "a fifth or sixth such bridge... is the signal to switch to the generic `Effects` shape - not before." Invoice genuinely is that fifth bridge. Rather than either quietly ignoring the self-imposed threshold or undertaking an unplanned refactor of four already-shipped, already-tested bridges mid-batch, the doc comment was updated to record the trade-off explicitly: `Invoice` ships as a fifth named field now (keeping this batch's actual scope - invoicing - the focus), with an explicit line drawn under it - the next bridge added the same way, without first doing the `Effects`-slice refactor, is the real overreach. `stock_to_sale`'s `record_sale` transition carries `Invoice{Description: "Sale of {{item}}", ProductField: "product_id", QuantityField: "quantity", UnitPriceField: "unit_price", CustomerField: "customer_id"}` - `CustomerField` reuses the existing `customer_id` payload field (already read by the `Delivery` template's own journal-description feature), not a new one. `QuantityField`/`UnitPriceField` are both required for the whole template to apply (Rule 6: every pre-existing `record_sale` call with no price data keeps working, no invoice created); `ProductField`/`CustomerField` are optional and simply leave the corresponding column `NULL`.
+
+### Scope boundaries
+
+No PDF generation (invoices as structured data first, a future batch), no recurring invoices, no credit notes/refunds, no multi-currency invoice settlement, no customer payment portal.
+
+### Running these tests
+
+`internal/invoicing/invoicing_integration_test.go` (invoice/line/payment CRUD, the sequential-numbering concurrency proof, the payment-closes-receivables journal entry, the aging report's own bucket correctness), `internal/workflow/invoicing_bridge_integration_test.go` (the `record_sale` invoice-creation hook end-to-end, including the customer-field reuse), and `internal/reports/kpi_integration_test.go` (the two new receivables KPIs' correctness) all need a real Postgres:
+
+```
+export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5433/zonaryos?sslmode=disable
+export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5433/zonaryos?sslmode=disable
+make migrate
+go test ./internal/invoicing/... -v
+go test ./internal/workflow/... -run 'RecordSaleCreatesInvoice|RecordSaleWithoutPriceSkipsInvoice|RecordSaleInvoiceIncludesCustomer' -v
+go test ./internal/reports/... -run ReceivablesMetrics -v
+```
+
 ## Firm-creation wizard
 
 `internal/wizard` implements Vision §3's "Self-Configuring Infrastructure": a newly-authenticated Keycloak user with zero firm memberships (detected via `internal/identity.Memberships`, PR 3's firm-discovery mechanism) is routed into this wizard instead of the normal app.

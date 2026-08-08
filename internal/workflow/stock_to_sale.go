@@ -140,6 +140,26 @@ var StockToSaleSpec = DefinitionSpec{
 				TrackingNumberField:     "tracking_number",
 				ReferenceField:          "item",
 			},
+			// The workflow-to-invoicing bridge (Invoicing/payment tracking
+			// batch): "the accounting, customer, and sales modules now have
+			// enough data to generate real invoices" (design brief). When
+			// both quantity and unit_price are present on this call,
+			// ExecuteTransition auto-creates a draft invoice (one line, from
+			// this same sale) in the SAME transaction as the journal entry,
+			// stock adjustment, delivery, and state change - see
+			// InvoiceTemplate's own doc comment. customer_id (already an
+			// existing optional field above) is reused as CustomerField, so
+			// an invoice created for a sale that names a customer carries
+			// that customer_id too - not a new field. Left unset on any call
+			// that predates this batch (no quantity/unit_price supplied)
+			// means "create nothing".
+			Invoice: &InvoiceTemplate{
+				Description:    "Sale of {{item}}",
+				ProductField:   "product_id",
+				QuantityField:  "quantity",
+				UnitPriceField: "unit_price",
+				CustomerField:  "customer_id",
+			},
 		},
 	},
 }

@@ -328,6 +328,38 @@ func toCustomerTemplateResponse(ct *CustomerTemplate) *customerTemplateResponse 
 	}
 }
 
+// invoiceTemplateResponse is InvoiceTemplate's (spec.go) JSON wire shape -
+// the Invoicing/payment tracking batch's counterpart to
+// deliveryTemplateResponse/customerTemplateResponse above, same "included
+// on transitionInfoResponse, omitempty" reasoning.
+type invoiceTemplateResponse struct {
+	Description    string `json:"description"`
+	ProductField   string `json:"productField,omitempty"`
+	QuantityField  string `json:"quantityField"`
+	UnitPriceField string `json:"unitPriceField"`
+	CustomerField  string `json:"customerField,omitempty"`
+}
+
+func toInvoiceTemplateSpec(req *defineInvoiceTemplateRequest) *InvoiceTemplate {
+	if req == nil {
+		return nil
+	}
+	return &InvoiceTemplate{
+		Description: req.Description, ProductField: req.ProductField,
+		QuantityField: req.QuantityField, UnitPriceField: req.UnitPriceField, CustomerField: req.CustomerField,
+	}
+}
+
+func toInvoiceTemplateResponse(it *InvoiceTemplate) *invoiceTemplateResponse {
+	if it == nil {
+		return nil
+	}
+	return &invoiceTemplateResponse{
+		Description: it.Description, ProductField: it.ProductField,
+		QuantityField: it.QuantityField, UnitPriceField: it.UnitPriceField, CustomerField: it.CustomerField,
+	}
+}
+
 // transitionInfoResponse is TransitionInfo's (engine.go) JSON wire shape.
 type transitionInfoResponse struct {
 	ActionKey       string                           `json:"actionKey"`
@@ -339,6 +371,7 @@ type transitionInfoResponse struct {
 	StockAdjustment *stockAdjustmentTemplateResponse `json:"stockAdjustment,omitempty"`
 	Delivery        *deliveryTemplateResponse        `json:"delivery,omitempty"`
 	Customer        *customerTemplateResponse        `json:"customer,omitempty"`
+	Invoice         *invoiceTemplateResponse         `json:"invoice,omitempty"`
 }
 
 func toTransitionInfoResponses(transitions []TransitionInfo) []transitionInfoResponse {
@@ -357,6 +390,7 @@ func toTransitionInfoResponses(transitions []TransitionInfo) []transitionInfoRes
 			StockAdjustment: toStockAdjustmentTemplateResponse(t.StockAdjustment),
 			Delivery:        toDeliveryTemplateResponse(t.Delivery),
 			Customer:        toCustomerTemplateResponse(t.Customer),
+			Invoice:         toInvoiceTemplateResponse(t.Invoice),
 		})
 	}
 	return resp
@@ -557,6 +591,13 @@ type defineTransitionRequest struct {
 	// TransitionSpec.Delivery/Customer's own zero-value contract.
 	Delivery *defineDeliveryTemplateRequest `json:"delivery,omitempty"`
 	Customer *defineCustomerTemplateRequest `json:"customer,omitempty"`
+	// Invoice is OPTIONAL (the Invoicing/payment tracking batch's
+	// workflow-to-invoicing bridge, spec.go's TransitionSpec.Invoice) -
+	// same "separate request/response struct pair" convention Journal's
+	// own doc comment above describes. Omitted entirely (or nil) means
+	// "create nothing", exactly TransitionSpec.Invoice's own zero-value
+	// contract.
+	Invoice *defineInvoiceTemplateRequest `json:"invoice,omitempty"`
 }
 
 type defineLineTemplateRequest struct {
@@ -600,6 +641,18 @@ type defineCustomerTemplateRequest struct {
 	EmailField   string `json:"emailField"`
 	PhoneField   string `json:"phoneField"`
 	AddressField string `json:"addressField"`
+}
+
+// defineInvoiceTemplateRequest is InvoiceTemplate's (spec.go) JSON wire
+// shape on the request side - mirrors invoiceTemplateResponse's shape
+// (this file's response side), the same "separate request/response
+// struct pair" convention every other template in this file already uses.
+type defineInvoiceTemplateRequest struct {
+	Description    string `json:"description"`
+	ProductField   string `json:"productField"`
+	QuantityField  string `json:"quantityField"`
+	UnitPriceField string `json:"unitPriceField"`
+	CustomerField  string `json:"customerField"`
 }
 
 // defineFieldRequest is FieldSpec's (spec.go) JSON wire shape for the
@@ -703,6 +756,7 @@ func handleDefineWorkflow(pool *pgxpool.Pool) http.HandlerFunc {
 				StockAdjustment: toStockAdjustmentTemplateSpec(t.StockAdjustment),
 				Delivery:        toDeliveryTemplateSpec(t.Delivery),
 				Customer:        toCustomerTemplateSpec(t.Customer),
+				Invoice:         toInvoiceTemplateSpec(t.Invoice),
 			})
 		}
 		if len(req.Fields) > 0 {

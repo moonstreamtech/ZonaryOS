@@ -20,6 +20,7 @@ import (
 // same codes this package seeds, instead of duplicating the literal
 // strings in a second package with no compile-time link between them.
 const (
+	CashAccountCode             = "1000"
 	TradeReceivablesAccountCode = "1100"
 	InventoryAccountCode        = "1200"
 	TradePayablesAccountCode    = "2000"
@@ -40,7 +41,7 @@ type seedAccount struct {
 // couldn't record even the most basic transaction (cash movement, an
 // owner's paid-in capital, retained earnings at year end).
 var coreAccounts = []seedAccount{
-	{code: "1000", name: "Cash", typ: AccountTypeAsset},
+	{code: CashAccountCode, name: "Cash", typ: AccountTypeAsset},
 	{code: TradeReceivablesAccountCode, name: "Trade Receivables", typ: AccountTypeAsset},
 	{code: TradePayablesAccountCode, name: "Trade Payables", typ: AccountTypeLiability},
 	{code: "3000", name: "Owner Equity", typ: AccountTypeEquity},
