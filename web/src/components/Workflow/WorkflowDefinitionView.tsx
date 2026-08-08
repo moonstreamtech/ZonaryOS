@@ -14,6 +14,10 @@ import {
 } from "@/lib/workflow";
 import { fetchAuditLog } from "@/lib/auditlog";
 import { fetchRoleInFirm } from "@/lib/me";
+import { fetchPeople } from "@/lib/hr";
+import { fetchProducts, fetchSuppliers } from "@/lib/inventory";
+import { fetchDeliveries } from "@/lib/logistics";
+import { fetchCustomers } from "@/lib/crm";
 import CreateInstanceForm from "./CreateInstanceForm";
 import WorkflowInstanceList from "./WorkflowInstanceList";
 import WorkflowHistory from "./WorkflowHistory";
@@ -107,9 +111,31 @@ export default async function WorkflowDefinitionView({
   // reachable from the currently-instantiated states - the closest
   // available proxy for "every transition this definition has," since no
   // endpoint returns the full state graph independent of any instance).
-  const [role, allDefinitions] = await Promise.all([
+  // people is only fetched when this definition actually has a "person"-
+  // typed field (e.g. task_approval's assignee_person_id) - CreateInstanceForm's
+  // person picker (a plain <select>, see its own doc comment) needs the
+  // real roster; every other definition skips this fetch entirely.
+  const needsPeople = (definition.fields ?? []).some((f) => f.type === "person");
+  // needsProducts/needsSuppliers (Inventory management batch) are the
+  // exact same "only fetch the catalog a definition's own schema actually
+  // needs" pattern needsPeople's own doc comment establishes above -
+  // CreateInstanceForm's product/supplier pickers (a plain <select>, same
+  // shape as its person picker) need the real catalogs.
+  const needsProducts = (definition.fields ?? []).some((f) => f.type === "product");
+  const needsSuppliers = (definition.fields ?? []).some((f) => f.type === "supplier");
+  // needsDeliveries/needsCustomers (Logistics/CRM batch) are the exact
+  // same pattern as needsProducts/needsSuppliers above.
+  const needsDeliveries = (definition.fields ?? []).some((f) => f.type === "delivery");
+  const needsCustomers = (definition.fields ?? []).some((f) => f.type === "customer");
+
+  const [role, allDefinitions, people, products, suppliers, deliveries, customers] = await Promise.all([
     fetchRoleInFirm(sessionToken, firmId),
     fetchDefinitions(sessionToken, firmId),
+    needsPeople ? fetchPeople(sessionToken, firmId) : Promise.resolve(null),
+    needsProducts ? fetchProducts(sessionToken, firmId) : Promise.resolve(null),
+    needsSuppliers ? fetchSuppliers(sessionToken, firmId) : Promise.resolve(null),
+    needsDeliveries ? fetchDeliveries(sessionToken, firmId) : Promise.resolve(null),
+    needsCustomers ? fetchCustomers(sessionToken, firmId) : Promise.resolve(null),
   ]);
   const isOwner = role?.isOwner ?? false;
   const rules = isOwner || role ? await fetchRules(sessionToken, firmId, workflowKey) : null;
@@ -136,6 +162,11 @@ export default async function WorkflowDefinitionView({
           definitionId={definition.definitionId}
           createPermissionKey={definition.createPermissionKey}
           fields={definition.fields}
+          people={people ?? undefined}
+          products={products ?? undefined}
+          suppliers={suppliers ?? undefined}
+          deliveries={deliveries ?? undefined}
+          customers={customers ?? undefined}
         />
 
         <WorkflowInstanceList
@@ -147,6 +178,48 @@ export default async function WorkflowDefinitionView({
           q={q}
         />
       </div>
+
+      {definition.transitions?.some((tr) => tr.journal) && (
+        <div className="flex w-full max-w-2xl flex-col gap-3">
+          <h2 className="text-xl font-semibold tracking-tight text-black dark:text-zinc-50">
+            {t("journalTemplatesTitle")}
+          </h2>
+          <ul className="flex flex-col gap-3">
+            {definition.transitions
+              .filter((tr) => tr.journal)
+              .map((tr) => (
+                <li
+                  key={tr.actionKey}
+                  className="rounded-md border border-zinc-300 p-3 text-sm dark:border-zinc-700"
+                >
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <span className="font-medium text-black dark:text-zinc-50">{tr.name}</span>
+                    <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                      {tr.fromState.name} → {tr.toState.name}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
+                    {tr.journal!.description}
+                  </p>
+                  <ul className="mt-2 flex flex-col gap-1">
+                    {tr.journal!.lines.map((line, idx) => (
+                      <li
+                        key={idx}
+                        className="flex items-center justify-between font-mono text-xs text-zinc-700 dark:text-zinc-300"
+                      >
+                        <span>
+                          {line.side === "debit" ? t("debitLabel") : t("creditLabel")}{" "}
+                          {line.accountCode}
+                        </span>
+                        <span>{line.amountField}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </li>
+              ))}
+          </ul>
+        </div>
+      )}
 
       {rules !== null && (
         <div className="flex w-full max-w-2xl flex-col items-center gap-3">

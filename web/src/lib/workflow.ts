@@ -19,7 +19,19 @@ export type StateInfo = {
 // resolved the original four scalar types; item 38 extends it with
 // "enum"/"reference"/"array" - mirrored 1:1 on the frontend, same
 // convention as the original four.
-export type FieldType = "string" | "number" | "boolean" | "date" | "enum" | "reference" | "array";
+export type FieldType =
+  | "string"
+  | "number"
+  | "boolean"
+  | "date"
+  | "enum"
+  | "reference"
+  | "array"
+  | "person"
+  | "product"
+  | "supplier"
+  | "delivery"
+  | "customer";
 
 // ScalarFieldType is the subset of FieldType a FieldSpecInput's
 // arrayItemType may be (see FieldSpecInput.arrayItemType below) - the
@@ -70,6 +82,73 @@ export type ListInstancesPage = {
   total: number;
 };
 
+// LineTemplateInput/JournalTemplateInfo are internal/workflow.LineTemplate/
+// JournalTemplate's (spec.go) wire shape - the financial management
+// core's workflow-to-ledger bridge, read-only on the frontend this batch
+// (see WorkflowDefinitionView.tsx): a transition either carries one or it
+// doesn't (journal is omitted entirely, matching the backend's own
+// `journal,omitempty`).
+export type LineTemplateInfo = {
+  accountCode: string;
+  side: "debit" | "credit";
+  amountField: string;
+};
+
+export type JournalTemplateInfo = {
+  description: string;
+  lines: LineTemplateInfo[];
+};
+
+// StockAdjustmentTemplateInfo is internal/workflow.StockAdjustmentTemplate's
+// (spec.go) wire shape - the Inventory management batch's workflow-to-
+// inventory bridge, the same "read-only on the frontend, a transition
+// either carries one or it doesn't" role JournalTemplateInfo already has
+// above.
+export type StockAdjustmentTemplateInfo = {
+  productField: string;
+  quantityField: string;
+  direction: "increase" | "decrease";
+  reason: string;
+};
+
+// DeliveryTemplateInfo/CustomerTemplateInfo are
+// internal/workflow.DeliveryTemplate/CustomerTemplate's (spec.go) wire
+// shape - the Logistics/CRM batch's workflow-to-logistics/workflow-to-CRM
+// bridges, the same "read-only on the frontend, a transition either
+// carries one or it doesn't" role StockAdjustmentTemplateInfo already has
+// above.
+export type DeliveryTemplateInfo = {
+  destinationAddressField: string;
+  originAddressField?: string;
+  carrierField?: string;
+  trackingNumberField?: string;
+  referenceField?: string;
+};
+
+export type CustomerTemplateInfo = {
+  nameField: string;
+  emailField?: string;
+  phoneField?: string;
+  addressField?: string;
+};
+
+// TransitionInfo is internal/workflow.TransitionInfo's wire shape - one
+// transition in a definition's full state graph, with its OPTIONAL
+// journal/stock-adjustment/delivery/customer templates attached (see
+// JournalTemplateInfo/StockAdjustmentTemplateInfo/DeliveryTemplateInfo/
+// CustomerTemplateInfo above).
+export type TransitionInfo = {
+  actionKey: string;
+  name: string;
+  fromState: StateInfo;
+  toState: StateInfo;
+  permissionKey: string;
+  journal?: JournalTemplateInfo;
+  stockAdjustment?: StockAdjustmentTemplateInfo;
+  delivery?: DeliveryTemplateInfo;
+  customer?: CustomerTemplateInfo;
+};
+
 export type WorkflowDefinition = {
   definitionId: string;
   key: string;
@@ -82,6 +161,11 @@ export type WorkflowDefinition = {
   // CreateInstanceForm branches on this: present -> typed fields, absent
   // -> today's free-form key/value editor, unchanged.
   fields?: FieldSpecInput[];
+  // Transitions is OPTIONAL (undefined for a definition with none, though
+  // every real definition has at least one) - the financial management
+  // core batch's addition, letting the workflow definition page show each
+  // transition's journal template, read-only, without a second endpoint.
+  transitions?: TransitionInfo[];
 };
 
 // The request body shape for POST .../workflow-definitions - a 1:1 wire
@@ -106,6 +190,13 @@ export type TransitionSpecInput = {
   actionKey: string;
   name: string;
   permission: PermissionSpecInput;
+  // journal is OPTIONAL - the financial management core's workflow-to-
+  // ledger bridge (see JournalTemplateInfo above, this type's read-side
+  // counterpart; the two shapes are identical, reused directly here
+  // rather than duplicated under a second "Input" name). Omitted means
+  // "post nothing", exactly TransitionSpec.Journal's own zero-value
+  // contract server-side.
+  journal?: JournalTemplateInfo;
 };
 
 export type DefinitionSpecInput = {
@@ -127,6 +218,12 @@ export type DefinitionSpecInput = {
 // address it directly by its well-known key rather than searching
 // fetchDefinitions() results for it.
 export const CUSTOMER_PIPELINE_KEY = "customer_pipeline";
+
+// The task/project management batch's default-seeded workflow (see
+// internal/workflow/task_approval.go's TaskApprovalKey) - exported the
+// same way STOCK_TO_SALE_KEY/CUSTOMER_PIPELINE_KEY are, for the /tasks
+// page to address it directly.
+export const TASK_APPROVAL_KEY = "task_approval";
 
 export type StateCount = {
   stateKey: string;

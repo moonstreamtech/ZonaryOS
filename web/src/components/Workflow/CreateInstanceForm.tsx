@@ -8,6 +8,10 @@ import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import type { FieldSpecInput } from "@/lib/workflow";
+import type { Person } from "@/lib/hr";
+import type { Product, Supplier } from "@/lib/inventory";
+import type { Delivery } from "@/lib/logistics";
+import type { Customer } from "@/lib/crm";
 import {
   arrayItemDefault,
   buildFreeformPayload,
@@ -29,6 +33,32 @@ type Props = {
   // customer_pipeline today) falls back to exactly the freeform behavior
   // this component always had.
   fields?: FieldSpecInput[];
+  // people is the firm's real roster (internal/hr.ListPeople), fetched
+  // server-side by WorkflowDefinitionView and handed down here the same
+  // way DefinitionBuilder's own accounts prop is - only used to populate
+  // a "person" field's <select> (see PersonPicker below). A plain
+  // client-side prop rather than PersonPicker fetching its own data
+  // (unlike ReferencePicker's search-as-you-type, which needs a
+  // paginated backend query): HR rosters are small for any firm this
+  // batch's scope targets, so there's no need for a second GET proxy
+  // route just to filter a short list.
+  people?: Person[];
+  // products/suppliers are the firm's real catalogs (internal/inventory.ListProducts/
+  // ListSuppliers), fetched server-side by WorkflowDefinitionView and
+  // handed down here the same way `people` above is - only used to
+  // populate a "product"/"supplier" field's <select> (see ProductPicker/
+  // SupplierPicker below), same "small enough to fetch eagerly, no
+  // second GET proxy route" reasoning `people`'s own doc comment gives.
+  products?: Product[];
+  suppliers?: Supplier[];
+  // deliveries/customers are the firm's real logistics/CRM records
+  // (internal/logistics.ListDeliveries/internal/crm.ListCustomers), same
+  // "small enough to fetch eagerly, no second GET proxy route" reasoning
+  // `people`'s own doc comment gives - only used to populate a
+  // "delivery"/"customer" field's <select> (see DeliveryPicker/CustomerPicker
+  // below).
+  deliveries?: Delivery[];
+  customers?: Customer[];
 };
 
 type FieldRow = { id: number; key: string; value: string };
@@ -54,6 +84,11 @@ export default function CreateInstanceForm({
   definitionId,
   createPermissionKey,
   fields,
+  people,
+  products,
+  suppliers,
+  deliveries,
+  customers,
 }: Props) {
   const t = useTranslations("Workflow");
   const router = useRouter();
@@ -205,6 +240,76 @@ export default function CreateInstanceForm({
                   value={typeof typedValues[field.name] === "string" ? (typedValues[field.name] as string) : ""}
                   onChange={(id) => updateTypedValue(field.name, id)}
                 />
+              ) : field.type === "person" ? (
+                <select
+                  value={typeof typedValues[field.name] === "string" ? (typedValues[field.name] as string) : ""}
+                  onChange={(e) => updateTypedValue(field.name, e.target.value)}
+                  required={field.required}
+                  className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm text-black dark:border-zinc-700 dark:bg-zinc-900 dark:text-white"
+                >
+                  <option value="">{t("enumUnselectedOption")}</option>
+                  {(people ?? []).map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.fullName}
+                    </option>
+                  ))}
+                </select>
+              ) : field.type === "product" ? (
+                <select
+                  value={typeof typedValues[field.name] === "string" ? (typedValues[field.name] as string) : ""}
+                  onChange={(e) => updateTypedValue(field.name, e.target.value)}
+                  required={field.required}
+                  className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm text-black dark:border-zinc-700 dark:bg-zinc-900 dark:text-white"
+                >
+                  <option value="">{t("enumUnselectedOption")}</option>
+                  {(products ?? []).map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.sku} - {p.name}
+                    </option>
+                  ))}
+                </select>
+              ) : field.type === "supplier" ? (
+                <select
+                  value={typeof typedValues[field.name] === "string" ? (typedValues[field.name] as string) : ""}
+                  onChange={(e) => updateTypedValue(field.name, e.target.value)}
+                  required={field.required}
+                  className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm text-black dark:border-zinc-700 dark:bg-zinc-900 dark:text-white"
+                >
+                  <option value="">{t("enumUnselectedOption")}</option>
+                  {(suppliers ?? []).map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+              ) : field.type === "delivery" ? (
+                <select
+                  value={typeof typedValues[field.name] === "string" ? (typedValues[field.name] as string) : ""}
+                  onChange={(e) => updateTypedValue(field.name, e.target.value)}
+                  required={field.required}
+                  className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm text-black dark:border-zinc-700 dark:bg-zinc-900 dark:text-white"
+                >
+                  <option value="">{t("enumUnselectedOption")}</option>
+                  {(deliveries ?? []).map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.reference ?? d.destinationAddress ?? d.id.slice(0, 8)}
+                    </option>
+                  ))}
+                </select>
+              ) : field.type === "customer" ? (
+                <select
+                  value={typeof typedValues[field.name] === "string" ? (typedValues[field.name] as string) : ""}
+                  onChange={(e) => updateTypedValue(field.name, e.target.value)}
+                  required={field.required}
+                  className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm text-black dark:border-zinc-700 dark:bg-zinc-900 dark:text-white"
+                >
+                  <option value="">{t("enumUnselectedOption")}</option>
+                  {(customers ?? []).map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
               ) : field.type === "array" ? (
                 <div className="flex flex-col gap-1.5">
                   {arrayRowsOf(field.name).map((row, index) => (

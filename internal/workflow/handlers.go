@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/moonstreamtech/ZonaryOS/internal/identity"
+	"github.com/moonstreamtech/ZonaryOS/internal/inventory"
 )
 
 // maxListInstancesLimit caps the ?limit= query param on GET
@@ -121,13 +122,23 @@ func toInstanceStateResponse(s InstanceState) instanceStateResponse {
 // something not visible in their firm context (RLS or a genuinely wrong
 // ID look the same from here, by design), 403 for a real permission
 // denial, 400 for a structurally invalid request.
+//
+// inventory.ErrInsufficientStock (Inventory management batch) is included
+// here even though it originates from internal/inventory, not this
+// package's own sentinel errors - ExecuteTransition's stock-adjustment
+// bridge (engine.go) returns it verbatim (no wrapping into a
+// workflow-local error) when a sale would take stock below zero, and the
+// design brief's own "reject the transition, not just warn" requirement
+// means this needs the same clean 400 every other structurally-invalid
+// request gets, not a generic 500.
 func writeEngineError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrDefinitionNotFound), errors.Is(err, ErrInstanceNotFound), errors.Is(err, ErrRuleNotFound):
 		http.Error(w, err.Error(), http.StatusNotFound)
 	case errors.Is(err, ErrPermissionDenied):
 		http.Error(w, err.Error(), http.StatusForbidden)
-	case errors.Is(err, ErrNoSuchTransition), errors.Is(err, ErrInvalidSpec), errors.Is(err, ErrPayloadValidation), errors.Is(err, ErrInvalidRule):
+	case errors.Is(err, ErrNoSuchTransition), errors.Is(err, ErrInvalidSpec), errors.Is(err, ErrPayloadValidation), errors.Is(err, ErrInvalidRule),
+		errors.Is(err, inventory.ErrInsufficientStock), errors.Is(err, inventory.ErrInvalidStockAdjustment):
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	case errors.Is(err, ErrDefinitionKeyExists):
 		http.Error(w, err.Error(), http.StatusConflict)
@@ -176,12 +187,188 @@ func toFieldSpecResponses(fields []FieldSpec) []fieldSpecResponse {
 	return resp
 }
 
+// lineTemplateResponse/journalTemplateResponse are LineTemplate/
+// JournalTemplate's (spec.go) JSON wire shape - included on
+// transitionInfoResponse (below) so the workflow definition page can
+// render the journal template each transition carries, read-only, without
+// a second endpoint. omitempty on transitionInfoResponse.Journal means a
+// transition with no template (every transition defined before this
+// batch) serializes with no "journal" key at all - purely additive, same
+// convention fieldSpecResponse's own doc comment establishes for item 35.
+type lineTemplateResponse struct {
+	AccountCode string `json:"accountCode"`
+	Side        string `json:"side"`
+	AmountField string `json:"amountField"`
+}
+
+type journalTemplateResponse struct {
+	Description string                 `json:"description"`
+	Lines       []lineTemplateResponse `json:"lines"`
+}
+
+// toJournalTemplateSpec converts a defineJournalTemplateRequest (this
+// file's request-side wire shape) into the spec.go JournalTemplate
+// DefineWorkflowForFirm/DefineWorkflowTx actually consume - handleDefineWorkflow's
+// counterpart to toJournalTemplateResponse below. nil in, nil out -
+// DefinitionSpec.Validate already rejects a non-nil JournalTemplate with
+// fewer than two lines or a missing field, so no additional validation
+// happens here.
+func toJournalTemplateSpec(req *defineJournalTemplateRequest) *JournalTemplate {
+	if req == nil {
+		return nil
+	}
+	lines := make([]LineTemplate, 0, len(req.Lines))
+	for _, l := range req.Lines {
+		lines = append(lines, LineTemplate{AccountCode: l.AccountCode, Side: l.Side, AmountField: l.AmountField})
+	}
+	return &JournalTemplate{Description: req.Description, Lines: lines}
+}
+
+func toJournalTemplateResponse(jt *JournalTemplate) *journalTemplateResponse {
+	if jt == nil {
+		return nil
+	}
+	lines := make([]lineTemplateResponse, 0, len(jt.Lines))
+	for _, l := range jt.Lines {
+		lines = append(lines, lineTemplateResponse{AccountCode: l.AccountCode, Side: l.Side, AmountField: l.AmountField})
+	}
+	return &journalTemplateResponse{Description: jt.Description, Lines: lines}
+}
+
+// stockAdjustmentTemplateResponse is StockAdjustmentTemplate's (spec.go)
+// JSON wire shape - the Inventory management batch's counterpart to
+// journalTemplateResponse above, same "included on transitionInfoResponse,
+// omitempty" reasoning.
+type stockAdjustmentTemplateResponse struct {
+	ProductField  string `json:"productField"`
+	QuantityField string `json:"quantityField"`
+	Direction     string `json:"direction"`
+	Reason        string `json:"reason"`
+}
+
+// toStockAdjustmentTemplateSpec converts a defineStockAdjustmentTemplateRequest
+// into the spec.go StockAdjustmentTemplate DefineWorkflowForFirm/DefineWorkflowTx
+// actually consume - handleDefineWorkflow's counterpart to
+// toStockAdjustmentTemplateResponse below. nil in, nil out - same contract
+// toJournalTemplateSpec uses.
+func toStockAdjustmentTemplateSpec(req *defineStockAdjustmentTemplateRequest) *StockAdjustmentTemplate {
+	if req == nil {
+		return nil
+	}
+	return &StockAdjustmentTemplate{
+		ProductField: req.ProductField, QuantityField: req.QuantityField,
+		Direction: req.Direction, Reason: req.Reason,
+	}
+}
+
+func toStockAdjustmentTemplateResponse(sat *StockAdjustmentTemplate) *stockAdjustmentTemplateResponse {
+	if sat == nil {
+		return nil
+	}
+	return &stockAdjustmentTemplateResponse{
+		ProductField: sat.ProductField, QuantityField: sat.QuantityField,
+		Direction: sat.Direction, Reason: sat.Reason,
+	}
+}
+
+// deliveryTemplateResponse/customerTemplateResponse are
+// DeliveryTemplate/CustomerTemplate's (spec.go) JSON wire shape - the
+// Logistics/CRM batch's counterparts to stockAdjustmentTemplateResponse
+// above, same "included on transitionInfoResponse, omitempty" reasoning.
+type deliveryTemplateResponse struct {
+	DestinationAddressField string `json:"destinationAddressField"`
+	OriginAddressField      string `json:"originAddressField,omitempty"`
+	CarrierField            string `json:"carrierField,omitempty"`
+	TrackingNumberField     string `json:"trackingNumberField,omitempty"`
+	ReferenceField          string `json:"referenceField,omitempty"`
+}
+
+type customerTemplateResponse struct {
+	NameField    string `json:"nameField"`
+	EmailField   string `json:"emailField,omitempty"`
+	PhoneField   string `json:"phoneField,omitempty"`
+	AddressField string `json:"addressField,omitempty"`
+}
+
+func toDeliveryTemplateSpec(req *defineDeliveryTemplateRequest) *DeliveryTemplate {
+	if req == nil {
+		return nil
+	}
+	return &DeliveryTemplate{
+		DestinationAddressField: req.DestinationAddressField, OriginAddressField: req.OriginAddressField,
+		CarrierField: req.CarrierField, TrackingNumberField: req.TrackingNumberField, ReferenceField: req.ReferenceField,
+	}
+}
+
+func toDeliveryTemplateResponse(dt *DeliveryTemplate) *deliveryTemplateResponse {
+	if dt == nil {
+		return nil
+	}
+	return &deliveryTemplateResponse{
+		DestinationAddressField: dt.DestinationAddressField, OriginAddressField: dt.OriginAddressField,
+		CarrierField: dt.CarrierField, TrackingNumberField: dt.TrackingNumberField, ReferenceField: dt.ReferenceField,
+	}
+}
+
+func toCustomerTemplateSpec(req *defineCustomerTemplateRequest) *CustomerTemplate {
+	if req == nil {
+		return nil
+	}
+	return &CustomerTemplate{
+		NameField: req.NameField, EmailField: req.EmailField, PhoneField: req.PhoneField, AddressField: req.AddressField,
+	}
+}
+
+func toCustomerTemplateResponse(ct *CustomerTemplate) *customerTemplateResponse {
+	if ct == nil {
+		return nil
+	}
+	return &customerTemplateResponse{
+		NameField: ct.NameField, EmailField: ct.EmailField, PhoneField: ct.PhoneField, AddressField: ct.AddressField,
+	}
+}
+
+// transitionInfoResponse is TransitionInfo's (engine.go) JSON wire shape.
+type transitionInfoResponse struct {
+	ActionKey       string                           `json:"actionKey"`
+	Name            string                           `json:"name"`
+	FromState       stateInfoResponse                `json:"fromState"`
+	ToState         stateInfoResponse                `json:"toState"`
+	PermissionKey   string                           `json:"permissionKey"`
+	Journal         *journalTemplateResponse         `json:"journal,omitempty"`
+	StockAdjustment *stockAdjustmentTemplateResponse `json:"stockAdjustment,omitempty"`
+	Delivery        *deliveryTemplateResponse        `json:"delivery,omitempty"`
+	Customer        *customerTemplateResponse        `json:"customer,omitempty"`
+}
+
+func toTransitionInfoResponses(transitions []TransitionInfo) []transitionInfoResponse {
+	if len(transitions) == 0 {
+		return nil
+	}
+	resp := make([]transitionInfoResponse, 0, len(transitions))
+	for _, t := range transitions {
+		resp = append(resp, transitionInfoResponse{
+			ActionKey:       t.ActionKey,
+			Name:            t.Name,
+			FromState:       stateInfoResponse{Key: t.FromState.Key, Name: t.FromState.Name},
+			ToState:         stateInfoResponse{Key: t.ToState.Key, Name: t.ToState.Name},
+			PermissionKey:   t.PermissionKey,
+			Journal:         toJournalTemplateResponse(t.Journal),
+			StockAdjustment: toStockAdjustmentTemplateResponse(t.StockAdjustment),
+			Delivery:        toDeliveryTemplateResponse(t.Delivery),
+			Customer:        toCustomerTemplateResponse(t.Customer),
+		})
+	}
+	return resp
+}
+
 type definitionInfoResponse struct {
-	DefinitionID        string              `json:"definitionId"`
-	Key                 string              `json:"key"`
-	Name                string              `json:"name"`
-	CreatePermissionKey string              `json:"createPermissionKey"`
-	Fields              []fieldSpecResponse `json:"fields,omitempty"`
+	DefinitionID        string                   `json:"definitionId"`
+	Key                 string                   `json:"key"`
+	Name                string                   `json:"name"`
+	CreatePermissionKey string                   `json:"createPermissionKey"`
+	Fields              []fieldSpecResponse      `json:"fields,omitempty"`
+	Transitions         []transitionInfoResponse `json:"transitions,omitempty"`
 }
 
 func toDefinitionInfoResponse(info DefinitionInfo) definitionInfoResponse {
@@ -191,6 +378,7 @@ func toDefinitionInfoResponse(info DefinitionInfo) definitionInfoResponse {
 		Name:                info.Name,
 		CreatePermissionKey: info.CreatePermissionKey,
 		Fields:              toFieldSpecResponses(info.Fields),
+		Transitions:         toTransitionInfoResponses(info.Transitions),
 	}
 }
 
@@ -346,6 +534,72 @@ type defineTransitionRequest struct {
 	ActionKey    string                  `json:"actionKey"`
 	Name         string                  `json:"name"`
 	Permission   definePermissionRequest `json:"permission"`
+	// Journal is OPTIONAL (the financial management core's workflow-to-
+	// ledger bridge, spec.go's TransitionSpec.Journal) - mirrors
+	// lineTemplateResponse/journalTemplateResponse's shape (this file's
+	// response side) on the request side, the same "separate request/
+	// response struct pair" convention defineFieldRequest/fieldSpecResponse
+	// already use. Omitted entirely (or nil) means "post nothing", exactly
+	// TransitionSpec.Journal's own zero-value contract.
+	Journal *defineJournalTemplateRequest `json:"journal,omitempty"`
+	// StockAdjustment is OPTIONAL (the Inventory management batch's
+	// workflow-to-inventory bridge, spec.go's TransitionSpec.StockAdjustment) -
+	// same "separate request/response struct pair" convention Journal's
+	// own doc comment above describes. Omitted entirely (or nil) means
+	// "adjust nothing", exactly TransitionSpec.StockAdjustment's own
+	// zero-value contract.
+	StockAdjustment *defineStockAdjustmentTemplateRequest `json:"stockAdjustment,omitempty"`
+	// Delivery/Customer are OPTIONAL (the Logistics/CRM batch's
+	// workflow-to-logistics/workflow-to-CRM bridges, spec.go's
+	// TransitionSpec.Delivery/Customer) - same "separate request/response
+	// struct pair" convention Journal's own doc comment above describes.
+	// Omitted entirely (or nil) means "create nothing", exactly
+	// TransitionSpec.Delivery/Customer's own zero-value contract.
+	Delivery *defineDeliveryTemplateRequest `json:"delivery,omitempty"`
+	Customer *defineCustomerTemplateRequest `json:"customer,omitempty"`
+}
+
+type defineLineTemplateRequest struct {
+	AccountCode string `json:"accountCode"`
+	Side        string `json:"side"`
+	AmountField string `json:"amountField"`
+}
+
+type defineJournalTemplateRequest struct {
+	Description string                      `json:"description"`
+	Lines       []defineLineTemplateRequest `json:"lines"`
+}
+
+// defineStockAdjustmentTemplateRequest is StockAdjustmentTemplate's
+// (spec.go) JSON wire shape on the request side - mirrors
+// stockAdjustmentTemplateResponse's shape (this file's response side), the
+// same "separate request/response struct pair" convention
+// defineJournalTemplateRequest/journalTemplateResponse already use.
+type defineStockAdjustmentTemplateRequest struct {
+	ProductField  string `json:"productField"`
+	QuantityField string `json:"quantityField"`
+	Direction     string `json:"direction"`
+	Reason        string `json:"reason"`
+}
+
+// defineDeliveryTemplateRequest/defineCustomerTemplateRequest are
+// DeliveryTemplate/CustomerTemplate's (spec.go) JSON wire shape on the
+// request side - mirror deliveryTemplateResponse/customerTemplateResponse's
+// shape (this file's response side), the same "separate request/response
+// struct pair" convention every other template in this file already uses.
+type defineDeliveryTemplateRequest struct {
+	DestinationAddressField string `json:"destinationAddressField"`
+	OriginAddressField      string `json:"originAddressField"`
+	CarrierField            string `json:"carrierField"`
+	TrackingNumberField     string `json:"trackingNumberField"`
+	ReferenceField          string `json:"referenceField"`
+}
+
+type defineCustomerTemplateRequest struct {
+	NameField    string `json:"nameField"`
+	EmailField   string `json:"emailField"`
+	PhoneField   string `json:"phoneField"`
+	AddressField string `json:"addressField"`
 }
 
 // defineFieldRequest is FieldSpec's (spec.go) JSON wire shape for the
@@ -445,6 +699,10 @@ func handleDefineWorkflow(pool *pgxpool.Pool) http.HandlerFunc {
 					Key:         t.Permission.Key,
 					Description: t.Permission.Description,
 				},
+				Journal:         toJournalTemplateSpec(t.Journal),
+				StockAdjustment: toStockAdjustmentTemplateSpec(t.StockAdjustment),
+				Delivery:        toDeliveryTemplateSpec(t.Delivery),
+				Customer:        toCustomerTemplateSpec(t.Customer),
 			})
 		}
 		if len(req.Fields) > 0 {

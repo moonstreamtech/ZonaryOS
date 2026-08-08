@@ -57,10 +57,19 @@ var markLostPermission = PermissionSpec{
 // TransitionSpec rows sharing the same action_key and permission, per
 // DefinitionSpec's own "same (from-state, action) pair must be unique"
 // rule (see spec.go's Validate): two different from-states, so no
-// collision. Like StockToSaleSpec, this has no payload schema of its own
-// (docs/OPEN_POINTS.md item 35 stays open) - CreateInstanceForm's
-// free-form key/value editor is exactly as usable for a lead's
-// name/contact fields as it is for stock's item/quantity.
+// collision.
+//
+// Fields adds four OPTIONAL payload fields (Logistics/CRM batch,
+// same "optional and additive" contract every other batch's own Fields
+// addition follows) - name/email/phone/address, the customer-record
+// fields the "convert" transition's CustomerTemplate below reads. None
+// are Required=true: every ExecuteTransition/CreateInstance call that
+// predates this batch (this package's own tests, the E2E smoke test's
+// earlier customer_pipeline coverage - lead/qualify/convert with a
+// completely freeform payload) keeps working unchanged (Rule 6).
+// CreateInstanceForm's free-form key/value editor remains exactly as
+// usable for any OTHER lead attribute a firm wants to track (item 35
+// stays additive, not exhaustive - see FieldSpec's own doc comment).
 var CustomerPipelineSpec = DefinitionSpec{
 	Key:  CustomerPipelineKey,
 	Name: "Customer Pipeline",
@@ -73,6 +82,12 @@ var CustomerPipelineSpec = DefinitionSpec{
 		{Key: "qualified", Name: "Qualified"},
 		{Key: "customer", Name: "Customer", IsTerminal: true},
 		{Key: "lost", Name: "Lost", IsTerminal: true},
+	},
+	Fields: []FieldSpec{
+		{Name: "name", Type: FieldTypeString, Required: false},
+		{Name: "email", Type: FieldTypeString, Required: false},
+		{Name: "phone", Type: FieldTypeString, Required: false},
+		{Name: "address", Type: FieldTypeString, Required: false},
 	},
 	Transitions: []TransitionSpec{
 		{
@@ -93,6 +108,25 @@ var CustomerPipelineSpec = DefinitionSpec{
 			Permission: PermissionSpec{
 				Key:         ConvertCustomerPermission,
 				Description: "Convert a qualified lead into a customer.",
+			},
+			// The workflow-to-CRM bridge (Logistics/CRM batch): "the
+			// customer_pipeline workflow ... has no actual customer
+			// record behind it. When a lead converts ... auto-create a
+			// customer record" (design brief). When name is present on
+			// this call, ExecuteTransition creates a customers row (with
+			// SourceWorkflowInstance set to this instance - the
+			// "active_customers" KPI's own condition, internal/reports/kpi.go)
+			// in the SAME transaction as the state change - see
+			// CustomerTemplate's own doc comment. Left unset on any call
+			// that predates this batch (no name supplied) means "create
+			// nothing" - this package's own pre-existing tests that
+			// convert a lead with a freeform, name-less payload keep
+			// working unchanged (Rule 6).
+			Customer: &CustomerTemplate{
+				NameField:    "name",
+				EmailField:   "email",
+				PhoneField:   "phone",
+				AddressField: "address",
 			},
 		},
 		{

@@ -75,6 +75,71 @@ export default async function NavShell({ me, activeFirmId, isOwner }: Props) {
                 {t("settings")}
               </Link>
               <Link
+                href="/financials"
+                data-permission-public="true"
+                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
+              >
+                {t("financials")}
+              </Link>
+              <Link
+                href="/hr"
+                data-permission-public="true"
+                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
+              >
+                {t("hr")}
+              </Link>
+              <Link
+                href="/tasks"
+                data-permission-public="true"
+                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
+              >
+                {t("tasks")}
+              </Link>
+              <Link
+                href="/reports"
+                data-permission-public="true"
+                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
+              >
+                {t("reports")}
+              </Link>
+              <Link
+                href="/inventory"
+                data-permission-public="true"
+                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
+              >
+                {t("inventory")}
+              </Link>
+              <Link
+                href="/suppliers"
+                data-permission-public="true"
+                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
+              >
+                {t("suppliers")}
+              </Link>
+              <Link
+                href="/logistics"
+                data-permission-public="true"
+                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
+              >
+                {t("logistics")}
+              </Link>
+              <Link
+                href="/customers"
+                data-permission-public="true"
+                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
+              >
+                {t("customers")}
+              </Link>
+              {isOwner && (
+                <Link
+                  href="/settings/accounts"
+                  data-permission-public="true"
+                  className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
+                >
+                  {t("accounts")}
+                </Link>
+              )}
+              <Link
                 href="/settings/members"
                 data-permission-public="true"
                 className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"

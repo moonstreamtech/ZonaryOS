@@ -33,14 +33,29 @@ const (
 
 // TaskApprovalSpec is the concrete "Open -> In Progress -> Done/Rejected"
 // task/approval workflow: a task or approval request is opened, started,
-// then either completed or rejected. No payload schema of its own, same
-// deliberate choice every other workflow spec in this package makes.
+// then either completed or rejected.
+//
+// Fields adds one OPTIONAL payload field (HR core batch): assignee_person_id,
+// a FieldTypePerson reference to internal/hr's `people` table - "who this
+// task is assigned to." Deliberately OPTIONAL (Required: false), not
+// required: every CreateInstance call for this workflow that predates
+// this batch (this package's own integration tests, the earlier E2E
+// smoke test coverage) creates instances with no assignee at all, and
+// Required: true here would break every one of them (Never-Violate Rule
+// 6) - an unassigned task/approval request remains a fully valid state,
+// same as before this field existed. When present, CreateInstance
+// validates it against a real `people` row in this firm
+// (checkPersonField, engine.go) the same way a FieldTypeReference field
+// is validated against a real workflow instance.
 var TaskApprovalSpec = DefinitionSpec{
 	Key:  TaskApprovalKey,
 	Name: "Task / Approval",
 	CreatePermission: PermissionSpec{
 		Key:         CreateTaskPermission,
 		Description: "Create a new task or approval request (starts a Task / Approval workflow instance).",
+	},
+	Fields: []FieldSpec{
+		{Name: "assignee_person_id", Type: FieldTypePerson, Required: false},
 	},
 	States: []StateSpec{
 		{Key: "open", Name: "Open", IsInitial: true},

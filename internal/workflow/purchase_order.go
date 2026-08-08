@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/moonstreamtech/ZonaryOS/internal/accounting"
 )
 
 // PurchaseOrderKey is the workflow_definitions.key for the wizard content
@@ -32,10 +34,25 @@ const (
 
 // PurchaseOrderSpec is the concrete "Draft -> Sent -> Received/Cancelled"
 // purchase order workflow: a draft order is sent to a supplier, then
-// either received or cancelled. No payload schema of its own, same
-// deliberate choice StockToSaleSpec/CustomerPipelineSpec already make -
-// CreateInstanceForm's free-form editor covers a purchase order's fields
-// (supplier, items, ...) without a hardcoded schema.
+// either received or cancelled.
+//
+// Fields adds two OPTIONAL payload fields (Open Points item 35's
+// contract: optional and additive, see spec.go's DefinitionSpec.Fields
+// doc comment) - supplier_name and total_amount, the two pieces of data
+// the financial management core's bridge below actually needs. Neither
+// is Required=true: every ExecuteTransition call that predates this
+// batch (this package's own integration tests, the E2E smoke test's
+// earlier "purchase_order" coverage) creates/transitions instances with
+// neither field present, and Required=true here would break every one of
+// them (Never-Violate Rule 6). CreateInstanceForm still renders both as
+// real typed fields once a firm defines/uses this workflow through the
+// UI - "optional" only means CreateInstance doesn't refuse an instance
+// that omits them, not that the frontend hides them.
+//
+// The workflow-to-ledger bridge (financial management core, wired the
+// same way stock_to_sale.go's record_sale is) is deliberately attached
+// to ONLY the "receive" transition, not "send" - see the "receive"
+// TransitionSpec's own doc comment below for the accounting reasoning.
 var PurchaseOrderSpec = DefinitionSpec{
 	Key:  PurchaseOrderKey,
 	Name: "Purchase Order",
@@ -49,6 +66,23 @@ var PurchaseOrderSpec = DefinitionSpec{
 		{Key: "received", Name: "Received", IsTerminal: true},
 		{Key: "cancelled", Name: "Cancelled", IsTerminal: true},
 	},
+	Fields: []FieldSpec{
+		{Name: "supplier_name", Type: FieldTypeString, Required: false},
+		{Name: "total_amount", Type: FieldTypeNumber, Required: false},
+		// supplier_id/product_id (Inventory management batch): the same
+		// "optional and additive" contract this Fields slice's own doc
+		// comment already establishes for supplier_name/total_amount,
+		// applied to the two new cross-module references this batch
+		// introduces. supplier_id is the real internal/inventory.Supplier
+		// this order is against (supplier_name stays as freeform text -
+		// neither replaces the other, a firm can use either or both).
+		// product_id/quantity (quantity is NOT declared here, same
+		// reasoning stock_to_sale.go's own Fields doc comment gives -
+		// it's an existing freeform field, only product_id is new) feed
+		// the "receive" transition's StockAdjustment below.
+		{Name: "supplier_id", Type: FieldTypeSupplier, Required: false},
+		{Name: "product_id", Type: FieldTypeProduct, Required: false},
+	},
 	Transitions: []TransitionSpec{
 		{
 			FromStateKey: "draft",
@@ -59,6 +93,20 @@ var PurchaseOrderSpec = DefinitionSpec{
 				Key:         SendPurchaseOrderPermission,
 				Description: "Send a draft purchase order to its supplier.",
 			},
+			// Deliberately no Journal here, despite the original design
+			// brief proposing "DR Purchase Expense / CR Trade Payables"
+			// at send-time. Sending a draft PO to a supplier is a
+			// commercial communication, not a completed financial
+			// transaction under accrual accounting: no goods or services
+			// have actually changed hands yet, so nothing has actually
+			// been bought - recording an expense (or any asset/liability)
+			// here would violate the matching principle (expensing before
+			// the corresponding goods/service is received) purely because
+			// a document was sent. It would also double-count against
+			// "receive" below: both transitions crediting Trade Payables
+			// for the same purchase would leave the firm owing its
+			// supplier twice for one order. See "receive"'s own doc
+			// comment for where the real entry belongs.
 		},
 		{
 			FromStateKey: "sent",
@@ -68,6 +116,41 @@ var PurchaseOrderSpec = DefinitionSpec{
 			Permission: PermissionSpec{
 				Key:         ReceivePurchaseOrderPermission,
 				Description: "Mark a sent purchase order as received.",
+			},
+			// This is where the real financial event happens: goods are
+			// actually received from the supplier, creating both a real
+			// asset (inventory on hand) and a real liability (an
+			// obligation to pay the supplier) at the same instant -
+			// standard perpetual-inventory treatment for a purchase not
+			// yet paid. DR Inventory / CR Trade Payables, for
+			// total_amount. Account codes match
+			// accounting.InventoryAccountCode/TradePayablesAccountCode -
+			// both are seeded unconditionally whenever this workflow is
+			// (see internal/accounting/seed.go's purchasesAccounts, which
+			// includes InventoryAccountCode specifically so a firm that
+			// purchases without also selling products still has
+			// somewhere to post received goods).
+			Journal: &JournalTemplate{
+				Description: "Received purchase order from {{supplier_name}}",
+				Lines: []LineTemplate{
+					{AccountCode: accounting.InventoryAccountCode, Side: "debit", AmountField: "total_amount"},
+					{AccountCode: accounting.TradePayablesAccountCode, Side: "credit", AmountField: "total_amount"},
+				},
+			},
+			// The workflow-to-inventory bridge's "purchase_receive" hook
+			// (Inventory management batch design brief): the same physical
+			// event that justifies the Journal template just above - goods
+			// actually received from the supplier - also increases real
+			// on-hand stock, when product_id/quantity are present on this
+			// call. Wired to "receive" for the identical reasoning the
+			// Journal template's own doc comment gives for why it isn't on
+			// "send": no goods have changed hands until they're received,
+			// so stock can't increase before then either.
+			StockAdjustment: &StockAdjustmentTemplate{
+				ProductField:  "product_id",
+				QuantityField: "quantity",
+				Direction:     "increase",
+				Reason:        "purchase",
 			},
 		},
 		{

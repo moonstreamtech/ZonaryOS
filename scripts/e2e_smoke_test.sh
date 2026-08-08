@@ -110,12 +110,28 @@ echo "$INSTANCE_RESPONSE" | python3 -c "import sys, json; d = json.load(sys.stdi
     || fail "expected the new instance's state to be in_stock: $INSTANCE_RESPONSE"
 log "stock added: instance $INSTANCE_ID, state in_stock"
 
-log "sell: executing the record_sale transition"
+log "sell: executing the record_sale transition (with unit_price, so the workflow-to-ledger bridge posts a real journal entry)"
 SALE_RESPONSE=$(auth -X POST "$BACKEND_URL/api/firms/$FIRM_ID/workflow-instances/$INSTANCE_ID/transitions/record_sale" \
-    -H "Content-Type: application/json" -d '{}')
+    -H "Content-Type: application/json" -d '{"payload":{"unit_price":19.99}}')
 echo "$SALE_RESPONSE" | python3 -c "import sys, json; d = json.load(sys.stdin); assert d['state']['key'] == 'sold', d" \
     || fail "expected the instance's state to be sold after record_sale: $SALE_RESPONSE"
 log "sale recorded: instance $INSTANCE_ID is now sold"
+
+log "financial management core: confirming record_sale posted a real journal entry via GET .../journal-entries"
+JOURNAL_ENTRIES=$(auth "$BACKEND_URL/api/firms/$FIRM_ID/journal-entries")
+echo "$JOURNAL_ENTRIES" | python3 -c "
+import sys, json
+entries = json.load(sys.stdin)
+matches = [e for e in entries if e.get('sourceType') == 'workflow_instance' and e.get('sourceId') == '$INSTANCE_ID']
+assert len(matches) == 1, entries
+entry = matches[0]
+lines = {(l['accountCode'], l['side']): l['amount'] for l in entry['lines']}
+assert len(lines) == 2, entry
+# quantity(1) * unit_price(19.99) = 19.99, both legs.
+assert lines[('1100', 'debit')] == '19.9900', entry
+assert lines[('4000', 'credit')] == '19.9900', entry
+" || fail "expected a balanced journal entry (DR 1100 / CR 4000, 19.9900) posted for instance $INSTANCE_ID: $JOURNAL_ENTRIES"
+log "journal entry confirmed: DR Trade Receivables / CR Sales Revenue, 19.9900"
 
 log "bonus: confirming the audit trail (PR 8) recorded this transaction"
 AUDIT_LOG=$(auth "$BACKEND_URL/api/firms/$FIRM_ID/audit-log")
@@ -363,6 +379,95 @@ echo "$CONVERT_RESPONSE" | python3 -c "import sys, json; d = json.load(sys.stdin
     || fail "expected the lead's state to be customer after convert: $CONVERT_RESPONSE"
 log "lead converted: instance $LEAD_ID is now a customer"
 
+# --- Logistics + customer-facing data: the CustomerTemplate on
+# --- customer_pipeline's own "convert" transition (there is no
+# --- "qualify_to_customer" transition in the real spec - the qualified ->
+# --- customer transition has always been named "convert") should have
+# --- auto-created a real customers row from the lead's own payload
+# --- (name="E2E Smoke Lead", carried on the merged instance payload since
+# --- creation). Then a fresh stock_to_sale sale referencing that customer
+# --- via customer_id proves the workflow -> ledger bridge's description
+# --- interpolation picks up the customer's name, and a delivery address on
+# --- the same sale proves the DeliveryTemplate side of the same
+# --- transition fires in the same transaction. -------------------------
+
+log "customers: confirming the convert transition auto-created a real customer record"
+CUSTOMERS_RESPONSE=$(auth "$BACKEND_URL/api/firms/$FIRM_ID/customers")
+CUSTOMER_ID=$(echo "$CUSTOMERS_RESPONSE" | python3 -c "
+import sys, json
+customers = json.load(sys.stdin)
+matches = [c for c in customers if c.get('sourceWorkflowInstance') == '$LEAD_ID']
+assert len(matches) == 1, customers
+assert matches[0]['name'] == 'E2E Smoke Lead', matches[0]
+print(matches[0]['id'])
+")
+[ -n "$CUSTOMER_ID" ] || fail "expected a customer auto-created from the converted lead: $CUSTOMERS_RESPONSE"
+log "customer auto-created: $CUSTOMER_ID (source_workflow_instance=$LEAD_ID)"
+
+log "customers (UI path): confirming /customers renders the new customer"
+CUSTOMERS_PAGE_HTML=$(curl -sS -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$FIRM_ID" "$FRONTEND_URL/en/customers")
+echo "$CUSTOMERS_PAGE_HTML" | grep -q "E2E Smoke Lead" \
+    || fail "expected /customers to render the converted lead's name (E2E Smoke Lead)"
+log "customers (UI path) confirmed"
+
+log "logistics: creating a second stock_to_sale instance referencing the new customer, with a delivery address"
+CUSTOMER_SALE_INSTANCE=$(auth -X POST "$BACKEND_URL/api/firms/$FIRM_ID/workflow-definitions/$DEFINITION_ID/instances" \
+    -H "Content-Type: application/json" \
+    -d "{\"payload\":{\"item\":\"E2E Customer Widget\",\"quantity\":1,\"customer_id\":\"$CUSTOMER_ID\",\"destination_address\":\"789 Delivery Ln\",\"carrier\":\"E2E Carrier\"}}")
+CUSTOMER_SALE_INSTANCE_ID=$(echo "$CUSTOMER_SALE_INSTANCE" | python3 -c "import sys, json; print(json.load(sys.stdin)['instanceId'])")
+[ -n "$CUSTOMER_SALE_INSTANCE_ID" ] || fail "did not get an instanceId back from the customer-linked sale instance: $CUSTOMER_SALE_INSTANCE"
+log "instance created: $CUSTOMER_SALE_INSTANCE_ID"
+
+log "logistics + CRM: executing record_sale (customer_id + destination_address present)"
+CUSTOMER_SALE_RESPONSE=$(auth -X POST "$BACKEND_URL/api/firms/$FIRM_ID/workflow-instances/$CUSTOMER_SALE_INSTANCE_ID/transitions/record_sale" \
+    -H "Content-Type: application/json" -d '{"payload":{"unit_price":9.50}}')
+echo "$CUSTOMER_SALE_RESPONSE" | python3 -c "import sys, json; d = json.load(sys.stdin); assert d['state']['key'] == 'sold', d" \
+    || fail "expected the instance's state to be sold after record_sale: $CUSTOMER_SALE_RESPONSE"
+log "sale recorded: instance $CUSTOMER_SALE_INSTANCE_ID is now sold"
+
+log "financial management core: confirming the journal entry's description includes the customer's name"
+CUSTOMER_SALE_JOURNAL=$(auth "$BACKEND_URL/api/firms/$FIRM_ID/journal-entries")
+echo "$CUSTOMER_SALE_JOURNAL" | python3 -c "
+import sys, json
+entries = json.load(sys.stdin)
+matches = [e for e in entries if e.get('sourceType') == 'workflow_instance' and e.get('sourceId') == '$CUSTOMER_SALE_INSTANCE_ID']
+assert len(matches) == 1, entries
+entry = matches[0]
+assert entry['description'] == 'Sale of E2E Customer Widget (customer: E2E Smoke Lead)', entry
+" || fail "expected the journal entry's description to name the customer: $CUSTOMER_SALE_JOURNAL"
+log "journal entry description confirmed to include the customer's name"
+
+log "logistics: confirming the DeliveryTemplate on the same transition auto-created a delivery"
+DELIVERIES_RESPONSE=$(auth "$BACKEND_URL/api/firms/$FIRM_ID/deliveries")
+echo "$DELIVERIES_RESPONSE" | python3 -c "
+import sys, json
+deliveries = json.load(sys.stdin)
+matches = [d for d in deliveries if d.get('sourceId') == '$CUSTOMER_SALE_INSTANCE_ID']
+assert len(matches) == 1, deliveries
+d = matches[0]
+assert d['destinationAddress'] == '789 Delivery Ln', d
+assert d['carrier'] == 'E2E Carrier', d
+assert d['status'] == 'pending', d
+assert d['sourceType'] == 'workflow_instance', d
+" || fail "expected a delivery auto-created for the customer-linked sale: $DELIVERIES_RESPONSE"
+log "delivery auto-created from the same transition, confirmed"
+
+log "logistics (UI path): confirming /logistics renders the new delivery"
+LOGISTICS_PAGE_HTML=$(curl -sS -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$FIRM_ID" "$FRONTEND_URL/en/logistics")
+echo "$LOGISTICS_PAGE_HTML" | grep -q "789 Delivery Ln" \
+    || fail "expected /logistics to render the new delivery's destination address (789 Delivery Ln)"
+log "logistics (UI path) confirmed"
+
+log "reports: confirming activeCustomers and pendingDeliveries KPIs reflect the new records"
+CRM_LOGISTICS_KPIS=$(auth "$BACKEND_URL/api/firms/$FIRM_ID/reports/kpis")
+echo "$CRM_LOGISTICS_KPIS" | python3 -c "
+import sys, json
+kpis = {k['key']: k for k in json.load(sys.stdin)}
+assert int(kpis['activeCustomers']['value']) >= 1, kpis['activeCustomers']
+assert int(kpis['pendingDeliveries']['value']) >= 1, kpis['pendingDeliveries']
+" || fail "expected activeCustomers>=1 and pendingDeliveries>=1: $CRM_LOGISTICS_KPIS"
+log "reports: CRM/logistics KPIs confirmed"
+
 log "dashboard overview (backend path): confirming GET .../workflow-instance-counts reports both workflows correctly"
 COUNTS_RESPONSE=$(auth "$BACKEND_URL/api/firms/$FIRM_ID/workflow-instance-counts")
 echo "$COUNTS_RESPONSE" | python3 -c "
@@ -491,6 +596,326 @@ MEMBER_COUNT=$(echo "$MEMBERS_RESPONSE" | python3 -c "import sys, json; print(le
 [ "$MEMBER_COUNT" = "2" ] || fail "expected 2 members after the invite was accepted, got $MEMBER_COUNT: $MEMBERS_RESPONSE"
 log "invites: full self-registration -> invite -> accept flow verified end-to-end ($MEMBER_COUNT members now in the firm)"
 
+# --- Financial management core: the Purchase Order workflow's own
+# --- workflow-to-ledger bridge (internal/workflow/purchase_order.go) -----
+#
+# A separate firm, with purchases=yes (unlike FIRM_ID above, which
+# answered purchase=no), so the real, Go-defined PurchaseOrderSpec is
+# actually seeded - the earlier "define workflow (UI path)" section
+# defines its own DIFFERENT, unrelated "purchase_order"-keyed spec (draft
+# -> approved -> received, no journal template) on FIRM_ID purely to
+# prove the generic UI renders a second, structurally different
+# definition; it is not the workflow this section exercises.
+
+log "purchase order: walking sells=no/purchase=yes/tasks=no/manufacture=no to create a firm that seeds the real Purchase Order workflow"
+PO_ANSWER_RESPONSE=$(wizard_walk "E2E PO Firm $(date +%s)" no yes no no)
+PO_FIRM_ID=$(echo "$PO_ANSWER_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['result']['firmId'])")
+[ -n "$PO_FIRM_ID" ] || fail "did not get a firmId back from the wizard answer: $PO_ANSWER_RESPONSE"
+log "purchase order firm created: $PO_FIRM_ID"
+
+log "purchase order: confirming the wizard seeded Inventory (1200) and Trade Payables (2000) even though this firm answered sells=no"
+PO_FIRM_ACCOUNTS=$(auth "$BACKEND_URL/api/firms/$PO_FIRM_ID/accounts")
+echo "$PO_FIRM_ACCOUNTS" | python3 -c "
+import sys, json
+accounts = {a['code'] for a in json.load(sys.stdin)}
+assert '1200' in accounts, accounts
+assert '2000' in accounts, accounts
+" || fail "expected Inventory (1200) and Trade Payables (2000) to be seeded for a purchases-only firm: $PO_FIRM_ACCOUNTS"
+log "purchase order: chart of accounts confirmed (Inventory/Trade Payables present without sells=yes)"
+
+log "resolving the purchase_order workflow definition"
+PO_DEFINITION_RESPONSE=$(auth "$BACKEND_URL/api/firms/$PO_FIRM_ID/workflow-definitions?key=purchase_order")
+PO_REAL_DEFINITION_ID=$(echo "$PO_DEFINITION_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['definitionId'])")
+[ -n "$PO_REAL_DEFINITION_ID" ] || fail "did not resolve the purchase_order definition: $PO_DEFINITION_RESPONSE"
+
+log "purchase order: creating a draft purchase order instance"
+PO_REAL_INSTANCE_RESPONSE=$(auth -X POST "$BACKEND_URL/api/firms/$PO_FIRM_ID/workflow-definitions/$PO_REAL_DEFINITION_ID/instances" \
+    -H "Content-Type: application/json" \
+    -d '{"payload":{"supplier_name":"Acme Supply Co","total_amount":349.50}}')
+PO_REAL_INSTANCE_ID=$(echo "$PO_REAL_INSTANCE_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['instanceId'])")
+[ -n "$PO_REAL_INSTANCE_ID" ] || fail "did not get an instanceId back: $PO_REAL_INSTANCE_RESPONSE"
+echo "$PO_REAL_INSTANCE_RESPONSE" | python3 -c "import sys, json; d = json.load(sys.stdin); assert d['state']['key'] == 'draft', d" \
+    || fail "expected the new purchase order instance's state to be draft: $PO_REAL_INSTANCE_RESPONSE"
+log "purchase order created: instance $PO_REAL_INSTANCE_ID, state draft"
+
+log "purchase order: executing the send transition (must NOT post a journal entry - see PurchaseOrderSpec's own accounting reasoning)"
+auth -X POST "$BACKEND_URL/api/firms/$PO_FIRM_ID/workflow-instances/$PO_REAL_INSTANCE_ID/transitions/send" \
+    -H "Content-Type: application/json" -d '{}' > /dev/null
+
+PO_ENTRIES_AFTER_SEND=$(auth "$BACKEND_URL/api/firms/$PO_FIRM_ID/journal-entries")
+echo "$PO_ENTRIES_AFTER_SEND" | python3 -c "
+import sys, json
+entries = json.load(sys.stdin)
+assert len(entries) == 0, entries
+" || fail "expected 'send' to post no journal entry: $PO_ENTRIES_AFTER_SEND"
+log "purchase order: confirmed 'send' posted nothing"
+
+log "purchase order: executing the receive transition (must post DR Inventory / CR Trade Payables)"
+PO_RECEIVE_RESPONSE=$(auth -X POST "$BACKEND_URL/api/firms/$PO_FIRM_ID/workflow-instances/$PO_REAL_INSTANCE_ID/transitions/receive" \
+    -H "Content-Type: application/json" -d '{}')
+echo "$PO_RECEIVE_RESPONSE" | python3 -c "import sys, json; d = json.load(sys.stdin); assert d['state']['key'] == 'received', d" \
+    || fail "expected the instance's state to be received: $PO_RECEIVE_RESPONSE"
+
+PO_ENTRIES_AFTER_RECEIVE=$(auth "$BACKEND_URL/api/firms/$PO_FIRM_ID/journal-entries")
+echo "$PO_ENTRIES_AFTER_RECEIVE" | python3 -c "
+import sys, json
+entries = json.load(sys.stdin)
+matches = [e for e in entries if e.get('sourceType') == 'workflow_instance' and e.get('sourceId') == '$PO_REAL_INSTANCE_ID']
+assert len(matches) == 1, entries
+entry = matches[0]
+assert entry['description'] == 'Received purchase order from Acme Supply Co', entry
+lines = {(l['accountCode'], l['side']): l['amount'] for l in entry['lines']}
+assert len(lines) == 2, entry
+assert lines[('1200', 'debit')] == '349.5000', entry
+assert lines[('2000', 'credit')] == '349.5000', entry
+" || fail "expected a balanced journal entry (DR 1200 / CR 2000, 349.5000) posted for instance $PO_REAL_INSTANCE_ID: $PO_ENTRIES_AFTER_RECEIVE"
+log "purchase order: journal entry confirmed on receive - DR Inventory / CR Trade Payables, 349.5000"
+
+log "purchase order: confirming the Balance Sheet still balances after this real purchase"
+PO_BALANCE_SHEET=$(auth "$BACKEND_URL/api/firms/$PO_FIRM_ID/reports/balance-sheet")
+echo "$PO_BALANCE_SHEET" | python3 -c "
+import sys, json
+r = json.load(sys.stdin)
+assert r['balanced'] is True, r
+" || fail "expected the purchase order firm's balance sheet to balance: $PO_BALANCE_SHEET"
+log "purchase order: balance sheet confirmed balanced"
+
+# --- HR core + task/project management + reporting foundation: create a
+# --- person, assign a real task to them, confirm both /tasks (the cross-
+# --- module join) and /reports (the KPI dashboard) reflect it -----------
+
+log "HR: creating a person"
+PERSON_RESPONSE=$(auth -X POST "$BACKEND_URL/api/firms/$PO_FIRM_ID/people" \
+    -H "Content-Type: application/json" \
+    -d '{"fullName":"E2E Assignee","type":"employee","email":"assignee@example.com"}')
+PERSON_ID=$(echo "$PERSON_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['id'])")
+[ -n "$PERSON_ID" ] || fail "did not get an id back from creating a person: $PERSON_RESPONSE"
+log "person created: $PERSON_ID"
+
+log "HR: confirming GET .../people lists the new person"
+PEOPLE_LIST=$(auth "$BACKEND_URL/api/firms/$PO_FIRM_ID/people")
+echo "$PEOPLE_LIST" | python3 -c "
+import sys, json
+people = json.load(sys.stdin)
+matches = [p for p in people if p['id'] == '$PERSON_ID']
+assert matches, people
+assert matches[0]['fullName'] == 'E2E Assignee', matches[0]
+" || fail "expected the new person to be listed: $PEOPLE_LIST"
+log "HR: person listing confirmed"
+
+log "HR: adding a contract for the person"
+CONTRACT_RESPONSE=$(auth -X POST "$BACKEND_URL/api/firms/$PO_FIRM_ID/people/$PERSON_ID/contracts" \
+    -H "Content-Type: application/json" \
+    -d '{"type":"salary","amount":"20000.00","startDate":"2024-01-01"}')
+CONTRACT_ID=$(echo "$CONTRACT_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['id'])")
+[ -n "$CONTRACT_ID" ] || fail "did not get an id back from creating a contract: $CONTRACT_RESPONSE"
+log "contract created: $CONTRACT_ID"
+
+log "tasks: resolving the task_approval workflow definition (this firm answered tasks=no in its wizard walk, seeding it directly via DefineWorkflowForFirm instead)"
+TASK_DEFINE_RESPONSE=$(auth -X POST "$BACKEND_URL/api/firms/$PO_FIRM_ID/workflow-definitions" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "key":"task_approval",
+      "name":"Task / Approval",
+      "createPermission":{"key":"workflow.task_approval.create","description":"Create a task."},
+      "states":[
+        {"key":"open","name":"Open","isInitial":true},
+        {"key":"in_progress","name":"In Progress"},
+        {"key":"done","name":"Done","isTerminal":true},
+        {"key":"rejected","name":"Rejected","isTerminal":true}
+      ],
+      "transitions":[
+        {"fromStateKey":"open","toStateKey":"in_progress","actionKey":"start","name":"Start","permission":{"key":"workflow.task_approval.start","description":"Start a task."}},
+        {"fromStateKey":"in_progress","toStateKey":"done","actionKey":"complete","name":"Complete","permission":{"key":"workflow.task_approval.complete","description":"Complete a task."}}
+      ],
+      "fields":[{"name":"assignee_person_id","type":"person","required":false}]
+    }')
+TASK_DEFINITION_ID=$(echo "$TASK_DEFINE_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['definitionId'])")
+[ -n "$TASK_DEFINITION_ID" ] || fail "did not get a definitionId back from defining task_approval: $TASK_DEFINE_RESPONSE"
+log "task_approval workflow defined: $TASK_DEFINITION_ID"
+
+log "tasks: creating a task assigned to the new person"
+TASK_INSTANCE_RESPONSE=$(auth -X POST "$BACKEND_URL/api/firms/$PO_FIRM_ID/workflow-definitions/$TASK_DEFINITION_ID/instances" \
+    -H "Content-Type: application/json" \
+    -d "{\"payload\":{\"assignee_person_id\":\"$PERSON_ID\"}}")
+TASK_INSTANCE_ID=$(echo "$TASK_INSTANCE_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['instanceId'])")
+[ -n "$TASK_INSTANCE_ID" ] || fail "did not get an instanceId back from creating a task: $TASK_INSTANCE_RESPONSE"
+echo "$TASK_INSTANCE_RESPONSE" | python3 -c "import sys, json; d = json.load(sys.stdin); assert d['payload']['assignee_person_id'] == '$PERSON_ID', d" \
+    || fail "expected the task's assignee_person_id to round-trip: $TASK_INSTANCE_RESPONSE"
+log "task created and assigned: instance $TASK_INSTANCE_ID"
+
+log "tasks: confirming a task assigned to a NONEXISTENT person is rejected"
+BAD_ASSIGNEE_STATUS=$(auth -o /dev/null -w '%{http_code}' -X POST "$BACKEND_URL/api/firms/$PO_FIRM_ID/workflow-definitions/$TASK_DEFINITION_ID/instances" \
+    -H "Content-Type: application/json" \
+    -d '{"payload":{"assignee_person_id":"00000000-0000-0000-0000-000000000000"}}')
+[ "$BAD_ASSIGNEE_STATUS" = "400" ] || fail "expected 400 for a nonexistent assignee, got $BAD_ASSIGNEE_STATUS"
+log "tasks: nonexistent-assignee rejection confirmed"
+
+# By this point in the script the user owns several firms (FIRM_ID,
+# SECOND_FIRM_ID, PO_FIRM_ID, ...) - without an explicit active-firm
+# cookie, src/lib/activeFirm.ts's resolveActiveFirm falls back to
+# me.firms[0] (the FIRST-created firm), not PO_FIRM_ID, which is where
+# this section's data actually lives. Setting zonaryos_active_firm
+# directly (the same cookie the real firm-switcher UI sets, see
+# app/api/firm/switch/route.ts) is the honest way to address it - no
+# different from a real user having switched firms in their browser.
+log "tasks (UI path): confirming /tasks renders the assignee's name (the cross-module join)"
+TASKS_PAGE_HTML=$(curl -sS -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$PO_FIRM_ID" "$FRONTEND_URL/en/tasks")
+echo "$TASKS_PAGE_HTML" | grep -q "E2E Assignee" \
+    || fail "expected /tasks to render the assignee's name (E2E Assignee) via the workflow-instances + people join"
+log "tasks (UI path) confirmed - cross-module join renders correctly"
+
+log "reports: confirming GET .../reports/kpis reflects the real open task and active person just created"
+KPIS_RESPONSE=$(auth "$BACKEND_URL/api/firms/$PO_FIRM_ID/reports/kpis")
+echo "$KPIS_RESPONSE" | python3 -c "
+import sys, json
+kpis = {k['key']: k for k in json.load(sys.stdin)}
+assert kpis['openTasks']['value'] == '1', kpis['openTasks']
+assert kpis['activePeople']['value'] == '1', kpis['activePeople']
+" || fail "expected openTasks=1 and activePeople=1 in the KPI dashboard: $KPIS_RESPONSE"
+log "reports: KPI dashboard confirmed (openTasks=1, activePeople=1)"
+
+log "reports (UI path): confirming /reports renders the KPI dashboard"
+REPORTS_PAGE_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$PO_FIRM_ID" "$FRONTEND_URL/en/reports")
+[ "$REPORTS_PAGE_STATUS" = "200" ] || fail "expected /reports to render (200), got $REPORTS_PAGE_STATUS"
+log "reports (UI path) confirmed"
+
+log "HR (UI path): confirming /hr renders the new person"
+HR_PAGE_HTML=$(curl -sS -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$PO_FIRM_ID" "$FRONTEND_URL/en/hr")
+echo "$HR_PAGE_HTML" | grep -q "E2E Assignee" \
+    || fail "expected /hr to render the new person's name (E2E Assignee)"
+log "HR (UI path) confirmed"
+
+# --- Inventory management, warehouse, and supplier management: a
+# --- dedicated firm answering yes to BOTH sells+tracks-inventory (so
+# --- SeedStockToSaleWorkflowTx seeds the real stock_to_sale spec) AND
+# --- purchases-from-suppliers (so SeedPurchaseOrderWorkflowTx seeds the
+# --- real purchase_order spec, internal/wizard/firm.go's own two seeding
+# --- conditions) - neither FIRM_ID (purchases=no) nor PO_FIRM_ID
+# --- (sells=no) has both, and FIRM_ID's own "purchase_order" key is a
+# --- DIFFERENT, UI-defined custom spec (see the comment above PO_FIRM_ID's
+# --- own section) with none of this batch's product_id/supplier_id/
+# --- quantity fields - create a product, receive it via the real
+# --- purchase_order's "purchase_receive" hook (the only HTTP-reachable way
+# --- to put real stock on hand), sell it via the real stock_to_sale's
+# --- own hook, confirm stock dropped + a movement row exists, and confirm
+# --- /inventory and /suppliers render it -------------------------------
+
+log "inventory: creating a firm that both sells (tracks inventory) and purchases from suppliers"
+INV_ANSWER_RESPONSE=$(wizard_walk "E2E Inventory Firm $(date +%s)" yes yes no yes no no)
+INV_FIRM_ID=$(echo "$INV_ANSWER_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['result']['firmId'])")
+[ -n "$INV_FIRM_ID" ] || fail "did not get a firmId back from the wizard answer: $INV_ANSWER_RESPONSE"
+log "inventory firm created: $INV_FIRM_ID"
+
+INV_STOCK_DEFINE=$(auth "$BACKEND_URL/api/firms/$INV_FIRM_ID/workflow-definitions?key=stock_to_sale")
+INV_STOCK_DEFINITION_ID=$(echo "$INV_STOCK_DEFINE" | python3 -c "import sys, json; print(json.load(sys.stdin)['definitionId'])")
+[ -n "$INV_STOCK_DEFINITION_ID" ] || fail "did not resolve the inventory firm's stock_to_sale definition: $INV_STOCK_DEFINE"
+INV_PO_DEFINE=$(auth "$BACKEND_URL/api/firms/$INV_FIRM_ID/workflow-definitions?key=purchase_order")
+INV_PO_DEFINITION_ID=$(echo "$INV_PO_DEFINE" | python3 -c "import sys, json; print(json.load(sys.stdin)['definitionId'])")
+[ -n "$INV_PO_DEFINITION_ID" ] || fail "did not resolve the inventory firm's purchase_order definition: $INV_PO_DEFINE"
+
+log "inventory: creating a product"
+PRODUCT_RESPONSE=$(auth -X POST "$BACKEND_URL/api/firms/$INV_FIRM_ID/products" \
+    -H "Content-Type: application/json" \
+    -d '{"sku":"E2E-WIDGET","name":"E2E Stock Widget","costPrice":"4.00","minQuantity":"5"}')
+PRODUCT_ID=$(echo "$PRODUCT_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['id'])")
+[ -n "$PRODUCT_ID" ] || fail "did not get an id back from creating a product: $PRODUCT_RESPONSE"
+log "product created: $PRODUCT_ID"
+
+log "inventory: creating a stock_to_sale instance referencing the product"
+STOCK_INSTANCE_RESPONSE=$(auth -X POST "$BACKEND_URL/api/firms/$INV_FIRM_ID/workflow-definitions/$INV_STOCK_DEFINITION_ID/instances" \
+    -H "Content-Type: application/json" \
+    -d "{\"payload\":{\"item\":\"E2E Stock Widget\",\"product_id\":\"$PRODUCT_ID\"}}")
+STOCK_INSTANCE_ID=$(echo "$STOCK_INSTANCE_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['instanceId'])")
+[ -n "$STOCK_INSTANCE_ID" ] || fail "did not get an instanceId back: $STOCK_INSTANCE_RESPONSE"
+log "instance created: $STOCK_INSTANCE_ID"
+
+log "inventory: confirming a sale with no on-hand stock is rejected (400, ErrInsufficientStock)"
+INSUFFICIENT_STOCK_STATUS=$(auth -o /dev/null -w '%{http_code}' -X POST "$BACKEND_URL/api/firms/$INV_FIRM_ID/workflow-instances/$STOCK_INSTANCE_ID/transitions/record_sale" \
+    -H "Content-Type: application/json" -d '{"payload":{"quantity":1}}')
+[ "$INSUFFICIENT_STOCK_STATUS" = "400" ] || fail "expected 400 for a sale against zero stock, got $INSUFFICIENT_STOCK_STATUS"
+log "inventory: insufficient-stock rejection confirmed"
+
+log "inventory: topping up stock via a purchase_order instance (purchase_receive hook)"
+PO_STOCK_TOPUP_INSTANCE=$(auth -X POST "$BACKEND_URL/api/firms/$INV_FIRM_ID/workflow-definitions/$INV_PO_DEFINITION_ID/instances" \
+    -H "Content-Type: application/json" \
+    -d "{\"payload\":{\"supplier_name\":\"E2E Supply Co\",\"product_id\":\"$PRODUCT_ID\"}}")
+PO_STOCK_TOPUP_INSTANCE_ID=$(echo "$PO_STOCK_TOPUP_INSTANCE" | python3 -c "import sys, json; print(json.load(sys.stdin)['instanceId'])")
+[ -n "$PO_STOCK_TOPUP_INSTANCE_ID" ] || fail "did not get an instanceId back for the stock top-up purchase order: $PO_STOCK_TOPUP_INSTANCE"
+auth -X POST "$BACKEND_URL/api/firms/$INV_FIRM_ID/workflow-instances/$PO_STOCK_TOPUP_INSTANCE_ID/transitions/send" >/dev/null
+auth -X POST "$BACKEND_URL/api/firms/$INV_FIRM_ID/workflow-instances/$PO_STOCK_TOPUP_INSTANCE_ID/transitions/receive" \
+    -H "Content-Type: application/json" -d '{"payload":{"quantity":10}}' >/dev/null
+log "inventory: 10 units received via the 'purchase_receive' hook"
+
+log "inventory: confirming GET .../products/{id}/stock shows 10 units on hand"
+STOCK_AFTER_RECEIVE=$(auth "$BACKEND_URL/api/firms/$INV_FIRM_ID/products/$PRODUCT_ID/stock")
+echo "$STOCK_AFTER_RECEIVE" | python3 -c "
+import sys, json
+levels = json.load(sys.stdin)
+assert len(levels) == 1 and levels[0]['quantity'] == '10.0000', levels
+" || fail "expected 10.0000 units on hand after the purchase receipt: $STOCK_AFTER_RECEIVE"
+log "inventory: stock level confirmed at 10.0000"
+
+log "inventory: selling 4 units through the stock_to_sale instance"
+STOCK_SALE_RESPONSE=$(auth -X POST "$BACKEND_URL/api/firms/$INV_FIRM_ID/workflow-instances/$STOCK_INSTANCE_ID/transitions/record_sale" \
+    -H "Content-Type: application/json" -d '{"payload":{"quantity":4}}')
+echo "$STOCK_SALE_RESPONSE" | python3 -c "import sys, json; d = json.load(sys.stdin); assert d['state']['key'] == 'sold', d" \
+    || fail "expected the instance's state to be sold after record_sale: $STOCK_SALE_RESPONSE"
+log "inventory: sale recorded"
+
+log "inventory: confirming stock dropped to 6.0000 and a 'sale' movement row exists"
+STOCK_AFTER_SALE=$(auth "$BACKEND_URL/api/firms/$INV_FIRM_ID/products/$PRODUCT_ID/stock")
+echo "$STOCK_AFTER_SALE" | python3 -c "
+import sys, json
+levels = json.load(sys.stdin)
+assert len(levels) == 1 and levels[0]['quantity'] == '6.0000', levels
+" || fail "expected 6.0000 units on hand after the sale: $STOCK_AFTER_SALE"
+
+MOVEMENTS_RESPONSE=$(auth "$BACKEND_URL/api/firms/$INV_FIRM_ID/stock-movements?productId=$PRODUCT_ID")
+echo "$MOVEMENTS_RESPONSE" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+movements = d['movements']
+sale_moves = [m for m in movements if m['reason'] == 'sale' and m['sourceId'] == '$STOCK_INSTANCE_ID']
+assert len(sale_moves) == 1, movements
+assert sale_moves[0]['quantityChange'] == '-4.0000', sale_moves[0]
+purchase_moves = [m for m in movements if m['reason'] == 'purchase']
+assert len(purchase_moves) == 1, movements
+" || fail "expected exactly one sale movement (-4.0000) and one purchase movement for this product: $MOVEMENTS_RESPONSE"
+log "inventory: stock movement history confirmed (purchase +10, sale -4)"
+
+log "inventory (UI path): confirming /inventory renders the product and its stock"
+INVENTORY_PAGE_HTML=$(curl -sS -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$INV_FIRM_ID" "$FRONTEND_URL/en/inventory")
+echo "$INVENTORY_PAGE_HTML" | grep -q "E2E-WIDGET" \
+    || fail "expected /inventory to render the new product's SKU (E2E-WIDGET)"
+log "inventory (UI path) confirmed"
+
+log "suppliers: creating a supplier"
+SUPPLIER_RESPONSE=$(auth -X POST "$BACKEND_URL/api/firms/$INV_FIRM_ID/suppliers" \
+    -H "Content-Type: application/json" \
+    -d '{"name":"E2E Supply Partners","email":"sales@e2e-supply.example"}')
+SUPPLIER_ID=$(echo "$SUPPLIER_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['id'])")
+[ -n "$SUPPLIER_ID" ] || fail "did not get an id back from creating a supplier: $SUPPLIER_RESPONSE"
+log "supplier created: $SUPPLIER_ID"
+
+log "suppliers (UI path): confirming /suppliers renders the new supplier"
+SUPPLIERS_PAGE_HTML=$(curl -sS -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$INV_FIRM_ID" "$FRONTEND_URL/en/suppliers")
+echo "$SUPPLIERS_PAGE_HTML" | grep -q "E2E Supply Partners" \
+    || fail "expected /suppliers to render the new supplier's name (E2E Supply Partners)"
+log "suppliers (UI path) confirmed"
+
+log "reports: confirming GET .../reports/kpis reflects the new low-stock-free product and its inventory value"
+INVENTORY_KPIS_RESPONSE=$(auth "$BACKEND_URL/api/firms/$INV_FIRM_ID/reports/kpis")
+echo "$INVENTORY_KPIS_RESPONSE" | python3 -c "
+import sys, json
+kpis = {k['key']: k for k in json.load(sys.stdin)}
+# 6.0000 on hand * 4.00 cost = 24.0000 - this firm's only stocked product.
+assert kpis['totalInventoryValue']['value'] == '24.0000', kpis['totalInventoryValue']
+# 6.0000 on hand >= min_quantity 5 - NOT low stock.
+assert kpis['lowStockProducts']['value'] == '0', kpis['lowStockProducts']
+" || fail "expected totalInventoryValue=24.0000 and lowStockProducts=0: $INVENTORY_KPIS_RESPONSE"
+log "reports: inventory KPIs confirmed (totalInventoryValue=24.0000, lowStockProducts=0)"
+
 # --- Session refresh (Open Points item 41): a real, expired access token
 # --- is silently refreshed by src/proxy.ts, no re-login prompt ----------
 #
@@ -618,4 +1043,4 @@ trap - EXIT
 log "session refresh: realm's accessTokenLifespan restored to its original (unset/default) value"
 
 echo ""
-echo "E2E SMOKE TEST PASSED: login + wizard -> firm creation -> add stock -> sell, plus UI-path add stock, firm switch, audit log view, a real second workflow defined + rendered through the generic UI, the Customer Pipeline default workflow walked lead -> qualified -> customer, the dashboard's counts-by-state overview, quick-create, global search, a full self-registration -> invite -> accept flow bringing a second real user into the firm with no email infrastructure, and (new) a genuine session-refresh proof - a real Keycloak access token actually expires, gets silently refreshed by src/proxy.ts with no re-login prompt, and the terminal (invalid refresh token) case cleanly falls through to a real login redirect - all against a real stack"
+echo "E2E SMOKE TEST PASSED: login + wizard -> firm creation -> add stock -> sell, plus UI-path add stock, firm switch, audit log view, a real second workflow defined + rendered through the generic UI, the Customer Pipeline default workflow walked lead -> qualified -> customer, (new) the convert transition's CustomerTemplate auto-creating a real customer record confirmed via /customers, a customer-linked sale whose DeliveryTemplate auto-created a delivery confirmed via /logistics and whose journal entry description names the customer, the activeCustomers/pendingDeliveries KPIs, the dashboard's counts-by-state overview, quick-create, global search, a full self-registration -> invite -> accept flow bringing a second real user into the firm with no email infrastructure, a purchase order walked draft -> sent -> received posting the correct ledger entry only on receive, (new) HR core (person + contract creation), a task assigned to that person confirmed via /tasks' cross-module join and the /reports KPI dashboard, (new) Inventory management - a product created, stock topped up via the purchase_order 'purchase_receive' hook, an insufficient-stock sale rejected then a real sale decreasing stock and appending a movement row, confirmed via /inventory and /suppliers and the inventory KPI dashboard - and a genuine session-refresh proof - a real Keycloak access token actually expires, gets silently refreshed by src/proxy.ts with no re-login prompt, and the terminal (invalid refresh token) case cleanly falls through to a real login redirect - all against a real stack"
