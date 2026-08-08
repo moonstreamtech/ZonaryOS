@@ -48,6 +48,45 @@ type TransitionSpec struct {
 	// added) keeps behaving exactly as before: no ledger entry is ever
 	// posted for it.
 	Journal *JournalTemplate `json:"journal,omitempty"`
+	// StockAdjustment is OPTIONAL: the workflow-to-inventory bridge
+	// (Inventory management batch), the exact same shape Journal
+	// establishes above but for internal/inventory.AdjustStockTx instead
+	// of internal/accounting.PostJournalEntryTx - not a new mechanism. When
+	// set, ExecuteTransition resolves it against the transition's merged
+	// instance payload and applies the resulting stock change in the same
+	// transaction as the state change itself - see engine.go's
+	// resolveStockAdjustment. A nil StockAdjustment (every TransitionSpec
+	// that existed before this field was added) keeps behaving exactly as
+	// before: no stock is ever adjusted for it.
+	StockAdjustment *StockAdjustmentTemplate `json:"stockAdjustment,omitempty"`
+}
+
+// StockAdjustmentTemplate describes the stock_levels change a transition
+// should apply - the declarative shape a workflow definition carries;
+// engine.go resolves it against one specific instance's payload at
+// ExecuteTransition time, the same "resolved fresh per call, never baked
+// in ahead of time" reasoning JournalTemplate's own doc comment gives.
+type StockAdjustmentTemplate struct {
+	// ProductField names the field in the instance's payload that holds
+	// the product's ID (a string UUID) - e.g. "product_id". If this field
+	// is absent from the merged payload when a transition carrying this
+	// template fires, the whole StockAdjustment is skipped for that call
+	// (not an error - see engine.go's resolveStockAdjustment for why this
+	// must stay non-breaking, the same Rule-6-in-spirit reasoning
+	// resolveJournalLines already documents).
+	ProductField string
+	// QuantityField names the field in the instance's payload that holds
+	// the quantity to adjust by (a positive number) - e.g. "quantity".
+	// Direction (below) determines the sign actually applied.
+	QuantityField string
+	// Direction is "increase" or "decrease" - whether QuantityField's
+	// value is added to or subtracted from stock_levels.quantity.
+	Direction string
+	// Reason is the stock_movements.reason this adjustment is recorded
+	// under (e.g. "sale", "purchase") - see internal/inventory's own
+	// stock_movements.reason doc comment (migrations/0011_inventory_core.up.sql)
+	// for its open, app-validated vocabulary.
+	Reason string
 }
 
 // JournalTemplate describes the journal entry a transition should post -
@@ -123,6 +162,17 @@ const (
 	// way Options/ReferenceDefinitionKey/ArrayItemType do, since there's
 	// only one `people` table to reference, not a choice of target.
 	FieldTypePerson FieldType = "person"
+	// FieldTypeProduct and FieldTypeSupplier (Inventory management batch)
+	// are FieldTypePerson's counterparts for the two new cross-module
+	// entities this batch introduces: a value that must be a real
+	// internal/inventory.Product's or Supplier's ID within the same firm -
+	// e.g. stock_to_sale's product_id, purchase_order's supplier_id. Same
+	// reasoning as FieldTypePerson: resolves against one specific table
+	// directly (products or suppliers), not a choice of target the way
+	// FieldTypeReference has - see engine.go's checkProductField/
+	// checkSupplierField.
+	FieldTypeProduct  FieldType = "product"
+	FieldTypeSupplier FieldType = "supplier"
 )
 
 // FieldSpec is one declared field in a workflow definition's instance
@@ -256,6 +306,11 @@ func (d DefinitionSpec) Validate() error {
 				return err
 			}
 		}
+		if t.StockAdjustment != nil {
+			if err := validateStockAdjustmentTemplate(d.Key, t.ActionKey, *t.StockAdjustment); err != nil {
+				return err
+			}
+		}
 		dedupeKey := t.FromStateKey + "\x00" + t.ActionKey
 		if _, exists := transitionKeys[dedupeKey]; exists {
 			return fmt.Errorf("workflow definition %q: duplicate transition action %q from state %q", d.Key, t.ActionKey, t.FromStateKey)
@@ -379,10 +434,10 @@ func validateFieldShape(defKey string, f FieldSpec) error {
 		}
 		return nil
 
-	case FieldTypePerson:
-		// No extra fields needed - see FieldTypePerson's own doc comment
-		// for why (only one `people` table to reference, unlike
-		// FieldTypeReference's choice of target workflow definition).
+	case FieldTypePerson, FieldTypeProduct, FieldTypeSupplier:
+		// No extra fields needed - same reasoning FieldTypePerson's own doc
+		// comment gives (only one target table to reference per type,
+		// unlike FieldTypeReference's choice of target workflow definition).
 		if len(f.Options) > 0 {
 			return fmt.Errorf("workflow definition %q: field %q: options is only meaningful for an enum field", defKey, f.Name)
 		}
@@ -421,8 +476,33 @@ func validateFieldShape(defKey string, f FieldSpec) error {
 		return nil
 
 	default:
-		return fmt.Errorf("workflow definition %q: field %q has unknown type %q (must be one of string/number/boolean/date/enum/reference/array/person)", defKey, f.Name, f.Type)
+		return fmt.Errorf("workflow definition %q: field %q has unknown type %q (must be one of string/number/boolean/date/enum/reference/array/person/product/supplier)", defKey, f.Name, f.Type)
 	}
+}
+
+// validateStockAdjustmentTemplate checks one TransitionSpec's optional
+// StockAdjustmentTemplate is structurally sound: a product field name, a
+// quantity field name, a valid direction, and a non-empty reason. Same
+// "cannot check the referenced product actually exists here" limitation
+// validateJournalTemplate's own doc comment gives for account codes - that
+// happens at ExecuteTransition time instead (engine.go's
+// resolveStockAdjustment / internal/inventory.AdjustStockTx), against a
+// real instance payload and a real firm's product catalog, neither of
+// which exists at spec-definition time.
+func validateStockAdjustmentTemplate(defKey, actionKey string, sat StockAdjustmentTemplate) error {
+	if sat.ProductField == "" {
+		return fmt.Errorf("workflow definition %q: transition %q: stock adjustment must name a product field", defKey, actionKey)
+	}
+	if sat.QuantityField == "" {
+		return fmt.Errorf("workflow definition %q: transition %q: stock adjustment must name a quantity field", defKey, actionKey)
+	}
+	if sat.Direction != "increase" && sat.Direction != "decrease" {
+		return fmt.Errorf("workflow definition %q: transition %q: stock adjustment direction must be \"increase\" or \"decrease\", got %q", defKey, actionKey, sat.Direction)
+	}
+	if sat.Reason == "" {
+		return fmt.Errorf("workflow definition %q: transition %q: stock adjustment must have a reason", defKey, actionKey)
+	}
+	return nil
 }
 
 // PermissionKeys lists every permission key this spec references (its

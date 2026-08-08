@@ -25,6 +25,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/accounting"
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
 	"github.com/moonstreamtech/ZonaryOS/internal/hr"
+	"github.com/moonstreamtech/ZonaryOS/internal/inventory"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
 )
@@ -192,6 +193,18 @@ func validatePayload(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, fields []
 		}
 		if f.Type == FieldTypePerson {
 			if err := checkPersonField(ctx, tx, firmID, f, v); err != nil {
+				return err
+			}
+			continue
+		}
+		if f.Type == FieldTypeProduct {
+			if err := checkProductField(ctx, tx, firmID, f, v); err != nil {
+				return err
+			}
+			continue
+		}
+		if f.Type == FieldTypeSupplier {
+			if err := checkSupplierField(ctx, tx, firmID, f, v); err != nil {
 				return err
 			}
 			continue
@@ -394,6 +407,70 @@ func checkPersonField(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, f FieldS
 	return nil
 }
 
+// checkProductField validates a FieldTypeProduct field's value: it must be
+// a string that parses as a UUID, and that UUID must name a real products
+// row in THIS firm - the Inventory management batch's counterpart to
+// checkPersonField above (a workflow instance referencing a `products` row
+// instead of a `people` row). Same reasoning throughout: runs inside
+// CreateInstance's own already-open transaction, no row-locking equivalent
+// to checkReferenceField's `FOR SHARE OF wi` since there's no delete path
+// for `products` either.
+//
+// ciaudit:ignore-firmid-check: internal helper called only by
+// validatePayload, itself only called by CreateInstance after
+// permission.IsMember/Has have already run in the same transaction -
+// firmID here scopes a read query (defense in depth alongside RLS, see
+// checkReferenceField's identical reasoning above), it is not itself an
+// authorization decision.
+func checkProductField(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, f FieldSpec, v any) error {
+	s, ok := v.(string)
+	if !ok {
+		return fmt.Errorf("%w: field %q must be a string product ID", ErrPayloadValidation, f.Name)
+	}
+	productID, err := uuid.Parse(s)
+	if err != nil {
+		return fmt.Errorf("%w: field %q must be a valid product ID (UUID)", ErrPayloadValidation, f.Name)
+	}
+
+	exists, err := inventory.ProductExistsTx(ctx, tx, firmID, productID)
+	if err != nil {
+		return fmt.Errorf("check product field %q: %w", f.Name, err)
+	}
+	if !exists {
+		return fmt.Errorf("%w: field %q references a nonexistent product in this firm", ErrPayloadValidation, f.Name)
+	}
+	return nil
+}
+
+// checkSupplierField validates a FieldTypeSupplier field's value - same
+// shape as checkProductField, against `suppliers` instead of `products`.
+//
+// ciaudit:ignore-firmid-check: internal helper called only by
+// validatePayload, itself only called by CreateInstance after
+// permission.IsMember/Has have already run in the same transaction -
+// firmID here scopes a read query (defense in depth alongside RLS, see
+// checkReferenceField's identical reasoning above), it is not itself an
+// authorization decision.
+func checkSupplierField(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, f FieldSpec, v any) error {
+	s, ok := v.(string)
+	if !ok {
+		return fmt.Errorf("%w: field %q must be a string supplier ID", ErrPayloadValidation, f.Name)
+	}
+	supplierID, err := uuid.Parse(s)
+	if err != nil {
+		return fmt.Errorf("%w: field %q must be a valid supplier ID (UUID)", ErrPayloadValidation, f.Name)
+	}
+
+	exists, err := inventory.SupplierExistsTx(ctx, tx, firmID, supplierID)
+	if err != nil {
+		return fmt.Errorf("check supplier field %q: %w", f.Name, err)
+	}
+	if !exists {
+		return fmt.Errorf("%w: field %q references a nonexistent supplier in this firm", ErrPayloadValidation, f.Name)
+	}
+	return nil
+}
+
 // marshalJournalTemplate encodes jt for storage in
 // workflow_transitions.journal_template - a nil jt returns a nil []byte
 // (SQL NULL), the same "nil in, NULL column, no schema at all" contract
@@ -417,6 +494,92 @@ func unmarshalJournalTemplate(data []byte) (*JournalTemplate, error) {
 		return nil, fmt.Errorf("unmarshal journal template: %w", err)
 	}
 	return &jt, nil
+}
+
+// marshalStockAdjustmentTemplate encodes sat for storage in
+// workflow_transitions.stock_adjustment - same nil-in/NULL-out contract as
+// marshalJournalTemplate.
+func marshalStockAdjustmentTemplate(sat *StockAdjustmentTemplate) ([]byte, error) {
+	if sat == nil {
+		return nil, nil
+	}
+	return json.Marshal(sat)
+}
+
+// unmarshalStockAdjustmentTemplate decodes
+// workflow_transitions.stock_adjustment back into a *StockAdjustmentTemplate -
+// nil for a SQL NULL column, same convention as unmarshalJournalTemplate.
+func unmarshalStockAdjustmentTemplate(data []byte) (*StockAdjustmentTemplate, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var sat StockAdjustmentTemplate
+	if err := json.Unmarshal(data, &sat); err != nil {
+		return nil, fmt.Errorf("unmarshal stock adjustment template: %w", err)
+	}
+	return &sat, nil
+}
+
+// resolveStockAdjustment resolves sat against payload into the arguments
+// internal/inventory.AdjustStockTx needs: the referenced product's ID and
+// a signed quantity string (positive for Direction "increase", negative
+// for "decrease"). ok=false (not an error) means ProductField or
+// QuantityField was simply absent from payload - the whole template is
+// skipped for this call, the same non-breaking "missing means skip, not
+// fail" contract resolveAmountField/resolveJournalLines already document
+// for the ledger bridge, for the identical Rule-6-in-spirit reason: many
+// existing/legitimate ExecuteTransition callers for a definition that
+// later gains a StockAdjustment don't supply product_id/quantity on every
+// call (e.g. stock_to_sale's record_sale before this batch). An error
+// return means a field WAS present but malformed - a real data problem
+// worth failing the transition (and rolling back the state change) over.
+func resolveStockAdjustment(sat *StockAdjustmentTemplate, payload map[string]any) (productID uuid.UUID, quantityChange string, ok bool, err error) {
+	productRaw, present := payload[sat.ProductField]
+	if !present || productRaw == nil {
+		return uuid.UUID{}, "", false, nil
+	}
+	productStr, isString := productRaw.(string)
+	if !isString {
+		return uuid.UUID{}, "", false, fmt.Errorf("%w: stock adjustment field %q must be a string product ID", ErrPayloadValidation, sat.ProductField)
+	}
+	productID, err = uuid.Parse(productStr)
+	if err != nil {
+		return uuid.UUID{}, "", false, fmt.Errorf("%w: stock adjustment field %q must be a valid product ID (UUID)", ErrPayloadValidation, sat.ProductField)
+	}
+
+	quantity, present, err := lookupNumberField(payload, sat.QuantityField)
+	if err != nil {
+		return uuid.UUID{}, "", false, err
+	}
+	if !present {
+		return uuid.UUID{}, "", false, nil
+	}
+	if sat.Direction == "decrease" {
+		quantity = -quantity
+	}
+	formatted, err := formatSignedAmount(quantity)
+	if err != nil {
+		return uuid.UUID{}, "", false, err
+	}
+	return productID, formatted, true, nil
+}
+
+// formatSignedAmount is formatAmount's signed counterpart: rounds f to 4
+// fraction digits and renders it as a plain decimal string, but - unlike
+// formatAmount, which rejects a non-positive result because a journal
+// line's amount is always positive - allows a negative result, since a
+// stock decrease (a sale) is a genuine negative quantityChange (see
+// internal/inventory's own signedDecimalPattern doc comment for why there
+// is no natural "side" column equivalent for a quantity delta). Still
+// rejects exactly zero: a stock adjustment that changes nothing is a data
+// problem worth failing the transition over, the same reasoning
+// formatAmount applies to a non-positive journal amount.
+func formatSignedAmount(f float64) (string, error) {
+	rounded := math.Round(f*10000) / 10000
+	if rounded == 0 {
+		return "", fmt.Errorf("%w: computed stock adjustment quantity is zero", ErrPayloadValidation)
+	}
+	return strconv.FormatFloat(rounded, 'f', 4, 64), nil
 }
 
 // interpolateTemplate substitutes every "{{field}}" placeholder in s with
@@ -681,11 +844,15 @@ func DefineWorkflowTx(ctx context.Context, tx pgx.Tx, firmID, granteeRoleID uuid
 		if err != nil {
 			return uuid.UUID{}, fmt.Errorf("marshal journal template for transition %q: %w", t.ActionKey, err)
 		}
+		stockAdjustmentJSON, err := marshalStockAdjustmentTemplate(t.StockAdjustment)
+		if err != nil {
+			return uuid.UUID{}, fmt.Errorf("marshal stock adjustment template for transition %q: %w", t.ActionKey, err)
+		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO workflow_transitions
-				(firm_id, workflow_definition_id, from_state_id, to_state_id, action_key, name, permission_key, journal_template)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		`, firmID, definitionID, stateIDs[t.FromStateKey], stateIDs[t.ToStateKey], t.ActionKey, t.Name, t.Permission.Key, journalTemplateJSON); err != nil {
+				(firm_id, workflow_definition_id, from_state_id, to_state_id, action_key, name, permission_key, journal_template, stock_adjustment)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		`, firmID, definitionID, stateIDs[t.FromStateKey], stateIDs[t.ToStateKey], t.ActionKey, t.Name, t.Permission.Key, journalTemplateJSON, stockAdjustmentJSON); err != nil {
 			return uuid.UUID{}, fmt.Errorf("insert workflow transition %q: %w", t.ActionKey, err)
 		}
 	}
@@ -987,13 +1154,13 @@ func ExecuteTransition(ctx context.Context, pool *pgxpool.Pool, firmID, userID, 
 
 		var toStateID uuid.UUID
 		var permissionKey string
-		var journalTemplateJSON []byte
+		var journalTemplateJSON, stockAdjustmentJSON []byte
 		err = tx.QueryRow(ctx, `
-			SELECT wt.to_state_id, ws.key, wt.permission_key, wt.journal_template
+			SELECT wt.to_state_id, ws.key, wt.permission_key, wt.journal_template, wt.stock_adjustment
 			FROM workflow_transitions wt
 			JOIN workflow_states ws ON ws.id = wt.to_state_id
 			WHERE wt.workflow_definition_id = $1 AND wt.from_state_id = $2 AND wt.action_key = $3
-		`, definitionID, currentStateID, actionKey).Scan(&toStateID, &toStateKey, &permissionKey, &journalTemplateJSON)
+		`, definitionID, currentStateID, actionKey).Scan(&toStateID, &toStateKey, &permissionKey, &journalTemplateJSON, &stockAdjustmentJSON)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNoSuchTransition
 		}
@@ -1001,6 +1168,10 @@ func ExecuteTransition(ctx context.Context, pool *pgxpool.Pool, firmID, userID, 
 			return fmt.Errorf("look up transition: %w", err)
 		}
 		journalTemplate, err := unmarshalJournalTemplate(journalTemplateJSON)
+		if err != nil {
+			return err
+		}
+		stockAdjustment, err := unmarshalStockAdjustmentTemplate(stockAdjustmentJSON)
 		if err != nil {
 			return err
 		}
@@ -1062,6 +1233,32 @@ func ExecuteTransition(ctx context.Context, pool *pgxpool.Pool, firmID, userID, 
 			if ok {
 				description := interpolateTemplate(journalTemplate.Description, mergedPayload)
 				if _, err := accounting.PostJournalEntryTx(ctx, tx, firmID, userID, description, journalEntitySourceType, &instanceID, lines); err != nil {
+					return err
+				}
+			}
+		}
+
+		// The workflow-to-inventory bridge: same "resolve against the
+		// merged payload, apply in the SAME transaction as the state
+		// change" shape as the journal bridge just above, through
+		// internal/inventory.AdjustStockTx instead of
+		// accounting.PostJournalEntryTx - not a new mechanism (see
+		// StockAdjustmentTemplate's own doc comment, spec.go). ok=false
+		// means product_id/quantity simply weren't supplied on this call -
+		// skipped, not failed (resolveStockAdjustment's own doc comment).
+		// A resolution error, or AdjustStockTx itself returning
+		// ErrInsufficientStock, fails the whole transition - rolling back
+		// the state change with it, so a rejected sale (insufficient
+		// stock) never partially applies: no state change, no stock
+		// change, exactly the design brief's "reject the transition, not
+		// just warn".
+		if stockAdjustment != nil {
+			productID, quantityChange, ok, err := resolveStockAdjustment(stockAdjustment, mergedPayload)
+			if err != nil {
+				return err
+			}
+			if ok {
+				if err := inventory.AdjustStockTx(ctx, tx, firmID, productID, "", quantityChange, stockAdjustment.Reason, journalEntitySourceType, &instanceID); err != nil {
 					return err
 				}
 			}
@@ -1358,12 +1555,13 @@ type DefinitionInfo struct {
 // scoped to one instance's current state) at the definition level,
 // scoped to the whole transition graph instead.
 type TransitionInfo struct {
-	ActionKey     string
-	Name          string
-	FromState     StateInfo
-	ToState       StateInfo
-	PermissionKey string
-	Journal       *JournalTemplate
+	ActionKey       string
+	Name            string
+	FromState       StateInfo
+	ToState         StateInfo
+	PermissionKey   string
+	Journal         *JournalTemplate
+	StockAdjustment *StockAdjustmentTemplate
 }
 
 // fetchTransitionInfos loads every workflow_transitions row for
@@ -1372,7 +1570,7 @@ type TransitionInfo struct {
 // read path.
 func fetchTransitionInfos(ctx context.Context, tx pgx.Tx, definitionID uuid.UUID) ([]TransitionInfo, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT wt.action_key, wt.name, src.key, src.name, dst.key, dst.name, wt.permission_key, wt.journal_template
+		SELECT wt.action_key, wt.name, src.key, src.name, dst.key, dst.name, wt.permission_key, wt.journal_template, wt.stock_adjustment
 		FROM workflow_transitions wt
 		JOIN workflow_states src ON src.id = wt.from_state_id
 		JOIN workflow_states dst ON dst.id = wt.to_state_id
@@ -1387,11 +1585,15 @@ func fetchTransitionInfos(ctx context.Context, tx pgx.Tx, definitionID uuid.UUID
 	var infos []TransitionInfo
 	for rows.Next() {
 		var ti TransitionInfo
-		var journalTemplateJSON []byte
-		if err := rows.Scan(&ti.ActionKey, &ti.Name, &ti.FromState.Key, &ti.FromState.Name, &ti.ToState.Key, &ti.ToState.Name, &ti.PermissionKey, &journalTemplateJSON); err != nil {
+		var journalTemplateJSON, stockAdjustmentJSON []byte
+		if err := rows.Scan(&ti.ActionKey, &ti.Name, &ti.FromState.Key, &ti.FromState.Name, &ti.ToState.Key, &ti.ToState.Name, &ti.PermissionKey, &journalTemplateJSON, &stockAdjustmentJSON); err != nil {
 			return nil, err
 		}
 		ti.Journal, err = unmarshalJournalTemplate(journalTemplateJSON)
+		if err != nil {
+			return nil, err
+		}
+		ti.StockAdjustment, err = unmarshalStockAdjustmentTemplate(stockAdjustmentJSON)
 		if err != nil {
 			return nil, err
 		}

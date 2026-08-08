@@ -19,7 +19,17 @@ export type StateInfo = {
 // resolved the original four scalar types; item 38 extends it with
 // "enum"/"reference"/"array" - mirrored 1:1 on the frontend, same
 // convention as the original four.
-export type FieldType = "string" | "number" | "boolean" | "date" | "enum" | "reference" | "array" | "person";
+export type FieldType =
+  | "string"
+  | "number"
+  | "boolean"
+  | "date"
+  | "enum"
+  | "reference"
+  | "array"
+  | "person"
+  | "product"
+  | "supplier";
 
 // ScalarFieldType is the subset of FieldType a FieldSpecInput's
 // arrayItemType may be (see FieldSpecInput.arrayItemType below) - the
@@ -87,9 +97,22 @@ export type JournalTemplateInfo = {
   lines: LineTemplateInfo[];
 };
 
+// StockAdjustmentTemplateInfo is internal/workflow.StockAdjustmentTemplate's
+// (spec.go) wire shape - the Inventory management batch's workflow-to-
+// inventory bridge, the same "read-only on the frontend, a transition
+// either carries one or it doesn't" role JournalTemplateInfo already has
+// above.
+export type StockAdjustmentTemplateInfo = {
+  productField: string;
+  quantityField: string;
+  direction: "increase" | "decrease";
+  reason: string;
+};
+
 // TransitionInfo is internal/workflow.TransitionInfo's wire shape - one
 // transition in a definition's full state graph, with its OPTIONAL
-// journal template attached (see JournalTemplateInfo above).
+// journal template and/or stock adjustment template attached (see
+// JournalTemplateInfo/StockAdjustmentTemplateInfo above).
 export type TransitionInfo = {
   actionKey: string;
   name: string;
@@ -97,6 +120,7 @@ export type TransitionInfo = {
   toState: StateInfo;
   permissionKey: string;
   journal?: JournalTemplateInfo;
+  stockAdjustment?: StockAdjustmentTemplateInfo;
 };
 
 export type WorkflowDefinition = {

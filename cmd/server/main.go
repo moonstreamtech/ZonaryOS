@@ -18,6 +18,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/firm"
 	"github.com/moonstreamtech/ZonaryOS/internal/hr"
 	"github.com/moonstreamtech/ZonaryOS/internal/identity"
+	"github.com/moonstreamtech/ZonaryOS/internal/inventory"
 	"github.com/moonstreamtech/ZonaryOS/internal/invite"
 	"github.com/moonstreamtech/ZonaryOS/internal/license"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
@@ -129,6 +130,7 @@ func main() {
 	invite.RegisterRoutes(mux, verifier, pool)
 	accounting.RegisterRoutes(mux, verifier, pool)
 	hr.RegisterRoutes(mux, verifier, pool)
+	inventory.RegisterRoutes(mux, verifier, pool)
 	reports.RegisterRoutes(mux, verifier, pool)
 	platformadmin.RegisterRoutes(mux, verifier, pool, platformadmin.NewAllowlist(cfg.PlatformAdminEmails), licenseVerifier)
 	// Only actually registers the two /telemetry/* endpoints when

@@ -1,0 +1,12 @@
+-- The workflow-to-inventory bridge (internal/workflow/spec.go's
+-- TransitionSpec.StockAdjustment): an OPTIONAL stock-adjustment template a
+-- transition can carry, resolved against one instance's payload at
+-- ExecuteTransition time (internal/workflow/engine.go) and applied through
+-- internal/inventory.AdjustStockTx - the exact same "declarative template
+-- on the transition, resolved and applied inside the same transaction as
+-- the state change" shape 0009_financial_management_core.up.sql's own
+-- journal_template column already established for the ledger bridge, not
+-- a new mechanism. NULL (every transition defined before this column
+-- existed) means "adjust nothing", unchanged behavior - see
+-- TransitionSpec.StockAdjustment's own doc comment.
+ALTER TABLE workflow_transitions ADD COLUMN stock_adjustment jsonb;

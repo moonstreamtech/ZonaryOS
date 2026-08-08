@@ -43,6 +43,21 @@ var StockToSaleSpec = DefinitionSpec{
 		{Key: "in_stock", Name: "In Stock", IsInitial: true},
 		{Key: "sold", Name: "Sold", IsTerminal: true},
 	},
+	// Fields adds one OPTIONAL payload field (Inventory management batch,
+	// same "optional and additive" contract PurchaseOrderSpec.Fields' own
+	// doc comment already establishes for this exact reason) -
+	// product_id, the real internal/inventory.Product this sale is against.
+	// Not Required=true: every ExecuteTransition call that predates this
+	// batch (this package's own tests, the E2E smoke test's earlier
+	// stock_to_sale coverage) records a sale with no product_id at all,
+	// and Required=true here would break every one of them (Rule 6).
+	// "quantity" itself is NOT declared here - it already exists as a
+	// freeform payload field (see the Journal template above, which
+	// already reads it via "quantity*unit_price") and stays exactly that
+	// way; only product_id is new.
+	Fields: []FieldSpec{
+		{Name: "product_id", Type: FieldTypeProduct, Required: false},
+	},
 	Transitions: []TransitionSpec{
 		{
 			FromStateKey: "in_stock",
@@ -81,6 +96,25 @@ var StockToSaleSpec = DefinitionSpec{
 					{AccountCode: accounting.TradeReceivablesAccountCode, Side: "debit", AmountField: "quantity*unit_price"},
 					{AccountCode: accounting.SalesRevenueAccountCode, Side: "credit", AmountField: "quantity*unit_price"},
 				},
+			},
+			// The workflow-to-inventory bridge (Inventory management
+			// batch), wired the exact same way the Journal template just
+			// above is: when both product_id and quantity are present on
+			// this call, ExecuteTransition decreases stock_levels.quantity
+			// by quantity, in the SAME transaction as this journal entry
+			// and the state change itself (engine.go's
+			// resolveStockAdjustment/internal/inventory.AdjustStockTx) - a
+			// sale that would take stock below zero fails the whole
+			// transition (ErrInsufficientStock), not just this hook, per
+			// the design brief's "reject, don't just warn". Left unset on
+			// any call that predates this batch (no product_id supplied)
+			// means "adjust nothing" - see StockAdjustmentTemplate's own
+			// doc comment.
+			StockAdjustment: &StockAdjustmentTemplate{
+				ProductField:  "product_id",
+				QuantityField: "quantity",
+				Direction:     "decrease",
+				Reason:        "sale",
 			},
 		},
 	},

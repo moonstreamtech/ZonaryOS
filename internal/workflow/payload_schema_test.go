@@ -181,4 +181,3 @@ func TestCreateInstance_SchemaValidatesDateField(t *testing.T) {
 		t.Fatalf("expected a valid YYYY-MM-DD date to be accepted, got: %v", err)
 	}
 }
-

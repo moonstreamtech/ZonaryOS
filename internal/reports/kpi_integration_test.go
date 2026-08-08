@@ -8,6 +8,7 @@ package reports_test
 import (
 	"context"
 	"os"
+	"strconv"
 	"testing"
 
 	"github.com/google/uuid"
@@ -47,7 +48,7 @@ func setupTest(t *testing.T) (adminPool, appPool *pgxpool.Pool) {
 		TRUNCATE firms, users, roles, role_permissions, user_firm_roles,
 			accounts, journal_entries, journal_lines,
 			workflow_definitions, workflow_states, workflow_transitions, workflow_instances,
-			people, contracts, audit_log, permissions CASCADE
+			people, contracts, products, stock_levels, stock_movements, suppliers, audit_log, permissions CASCADE
 	`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
@@ -191,6 +192,75 @@ func TestGetDashboardKPIs_AggregatesAcrossModules(t *testing.T) {
 	}
 }
 
+// TestGetDashboardKPIs_InventoryMetrics confirms the Inventory management
+// batch's two new inventory_kpi descriptors (lowStockProducts/
+// totalInventoryValue) compute correctly: a product below its own
+// min_quantity threshold (summed across every location, including one
+// with no stock_levels row at all) counts toward lowStockProducts, a
+// product at/above its threshold or with no threshold set does not, and
+// totalInventoryValue sums quantity * cost_price across every
+// stock_levels row regardless of any product's own low-stock status.
+func TestGetDashboardKPIs_InventoryMetrics(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	firmID, userID, _ := seedOwner(ctx, t, adminPool, appPool, "Firm Inventory KPI", "kpi-inventory-owner")
+
+	var lowStockNoStockID, lowStockWithStockID, healthyStockID, noThresholdID uuid.UUID
+	if err := adminPool.QueryRow(ctx, `
+		INSERT INTO products (firm_id, sku, name, cost_price, min_quantity) VALUES ($1, 'LOW-NO-STOCK', 'Low, no stock rows', '10.00', 5) RETURNING id
+	`, firmID).Scan(&lowStockNoStockID); err != nil {
+		t.Fatalf("seed product (low, no stock): %v", err)
+	}
+	if err := adminPool.QueryRow(ctx, `
+		INSERT INTO products (firm_id, sku, name, cost_price, min_quantity) VALUES ($1, 'LOW-WITH-STOCK', 'Low, below threshold', '4.00', 10) RETURNING id
+	`, firmID).Scan(&lowStockWithStockID); err != nil {
+		t.Fatalf("seed product (low, with stock): %v", err)
+	}
+	if err := adminPool.QueryRow(ctx, `
+		INSERT INTO products (firm_id, sku, name, cost_price, min_quantity) VALUES ($1, 'HEALTHY', 'At or above threshold', '2.00', 5) RETURNING id
+	`, firmID).Scan(&healthyStockID); err != nil {
+		t.Fatalf("seed product (healthy): %v", err)
+	}
+	if err := adminPool.QueryRow(ctx, `
+		INSERT INTO products (firm_id, sku, name, cost_price, min_quantity) VALUES ($1, 'NO-THRESHOLD', 'No threshold set', '3.00', 0) RETURNING id
+	`, firmID).Scan(&noThresholdID); err != nil {
+		t.Fatalf("seed product (no threshold): %v", err)
+	}
+
+	// lowStockWithStockID: 3 below its threshold of 10.
+	if _, err := adminPool.Exec(ctx, `INSERT INTO stock_levels (firm_id, product_id, location, quantity) VALUES ($1, $2, 'default', 3)`, firmID, lowStockWithStockID); err != nil {
+		t.Fatalf("seed stock (low, with stock): %v", err)
+	}
+	// healthyStockID: 5 total across two locations, exactly at its
+	// threshold of 5 - "at" the threshold is NOT low (strict <), so this
+	// must not count toward lowStockProducts.
+	if _, err := adminPool.Exec(ctx, `INSERT INTO stock_levels (firm_id, product_id, location, quantity) VALUES ($1, $2, 'default', 3), ($1, $2, 'warehouse-2', 2)`, firmID, healthyStockID); err != nil {
+		t.Fatalf("seed stock (healthy): %v", err)
+	}
+	// noThresholdID: has some stock, but min_quantity is 0 - never flagged
+	// low regardless of on-hand quantity (products.min_quantity's own
+	// documented default, migrations/0011_inventory_core.up.sql).
+	if _, err := adminPool.Exec(ctx, `INSERT INTO stock_levels (firm_id, product_id, location, quantity) VALUES ($1, $2, 'default', 0)`, firmID, noThresholdID); err != nil {
+		t.Fatalf("seed stock (no threshold): %v", err)
+	}
+	// lowStockNoStockID gets NO stock_levels row at all - on-hand
+	// quantity is implicitly 0, still below its threshold of 5.
+
+	results, err := reports.GetDashboardKPIs(ctx, appPool, firmID, userID)
+	if err != nil {
+		t.Fatalf("GetDashboardKPIs: %v", err)
+	}
+
+	if v := kpiValue(t, results, "lowStockProducts"); v != "2" {
+		t.Errorf("expected lowStockProducts 2 (LOW-NO-STOCK and LOW-WITH-STOCK), got %q", v)
+	}
+	// 3*4.00 (LOW-WITH-STOCK) + (3*2.00 + 2*2.00) (HEALTHY) + 0*3.00 (NO-THRESHOLD) = 12.00 + 10.00 + 0 = 22.00.
+	if v := kpiValue(t, results, "totalInventoryValue"); v != "22.0000" {
+		t.Errorf("expected totalInventoryValue 22.0000, got %q", v)
+	}
+}
+
 // TestGetDashboardKPIs_EmptyFirmReadsZeros confirms a brand-new firm with
 // no accounts/workflows/people yet reads back real zeros, not errors -
 // see GetDashboardKPIs' own doc comment for why that's the correct
@@ -205,11 +275,20 @@ func TestGetDashboardKPIs_EmptyFirmReadsZeros(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetDashboardKPIs: %v", err)
 	}
-	if len(results) != 6 {
-		t.Fatalf("expected 6 KPI results, got %d: %+v", len(results), results)
+	if len(results) != 8 {
+		t.Fatalf("expected 8 KPI results, got %d: %+v", len(results), results)
 	}
 	for _, r := range results {
-		if r.Value != "0" {
+		// A plain "0" or a zero-valued decimal string ("0.0000") both mean
+		// "zero" here - which one a given Kind's query produces depends on
+		// whether it casts its SUM to a fixed scale (e.g.
+		// totalInventoryValue's own numeric(19,4) cast, kpi.go) or leaves
+		// Postgres's default numeric formatting alone (every other
+		// currency KPI here) - both are the same "real zero, not an
+		// error" empty-state answer this test exists to confirm, so this
+		// check is float-value-based, not a literal string match.
+		value, err := strconv.ParseFloat(r.Value, 64)
+		if err != nil || value != 0 {
 			t.Errorf("expected KPI %q to be 0 for an empty firm, got %q", r.Key, r.Value)
 		}
 	}

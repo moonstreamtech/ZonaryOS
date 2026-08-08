@@ -24,6 +24,8 @@
     "hr": "People",
     "tasks": "Tasks",
     "reports": "Reports",
+    "inventory": "Inventory",
+    "suppliers": "Suppliers",
     "logout": "Log out",
     "firmSwitcherLabel": "Active firm"
   },
@@ -457,7 +459,9 @@
       "outstandingReceivables": "Outstanding receivables",
       "inventoryValue": "Inventory value",
       "openTasks": "Open tasks",
-      "activePeople": "Active people"
+      "activePeople": "Active people",
+      "lowStockProducts": "Low-stock products",
+      "totalInventoryValue": "Total inventory value"
     }
   },
   "Financials": {
@@ -561,5 +565,58 @@
     "columnCreatedAt": "Created",
     "columnWorkflowDefinitionCount": "Workflow definitions",
     "columnMemberCount": "Members"
+  },
+  "Inventory": {
+    "title": "Inventory",
+    "loadError": "Couldn't load this data. Please try again.",
+    "empty": "No products added for this firm yet.",
+    "productsTitle": "Products",
+    "newProduct": "+ New product",
+    "cancel": "Cancel",
+    "create": "Create",
+    "createSkuNameRequired": "Please enter a SKU and a name.",
+    "createError": "Couldn't create this product. Please try again.",
+    "sku": "SKU",
+    "name": "Name",
+    "unit": "Unit",
+    "unitPrice": "Unit price",
+    "costPrice": "Cost price",
+    "minQuantity": "Low-stock threshold",
+    "category": "Category",
+    "statusActive": "Active",
+    "statusInactive": "Inactive",
+    "activate": "Activate",
+    "deactivate": "Deactivate",
+    "lowStock": "Low stock",
+    "stockTitle": "Stock levels",
+    "noStock": "No stock recorded yet.",
+    "movementsTitle": "Recent movements",
+    "noMovements": "No stock movements yet.",
+    "movementReasonSale": "Sale",
+    "movementReasonPurchase": "Purchase",
+    "quantityColumn": "Quantity",
+    "locationColumn": "Location",
+    "reasonColumn": "Reason"
+  },
+  "Suppliers": {
+    "title": "Suppliers",
+    "loadError": "Couldn't load this data. Please try again.",
+    "empty": "No suppliers added for this firm yet.",
+    "suppliersTitle": "Suppliers",
+    "newSupplier": "+ New supplier",
+    "cancel": "Cancel",
+    "create": "Create",
+    "createNameRequired": "Please enter a name.",
+    "createError": "Couldn't create this supplier. Please try again.",
+    "name": "Name",
+    "contactName": "Contact name",
+    "email": "Email",
+    "phone": "Phone",
+    "currency": "Currency",
+    "paymentTerms": "Payment terms",
+    "statusActive": "Active",
+    "statusInactive": "Inactive",
+    "activate": "Activate",
+    "deactivate": "Deactivate"
   }
 }

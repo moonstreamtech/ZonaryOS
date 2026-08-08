@@ -15,6 +15,7 @@ import {
 import { fetchAuditLog } from "@/lib/auditlog";
 import { fetchRoleInFirm } from "@/lib/me";
 import { fetchPeople } from "@/lib/hr";
+import { fetchProducts, fetchSuppliers } from "@/lib/inventory";
 import CreateInstanceForm from "./CreateInstanceForm";
 import WorkflowInstanceList from "./WorkflowInstanceList";
 import WorkflowHistory from "./WorkflowHistory";
@@ -113,11 +114,20 @@ export default async function WorkflowDefinitionView({
   // person picker (a plain <select>, see its own doc comment) needs the
   // real roster; every other definition skips this fetch entirely.
   const needsPeople = (definition.fields ?? []).some((f) => f.type === "person");
+  // needsProducts/needsSuppliers (Inventory management batch) are the
+  // exact same "only fetch the catalog a definition's own schema actually
+  // needs" pattern needsPeople's own doc comment establishes above -
+  // CreateInstanceForm's product/supplier pickers (a plain <select>, same
+  // shape as its person picker) need the real catalogs.
+  const needsProducts = (definition.fields ?? []).some((f) => f.type === "product");
+  const needsSuppliers = (definition.fields ?? []).some((f) => f.type === "supplier");
 
-  const [role, allDefinitions, people] = await Promise.all([
+  const [role, allDefinitions, people, products, suppliers] = await Promise.all([
     fetchRoleInFirm(sessionToken, firmId),
     fetchDefinitions(sessionToken, firmId),
     needsPeople ? fetchPeople(sessionToken, firmId) : Promise.resolve(null),
+    needsProducts ? fetchProducts(sessionToken, firmId) : Promise.resolve(null),
+    needsSuppliers ? fetchSuppliers(sessionToken, firmId) : Promise.resolve(null),
   ]);
   const isOwner = role?.isOwner ?? false;
   const rules = isOwner || role ? await fetchRules(sessionToken, firmId, workflowKey) : null;
@@ -145,6 +155,8 @@ export default async function WorkflowDefinitionView({
           createPermissionKey={definition.createPermissionKey}
           fields={definition.fields}
           people={people ?? undefined}
+          products={products ?? undefined}
+          suppliers={suppliers ?? undefined}
         />
 
         <WorkflowInstanceList

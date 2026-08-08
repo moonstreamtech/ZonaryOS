@@ -102,6 +102,20 @@ export default async function NavShell({ me, activeFirmId, isOwner }: Props) {
               >
                 {t("reports")}
               </Link>
+              <Link
+                href="/inventory"
+                data-permission-public="true"
+                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
+              >
+                {t("inventory")}
+              </Link>
+              <Link
+                href="/suppliers"
+                data-permission-public="true"
+                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
+              >
+                {t("suppliers")}
+              </Link>
               {isOwner && (
                 <Link
                   href="/settings/accounts"

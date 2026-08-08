@@ -69,6 +69,19 @@ var PurchaseOrderSpec = DefinitionSpec{
 	Fields: []FieldSpec{
 		{Name: "supplier_name", Type: FieldTypeString, Required: false},
 		{Name: "total_amount", Type: FieldTypeNumber, Required: false},
+		// supplier_id/product_id (Inventory management batch): the same
+		// "optional and additive" contract this Fields slice's own doc
+		// comment already establishes for supplier_name/total_amount,
+		// applied to the two new cross-module references this batch
+		// introduces. supplier_id is the real internal/inventory.Supplier
+		// this order is against (supplier_name stays as freeform text -
+		// neither replaces the other, a firm can use either or both).
+		// product_id/quantity (quantity is NOT declared here, same
+		// reasoning stock_to_sale.go's own Fields doc comment gives -
+		// it's an existing freeform field, only product_id is new) feed
+		// the "receive" transition's StockAdjustment below.
+		{Name: "supplier_id", Type: FieldTypeSupplier, Required: false},
+		{Name: "product_id", Type: FieldTypeProduct, Required: false},
 	},
 	Transitions: []TransitionSpec{
 		{
@@ -123,6 +136,21 @@ var PurchaseOrderSpec = DefinitionSpec{
 					{AccountCode: accounting.InventoryAccountCode, Side: "debit", AmountField: "total_amount"},
 					{AccountCode: accounting.TradePayablesAccountCode, Side: "credit", AmountField: "total_amount"},
 				},
+			},
+			// The workflow-to-inventory bridge's "purchase_receive" hook
+			// (Inventory management batch design brief): the same physical
+			// event that justifies the Journal template just above - goods
+			// actually received from the supplier - also increases real
+			// on-hand stock, when product_id/quantity are present on this
+			// call. Wired to "receive" for the identical reasoning the
+			// Journal template's own doc comment gives for why it isn't on
+			// "send": no goods have changed hands until they're received,
+			// so stock can't increase before then either.
+			StockAdjustment: &StockAdjustmentTemplate{
+				ProductField:  "product_id",
+				QuantityField: "quantity",
+				Direction:     "increase",
+				Reason:        "purchase",
 			},
 		},
 		{

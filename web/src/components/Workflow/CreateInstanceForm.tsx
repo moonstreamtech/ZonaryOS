@@ -9,6 +9,7 @@ import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import type { FieldSpecInput } from "@/lib/workflow";
 import type { Person } from "@/lib/hr";
+import type { Product, Supplier } from "@/lib/inventory";
 import {
   arrayItemDefault,
   buildFreeformPayload,
@@ -40,6 +41,14 @@ type Props = {
   // batch's scope targets, so there's no need for a second GET proxy
   // route just to filter a short list.
   people?: Person[];
+  // products/suppliers are the firm's real catalogs (internal/inventory.ListProducts/
+  // ListSuppliers), fetched server-side by WorkflowDefinitionView and
+  // handed down here the same way `people` above is - only used to
+  // populate a "product"/"supplier" field's <select> (see ProductPicker/
+  // SupplierPicker below), same "small enough to fetch eagerly, no
+  // second GET proxy route" reasoning `people`'s own doc comment gives.
+  products?: Product[];
+  suppliers?: Supplier[];
 };
 
 type FieldRow = { id: number; key: string; value: string };
@@ -66,6 +75,8 @@ export default function CreateInstanceForm({
   createPermissionKey,
   fields,
   people,
+  products,
+  suppliers,
 }: Props) {
   const t = useTranslations("Workflow");
   const router = useRouter();
@@ -228,6 +239,34 @@ export default function CreateInstanceForm({
                   {(people ?? []).map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.fullName}
+                    </option>
+                  ))}
+                </select>
+              ) : field.type === "product" ? (
+                <select
+                  value={typeof typedValues[field.name] === "string" ? (typedValues[field.name] as string) : ""}
+                  onChange={(e) => updateTypedValue(field.name, e.target.value)}
+                  required={field.required}
+                  className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm text-black dark:border-zinc-700 dark:bg-zinc-900 dark:text-white"
+                >
+                  <option value="">{t("enumUnselectedOption")}</option>
+                  {(products ?? []).map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.sku} - {p.name}
+                    </option>
+                  ))}
+                </select>
+              ) : field.type === "supplier" ? (
+                <select
+                  value={typeof typedValues[field.name] === "string" ? (typedValues[field.name] as string) : ""}
+                  onChange={(e) => updateTypedValue(field.name, e.target.value)}
+                  required={field.required}
+                  className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm text-black dark:border-zinc-700 dark:bg-zinc-900 dark:text-white"
+                >
+                  <option value="">{t("enumUnselectedOption")}</option>
+                  {(suppliers ?? []).map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
                     </option>
                   ))}
                 </select>

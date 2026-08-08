@@ -65,6 +65,35 @@ const (
 	KPIKindWorkflowStateCount KPIKind = "workflow_state_count"
 	// KPIKindPersonCount: how many people rows have PersonStatus.
 	KPIKindPersonCount KPIKind = "person_count"
+	// KPIKindInventoryKPI (Inventory management batch): dispatches further
+	// on InventoryMetric below - neither of this Kind's two metrics
+	// (low_stock_products, total_inventory_value) fits any of the four
+	// Kinds above: they aggregate products/stock_levels, a shape none of
+	// account balances, workflow-state counts, or people counts share -
+	// hence one new Kind covering inventory-specific aggregations, rather
+	// than forcing either metric into an existing Kind's shape (the design
+	// brief's own explicit call here).
+	KPIKindInventoryKPI KPIKind = "inventory_kpi"
+)
+
+// InventoryMetric is KPIKindInventoryKPI's own descriptor field - which
+// inventory-specific aggregation to compute (see computeInventoryKPI).
+type InventoryMetric string
+
+const (
+	// InventoryMetricLowStockProducts: how many distinct products
+	// currently have less on-hand stock (summed across every location)
+	// than their own min_quantity threshold - the same condition
+	// components/Inventory/InventoryManager.tsx's own client-side
+	// low-stock highlight checks per product, computed here server-side
+	// across the whole catalog for the dashboard tile.
+	InventoryMetricLowStockProducts InventoryMetric = "low_stock_products"
+	// InventoryMetricTotalInventoryValue: SUM(quantity * cost_price)
+	// across every stock_levels row - the firm's total on-hand inventory
+	// value at cost, not at sale price (cost_price, not unit_price -
+	// matching standard inventory-valuation practice: an unsold unit is
+	// worth what it cost the firm, not what it might sell for).
+	InventoryMetricTotalInventoryValue InventoryMetric = "total_inventory_value"
 )
 
 // Period is KPIKindAccountBalancePeriod's own descriptor field - which
@@ -107,6 +136,9 @@ type KPIDescriptor struct {
 
 	// PersonStatus is used by KPIKindPersonCount.
 	PersonStatus string
+
+	// InventoryMetric is used by KPIKindInventoryKPI.
+	InventoryMetric InventoryMetric
 }
 
 // kpiDescriptors is the dashboard's actual KPI list - the design brief's
@@ -142,6 +174,14 @@ var kpiDescriptors = []KPIDescriptor{
 	{
 		Key: "activePeople", Kind: KPIKindPersonCount,
 		PersonStatus: "active",
+	},
+	{
+		Key: "lowStockProducts", Kind: KPIKindInventoryKPI,
+		InventoryMetric: InventoryMetricLowStockProducts,
+	},
+	{
+		Key: "totalInventoryValue", Kind: KPIKindInventoryKPI,
+		InventoryMetric: InventoryMetricTotalInventoryValue,
 	},
 }
 
@@ -241,8 +281,75 @@ func computeKPI(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, d KPIDescripto
 		}
 		return KPIResult{Key: d.Key, Unit: unitCount, Value: fmt.Sprintf("%d", count)}, nil
 
+	case KPIKindInventoryKPI:
+		return computeInventoryKPI(ctx, tx, firmID, d)
+
 	default:
 		return KPIResult{}, fmt.Errorf("unknown KPI kind %q", d.Kind)
+	}
+}
+
+// computeInventoryKPI dispatches on d.InventoryMetric - the one place a
+// new inventory metric (as opposed to a new descriptor of an existing
+// metric, which doesn't exist here since there's exactly one descriptor
+// per metric today) needs a new case, the same role computeKPI's own
+// switch plays for KPIKind at the outer level.
+//
+// ciaudit:ignore-firmid-check: internal helper called only by computeKPI,
+// itself only called by GetDashboardKPIs after permission.IsMember has
+// already run - firmID here scopes each query (defense in depth alongside
+// RLS), it is not itself an authorization decision.
+func computeInventoryKPI(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, d KPIDescriptor) (KPIResult, error) {
+	switch d.InventoryMetric {
+	case InventoryMetricLowStockProducts:
+		// LEFT JOIN (not JOIN): a product with zero stock_levels rows at
+		// all - never sold, never received - still has on-hand quantity 0,
+		// which is < any positive min_quantity threshold, so it must still
+		// count as low stock; an inner join would silently exclude it.
+		// min_quantity > 0 excludes products nobody has configured a real
+		// threshold for (default 0, see products.min_quantity's own doc
+		// comment, migrations/0011_inventory_core.up.sql) - "never
+		// flagged low" is min_quantity's own documented default behavior,
+		// not a gap in this query.
+		var count int
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM (
+				SELECT p.id
+				FROM products p
+				LEFT JOIN stock_levels sl ON sl.product_id = p.id AND sl.firm_id = p.firm_id
+				WHERE p.firm_id = $1 AND p.min_quantity > 0
+				GROUP BY p.id, p.min_quantity
+				HAVING COALESCE(SUM(sl.quantity), 0) < p.min_quantity
+			) low_stock
+		`, firmID).Scan(&count); err != nil {
+			return KPIResult{}, fmt.Errorf("count low stock products: %w", err)
+		}
+		return KPIResult{Key: d.Key, Unit: unitCount, Value: fmt.Sprintf("%d", count)}, nil
+
+	case InventoryMetricTotalInventoryValue:
+		// COALESCE(p.cost_price, 0): a product with no cost_price set
+		// (optional, see products.cost_price's own column) contributes
+		// nothing to this total rather than making the whole SUM NULL -
+		// the same "missing data reads back as zero, not an error"
+		// convention accountBalanceSum's own doc comment establishes for
+		// COALESCE(SUM(...), 0) below.
+		// ::numeric(19,4) rounds the product (quantity * cost_price, both
+		// numeric(19,4), naturally yields 8 fraction digits) back down to
+		// the same 4-fraction-digit precision every other currency figure
+		// in this codebase uses (matching amountPattern's own contract).
+		var value string
+		if err := tx.QueryRow(ctx, `
+			SELECT COALESCE(SUM(sl.quantity * COALESCE(p.cost_price, 0)), 0)::numeric(19,4)::text
+			FROM stock_levels sl
+			JOIN products p ON p.id = sl.product_id
+			WHERE sl.firm_id = $1
+		`, firmID).Scan(&value); err != nil {
+			return KPIResult{}, fmt.Errorf("sum total inventory value: %w", err)
+		}
+		return KPIResult{Key: d.Key, Unit: unitCurrency, Value: value}, nil
+
+	default:
+		return KPIResult{}, fmt.Errorf("unknown inventory metric %q", d.InventoryMetric)
 	}
 }
 
