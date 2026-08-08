@@ -81,6 +81,27 @@ export default async function NavShell({ me, activeFirmId, isOwner }: Props) {
               >
                 {t("financials")}
               </Link>
+              <Link
+                href="/hr"
+                data-permission-public="true"
+                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
+              >
+                {t("hr")}
+              </Link>
+              <Link
+                href="/tasks"
+                data-permission-public="true"
+                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
+              >
+                {t("tasks")}
+              </Link>
+              <Link
+                href="/reports"
+                data-permission-public="true"
+                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
+              >
+                {t("reports")}
+              </Link>
               {isOwner && (
                 <Link
                   href="/settings/accounts"

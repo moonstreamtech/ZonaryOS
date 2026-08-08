@@ -21,6 +21,9 @@
     "members": "Members",
     "financials": "Financials",
     "accounts": "Accounts",
+    "hr": "People",
+    "tasks": "Tasks",
+    "reports": "Reports",
     "logout": "Log out",
     "firmSwitcherLabel": "Active firm"
   },
@@ -391,6 +394,70 @@
       "equity": "Equity",
       "revenue": "Revenue",
       "expense": "Expense"
+    }
+  },
+  "HR": {
+    "title": "People",
+    "loadError": "Couldn't load this data. Please try again.",
+    "empty": "No people added for this firm yet.",
+    "peopleTitle": "People",
+    "newPerson": "+ New person",
+    "cancel": "Cancel",
+    "create": "Create",
+    "createNameRequired": "Please enter a full name.",
+    "createError": "Couldn't create this person. Please try again.",
+    "fullName": "Full name",
+    "type": "Type",
+    "email": "Email",
+    "startDate": "Start date",
+    "statusActive": "Active",
+    "statusInactive": "Inactive",
+    "activate": "Activate",
+    "deactivate": "Deactivate",
+    "personType": {
+      "employee": "Employee",
+      "contractor": "Contractor",
+      "partner": "Partner"
+    },
+    "contractsTitle": "Contracts",
+    "noContracts": "No contracts yet.",
+    "contractType": "Type",
+    "contractAmount": "Amount",
+    "contractStartDate": "Start date",
+    "contractStartDateRequired": "Please enter a start date.",
+    "contractCreateError": "Couldn't create this contract. Please try again.",
+    "addContract": "Add contract"
+  },
+  "Tasks": {
+    "title": "Tasks",
+    "definitionMissing": "This firm hasn't set up the Task / Approval workflow yet.",
+    "loadError": "Couldn't load tasks. Please try again.",
+    "empty": "No tasks match this filter.",
+    "filterStatus": "Status",
+    "filterAssignee": "Assignee",
+    "filterAll": "All",
+    "applyButton": "Apply",
+    "columnState": "State",
+    "columnAssignee": "Assignee",
+    "columnPayload": "Details",
+    "unassigned": "Unassigned",
+    "status": {
+      "open": "Open",
+      "in_progress": "In Progress",
+      "done": "Done",
+      "rejected": "Rejected"
+    }
+  },
+  "Reports": {
+    "title": "Reports",
+    "loadError": "Couldn't load the dashboard. Please try again.",
+    "kpi": {
+      "revenueThisMonth": "Revenue this month",
+      "revenueLastMonth": "Revenue last month",
+      "outstandingReceivables": "Outstanding receivables",
+      "inventoryValue": "Inventory value",
+      "openTasks": "Open tasks",
+      "activePeople": "Active people"
     }
   },
   "Financials": {

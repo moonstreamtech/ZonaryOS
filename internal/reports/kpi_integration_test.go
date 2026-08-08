@@ -1,0 +1,216 @@
+// Copyright (c) ZonaryOS. All rights reserved.
+// Use of this source code is governed by the license found in the LICENSE
+// file in the root of this repository (draft, pending legal review - see
+// docs/OPEN_POINTS.md item 20).
+
+package reports_test
+
+import (
+	"context"
+	"os"
+	"testing"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/moonstreamtech/ZonaryOS/internal/accounting"
+	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
+	"github.com/moonstreamtech/ZonaryOS/internal/reports"
+	"github.com/moonstreamtech/ZonaryOS/internal/workflow"
+)
+
+func testPools(t *testing.T) (adminDSN, appDSN string) {
+	t.Helper()
+	adminDSN = os.Getenv("ZONARYOS_TEST_ADMIN_DATABASE_URL")
+	appDSN = os.Getenv("ZONARYOS_TEST_APP_DATABASE_URL")
+	if adminDSN == "" || appDSN == "" {
+		t.Skip("ZONARYOS_TEST_ADMIN_DATABASE_URL and ZONARYOS_TEST_APP_DATABASE_URL must both be set to run reports integration tests")
+	}
+	return adminDSN, appDSN
+}
+
+func setupTest(t *testing.T) (adminPool, appPool *pgxpool.Pool) {
+	t.Helper()
+	adminDSN, appDSN := testPools(t)
+	ctx := context.Background()
+
+	if err := zdb.Migrate(adminDSN); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	adminPool, err := zdb.Open(ctx, adminDSN)
+	if err != nil {
+		t.Fatalf("open admin pool: %v", err)
+	}
+	t.Cleanup(adminPool.Close)
+	if _, err := adminPool.Exec(ctx, `
+		TRUNCATE firms, users, roles, role_permissions, user_firm_roles,
+			accounts, journal_entries, journal_lines,
+			workflow_definitions, workflow_states, workflow_transitions, workflow_instances,
+			people, contracts, audit_log, permissions CASCADE
+	`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	appPool, err = zdb.Open(ctx, appDSN)
+	if err != nil {
+		t.Fatalf("open app pool: %v", err)
+	}
+	t.Cleanup(appPool.Close)
+	return adminPool, appPool
+}
+
+func seedOwner(ctx context.Context, t *testing.T, adminPool, appPool *pgxpool.Pool, firmName, keycloakSubject string) (firmID, userID uuid.UUID, roleID uuid.UUID) {
+	t.Helper()
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ($1) RETURNING id`, firmName).Scan(&firmID); err != nil {
+		t.Fatalf("seed firm: %v", err)
+	}
+	if err := adminPool.QueryRow(ctx, `
+		INSERT INTO users (keycloak_subject, email, display_name) VALUES ($1, $2, $3) RETURNING id
+	`, keycloakSubject, keycloakSubject+"@example.com", "Test Owner").Scan(&userID); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	err := zdb.WithFirmContext(ctx, appPool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO roles (firm_id, key, name, is_owner) VALUES ($1, 'owner', 'Owner', true) RETURNING id
+		`, firmID).Scan(&roleID); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `INSERT INTO user_firm_roles (firm_id, user_id, role_id) VALUES ($1, $2, $3)`, firmID, userID, roleID)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("seed owner role/membership: %v", err)
+	}
+	return firmID, userID, roleID
+}
+
+func kpiValue(t *testing.T, results []reports.KPIResult, key string) string {
+	t.Helper()
+	for _, r := range results {
+		if r.Key == key {
+			return r.Value
+		}
+	}
+	t.Fatalf("no KPI result for key %q, got %+v", key, results)
+	return ""
+}
+
+// TestGetDashboardKPIs_AggregatesAcrossModules is the design brief's
+// concrete correctness proof: seeds real accounting (a sale), a real
+// task_approval instance, and real people, then confirms every KPI
+// reflects that real data - not a mock, not a hardcoded stub.
+func TestGetDashboardKPIs_AggregatesAcrossModules(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	firmID, userID, roleID := seedOwner(ctx, t, adminPool, appPool, "Firm KPI", "kpi-owner")
+
+	// Seed the accounts a real firm's wizard would seed.
+	err := zdb.WithFirmContext(ctx, appPool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		return accounting.SeedDefaultChartOfAccountsTx(ctx, tx, firmID, accounting.SeedChartOptions{Sells: true, PurchasesFromSuppliers: true})
+	})
+	if err != nil {
+		t.Fatalf("seed chart of accounts: %v", err)
+	}
+
+	// A real sale this month: DR Trade Receivables / CR Sales Revenue, 250.00.
+	if _, err := accounting.PostJournalEntry(ctx, appPool, firmID, userID, "Sale", []accounting.LineInput{
+		{AccountCode: accounting.TradeReceivablesAccountCode, Side: accounting.SideDebit, Amount: "250.00"},
+		{AccountCode: accounting.SalesRevenueAccountCode, Side: accounting.SideCredit, Amount: "250.00"},
+	}); err != nil {
+		t.Fatalf("post sale: %v", err)
+	}
+	// Inventory received: DR Inventory / CR Trade Payables, 100.00.
+	if _, err := accounting.PostJournalEntry(ctx, appPool, firmID, userID, "Purchase received", []accounting.LineInput{
+		{AccountCode: accounting.InventoryAccountCode, Side: accounting.SideDebit, Amount: "100.00"},
+		{AccountCode: accounting.TradePayablesAccountCode, Side: accounting.SideCredit, Amount: "100.00"},
+	}); err != nil {
+		t.Fatalf("post purchase: %v", err)
+	}
+
+	// Two real task_approval instances: one open, one done (must not count).
+	// SeedTaskApprovalWorkflowTx (not the pool-based SeedTaskApprovalWorkflow)
+	// so the owner role actually gets task_approval's permissions granted
+	// (the self-action auto-grant) - CreateInstance/ExecuteTransition
+	// below need that grant to succeed as this test's owner user.
+	var taskDefID uuid.UUID
+	err = zdb.WithFirmContext(ctx, appPool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		id, err := workflow.SeedTaskApprovalWorkflowTx(ctx, tx, firmID, roleID)
+		taskDefID = id
+		return err
+	})
+	if err != nil {
+		t.Fatalf("seed task_approval: %v", err)
+	}
+	openTaskID, err := workflow.CreateInstance(ctx, appPool, firmID, userID, taskDefID, map[string]any{})
+	if err != nil {
+		t.Fatalf("create open task: %v", err)
+	}
+	_ = openTaskID
+	doneTaskID, err := workflow.CreateInstance(ctx, appPool, firmID, userID, taskDefID, map[string]any{})
+	if err != nil {
+		t.Fatalf("create task to complete: %v", err)
+	}
+	if err := workflow.ExecuteTransition(ctx, appPool, firmID, userID, doneTaskID, "start", nil); err != nil {
+		t.Fatalf("start task: %v", err)
+	}
+	if err := workflow.ExecuteTransition(ctx, appPool, firmID, userID, doneTaskID, "complete", nil); err != nil {
+		t.Fatalf("complete task: %v", err)
+	}
+
+	// Two real people: one active, one inactive (must not count).
+	if _, err := adminPool.Exec(ctx, `INSERT INTO people (firm_id, full_name, type, status) VALUES ($1, 'Active Person', 'employee', 'active')`, firmID); err != nil {
+		t.Fatalf("seed active person: %v", err)
+	}
+	if _, err := adminPool.Exec(ctx, `INSERT INTO people (firm_id, full_name, type, status) VALUES ($1, 'Inactive Person', 'employee', 'inactive')`, firmID); err != nil {
+		t.Fatalf("seed inactive person: %v", err)
+	}
+
+	results, err := reports.GetDashboardKPIs(ctx, appPool, firmID, userID)
+	if err != nil {
+		t.Fatalf("GetDashboardKPIs: %v", err)
+	}
+
+	if v := kpiValue(t, results, "revenueThisMonth"); v != "250.0000" {
+		t.Errorf("expected revenueThisMonth 250.0000, got %q", v)
+	}
+	if v := kpiValue(t, results, "revenueLastMonth"); v != "0" {
+		t.Errorf("expected revenueLastMonth 0, got %q", v)
+	}
+	if v := kpiValue(t, results, "outstandingReceivables"); v != "250.0000" {
+		t.Errorf("expected outstandingReceivables 250.0000, got %q", v)
+	}
+	if v := kpiValue(t, results, "inventoryValue"); v != "100.0000" {
+		t.Errorf("expected inventoryValue 100.0000, got %q", v)
+	}
+	if v := kpiValue(t, results, "openTasks"); v != "1" {
+		t.Errorf("expected openTasks 1 (the completed one must not count), got %q", v)
+	}
+	if v := kpiValue(t, results, "activePeople"); v != "1" {
+		t.Errorf("expected activePeople 1 (the inactive one must not count), got %q", v)
+	}
+}
+
+// TestGetDashboardKPIs_EmptyFirmReadsZeros confirms a brand-new firm with
+// no accounts/workflows/people yet reads back real zeros, not errors -
+// see GetDashboardKPIs' own doc comment for why that's the correct
+// empty-state answer.
+func TestGetDashboardKPIs_EmptyFirmReadsZeros(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	firmID, userID, _ := seedOwner(ctx, t, adminPool, appPool, "Firm Empty", "kpi-empty-owner")
+
+	results, err := reports.GetDashboardKPIs(ctx, appPool, firmID, userID)
+	if err != nil {
+		t.Fatalf("GetDashboardKPIs: %v", err)
+	}
+	if len(results) != 6 {
+		t.Fatalf("expected 6 KPI results, got %d: %+v", len(results), results)
+	}
+	for _, r := range results {
+		if r.Value != "0" {
+			t.Errorf("expected KPI %q to be 0 for an empty firm, got %q", r.Key, r.Value)
+		}
+	}
+}

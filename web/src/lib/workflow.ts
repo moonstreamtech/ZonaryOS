@@ -19,7 +19,7 @@ export type StateInfo = {
 // resolved the original four scalar types; item 38 extends it with
 // "enum"/"reference"/"array" - mirrored 1:1 on the frontend, same
 // convention as the original four.
-export type FieldType = "string" | "number" | "boolean" | "date" | "enum" | "reference" | "array";
+export type FieldType = "string" | "number" | "boolean" | "date" | "enum" | "reference" | "array" | "person";
 
 // ScalarFieldType is the subset of FieldType a FieldSpecInput's
 // arrayItemType may be (see FieldSpecInput.arrayItemType below) - the
@@ -168,6 +168,12 @@ export type DefinitionSpecInput = {
 // address it directly by its well-known key rather than searching
 // fetchDefinitions() results for it.
 export const CUSTOMER_PIPELINE_KEY = "customer_pipeline";
+
+// The task/project management batch's default-seeded workflow (see
+// internal/workflow/task_approval.go's TaskApprovalKey) - exported the
+// same way STOCK_TO_SALE_KEY/CUSTOMER_PIPELINE_KEY are, for the /tasks
+// page to address it directly.
+export const TASK_APPROVAL_KEY = "task_approval";
 
 export type StateCount = {
   stateKey: string;

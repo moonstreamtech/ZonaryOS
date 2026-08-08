@@ -24,6 +24,7 @@ import (
 
 	"github.com/moonstreamtech/ZonaryOS/internal/accounting"
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
+	"github.com/moonstreamtech/ZonaryOS/internal/hr"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
 )
@@ -189,6 +190,12 @@ func validatePayload(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, fields []
 			}
 			continue
 		}
+		if f.Type == FieldTypePerson {
+			if err := checkPersonField(ctx, tx, firmID, f, v); err != nil {
+				return err
+			}
+			continue
+		}
 		if err := checkFieldType(f, v); err != nil {
 			return err
 		}
@@ -344,6 +351,45 @@ func checkReferenceField(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, f Fie
 	}
 	if err != nil {
 		return fmt.Errorf("check reference field %q: %w", f.Name, err)
+	}
+	return nil
+}
+
+// checkPersonField validates a FieldTypePerson field's value: it must be
+// a string that parses as a UUID, and that UUID must name a real people
+// row in THIS firm - the HR core batch's cross-module analog of
+// checkReferenceField above (a workflow instance referencing a `people`
+// row instead of another workflow instance). Runs inside CreateInstance's
+// own already-open transaction, same reasoning as checkReferenceField -
+// this check and the INSERT it's gating are atomic with each other. No
+// row-locking equivalent to checkReferenceField's `FOR SHARE OF wi`: this
+// batch has no delete path for `people` either (mirroring
+// checkReferenceField's own reasoning for workflow_instances), so the
+// same "delete the referenced row out from under a just-validated
+// reference" race isn't reachable today.
+//
+// ciaudit:ignore-firmid-check: internal helper called only by
+// validatePayload, itself only called by CreateInstance after
+// permission.IsMember/Has have already run in the same transaction -
+// firmID here scopes a read query (defense in depth alongside RLS, see
+// checkReferenceField's identical reasoning above), it is not itself an
+// authorization decision.
+func checkPersonField(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, f FieldSpec, v any) error {
+	s, ok := v.(string)
+	if !ok {
+		return fmt.Errorf("%w: field %q must be a string person ID", ErrPayloadValidation, f.Name)
+	}
+	personID, err := uuid.Parse(s)
+	if err != nil {
+		return fmt.Errorf("%w: field %q must be a valid person ID (UUID)", ErrPayloadValidation, f.Name)
+	}
+
+	exists, err := hr.PersonExistsTx(ctx, tx, firmID, personID)
+	if err != nil {
+		return fmt.Errorf("check person field %q: %w", f.Name, err)
+	}
+	if !exists {
+		return fmt.Errorf("%w: field %q references a nonexistent person in this firm", ErrPayloadValidation, f.Name)
 	}
 	return nil
 }

@@ -8,6 +8,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import type { FieldSpecInput } from "@/lib/workflow";
+import type { Person } from "@/lib/hr";
 import {
   arrayItemDefault,
   buildFreeformPayload,
@@ -29,6 +30,16 @@ type Props = {
   // customer_pipeline today) falls back to exactly the freeform behavior
   // this component always had.
   fields?: FieldSpecInput[];
+  // people is the firm's real roster (internal/hr.ListPeople), fetched
+  // server-side by WorkflowDefinitionView and handed down here the same
+  // way DefinitionBuilder's own accounts prop is - only used to populate
+  // a "person" field's <select> (see PersonPicker below). A plain
+  // client-side prop rather than PersonPicker fetching its own data
+  // (unlike ReferencePicker's search-as-you-type, which needs a
+  // paginated backend query): HR rosters are small for any firm this
+  // batch's scope targets, so there's no need for a second GET proxy
+  // route just to filter a short list.
+  people?: Person[];
 };
 
 type FieldRow = { id: number; key: string; value: string };
@@ -54,6 +65,7 @@ export default function CreateInstanceForm({
   definitionId,
   createPermissionKey,
   fields,
+  people,
 }: Props) {
   const t = useTranslations("Workflow");
   const router = useRouter();
@@ -205,6 +217,20 @@ export default function CreateInstanceForm({
                   value={typeof typedValues[field.name] === "string" ? (typedValues[field.name] as string) : ""}
                   onChange={(id) => updateTypedValue(field.name, id)}
                 />
+              ) : field.type === "person" ? (
+                <select
+                  value={typeof typedValues[field.name] === "string" ? (typedValues[field.name] as string) : ""}
+                  onChange={(e) => updateTypedValue(field.name, e.target.value)}
+                  required={field.required}
+                  className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm text-black dark:border-zinc-700 dark:bg-zinc-900 dark:text-white"
+                >
+                  <option value="">{t("enumUnselectedOption")}</option>
+                  {(people ?? []).map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.fullName}
+                    </option>
+                  ))}
+                </select>
               ) : field.type === "array" ? (
                 <div className="flex flex-col gap-1.5">
                   {arrayRowsOf(field.name).map((row, index) => (

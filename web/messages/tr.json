@@ -21,6 +21,9 @@
     "members": "Üyeler",
     "financials": "Finans",
     "accounts": "Hesaplar",
+    "hr": "Personel",
+    "tasks": "Görevler",
+    "reports": "Raporlar",
     "logout": "Çıkış yap",
     "firmSwitcherLabel": "Aktif firma"
   },
@@ -391,6 +394,70 @@
       "equity": "Özkaynak",
       "revenue": "Gelir",
       "expense": "Gider"
+    }
+  },
+  "HR": {
+    "title": "Personel",
+    "loadError": "Bu veri yüklenemedi. Lütfen tekrar deneyin.",
+    "empty": "Bu firma için henüz eklenmiş kimse yok.",
+    "peopleTitle": "Kişiler",
+    "newPerson": "+ Yeni kişi",
+    "cancel": "İptal",
+    "create": "Oluştur",
+    "createNameRequired": "Lütfen tam adı girin.",
+    "createError": "Bu kişi oluşturulamadı. Lütfen tekrar deneyin.",
+    "fullName": "Tam ad",
+    "type": "Tür",
+    "email": "E-posta",
+    "startDate": "Başlangıç tarihi",
+    "statusActive": "Aktif",
+    "statusInactive": "Pasif",
+    "activate": "Aktifleştir",
+    "deactivate": "Pasifleştir",
+    "personType": {
+      "employee": "Çalışan",
+      "contractor": "Yüklenici",
+      "partner": "Ortak"
+    },
+    "contractsTitle": "Sözleşmeler",
+    "noContracts": "Henüz sözleşme yok.",
+    "contractType": "Tür",
+    "contractAmount": "Tutar",
+    "contractStartDate": "Başlangıç tarihi",
+    "contractStartDateRequired": "Lütfen bir başlangıç tarihi girin.",
+    "contractCreateError": "Bu sözleşme oluşturulamadı. Lütfen tekrar deneyin.",
+    "addContract": "Sözleşme ekle"
+  },
+  "Tasks": {
+    "title": "Görevler",
+    "definitionMissing": "Bu firma henüz Görev / Onay iş akışını kurmadı.",
+    "loadError": "Görevler yüklenemedi. Lütfen tekrar deneyin.",
+    "empty": "Bu filtreye uyan görev yok.",
+    "filterStatus": "Durum",
+    "filterAssignee": "Atanan kişi",
+    "filterAll": "Tümü",
+    "applyButton": "Uygula",
+    "columnState": "Durum",
+    "columnAssignee": "Atanan kişi",
+    "columnPayload": "Detaylar",
+    "unassigned": "Atanmamış",
+    "status": {
+      "open": "Açık",
+      "in_progress": "Devam Ediyor",
+      "done": "Tamamlandı",
+      "rejected": "Reddedildi"
+    }
+  },
+  "Reports": {
+    "title": "Raporlar",
+    "loadError": "Panel yüklenemedi. Lütfen tekrar deneyin.",
+    "kpi": {
+      "revenueThisMonth": "Bu ayki gelir",
+      "revenueLastMonth": "Geçen ayki gelir",
+      "outstandingReceivables": "Bekleyen alacaklar",
+      "inventoryValue": "Stok değeri",
+      "openTasks": "Açık görevler",
+      "activePeople": "Aktif kişiler"
     }
   },
   "Financials": {

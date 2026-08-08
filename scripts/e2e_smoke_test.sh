@@ -591,6 +591,112 @@ assert r['balanced'] is True, r
 " || fail "expected the purchase order firm's balance sheet to balance: $PO_BALANCE_SHEET"
 log "purchase order: balance sheet confirmed balanced"
 
+# --- HR core + task/project management + reporting foundation: create a
+# --- person, assign a real task to them, confirm both /tasks (the cross-
+# --- module join) and /reports (the KPI dashboard) reflect it -----------
+
+log "HR: creating a person"
+PERSON_RESPONSE=$(auth -X POST "$BACKEND_URL/api/firms/$PO_FIRM_ID/people" \
+    -H "Content-Type: application/json" \
+    -d '{"fullName":"E2E Assignee","type":"employee","email":"assignee@example.com"}')
+PERSON_ID=$(echo "$PERSON_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['id'])")
+[ -n "$PERSON_ID" ] || fail "did not get an id back from creating a person: $PERSON_RESPONSE"
+log "person created: $PERSON_ID"
+
+log "HR: confirming GET .../people lists the new person"
+PEOPLE_LIST=$(auth "$BACKEND_URL/api/firms/$PO_FIRM_ID/people")
+echo "$PEOPLE_LIST" | python3 -c "
+import sys, json
+people = json.load(sys.stdin)
+matches = [p for p in people if p['id'] == '$PERSON_ID']
+assert matches, people
+assert matches[0]['fullName'] == 'E2E Assignee', matches[0]
+" || fail "expected the new person to be listed: $PEOPLE_LIST"
+log "HR: person listing confirmed"
+
+log "HR: adding a contract for the person"
+CONTRACT_RESPONSE=$(auth -X POST "$BACKEND_URL/api/firms/$PO_FIRM_ID/people/$PERSON_ID/contracts" \
+    -H "Content-Type: application/json" \
+    -d '{"type":"salary","amount":"20000.00","startDate":"2024-01-01"}')
+CONTRACT_ID=$(echo "$CONTRACT_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['id'])")
+[ -n "$CONTRACT_ID" ] || fail "did not get an id back from creating a contract: $CONTRACT_RESPONSE"
+log "contract created: $CONTRACT_ID"
+
+log "tasks: resolving the task_approval workflow definition (this firm answered tasks=no in its wizard walk, seeding it directly via DefineWorkflowForFirm instead)"
+TASK_DEFINE_RESPONSE=$(auth -X POST "$BACKEND_URL/api/firms/$PO_FIRM_ID/workflow-definitions" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "key":"task_approval",
+      "name":"Task / Approval",
+      "createPermission":{"key":"workflow.task_approval.create","description":"Create a task."},
+      "states":[
+        {"key":"open","name":"Open","isInitial":true},
+        {"key":"in_progress","name":"In Progress"},
+        {"key":"done","name":"Done","isTerminal":true},
+        {"key":"rejected","name":"Rejected","isTerminal":true}
+      ],
+      "transitions":[
+        {"fromStateKey":"open","toStateKey":"in_progress","actionKey":"start","name":"Start","permission":{"key":"workflow.task_approval.start","description":"Start a task."}},
+        {"fromStateKey":"in_progress","toStateKey":"done","actionKey":"complete","name":"Complete","permission":{"key":"workflow.task_approval.complete","description":"Complete a task."}}
+      ],
+      "fields":[{"name":"assignee_person_id","type":"person","required":false}]
+    }')
+TASK_DEFINITION_ID=$(echo "$TASK_DEFINE_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['definitionId'])")
+[ -n "$TASK_DEFINITION_ID" ] || fail "did not get a definitionId back from defining task_approval: $TASK_DEFINE_RESPONSE"
+log "task_approval workflow defined: $TASK_DEFINITION_ID"
+
+log "tasks: creating a task assigned to the new person"
+TASK_INSTANCE_RESPONSE=$(auth -X POST "$BACKEND_URL/api/firms/$PO_FIRM_ID/workflow-definitions/$TASK_DEFINITION_ID/instances" \
+    -H "Content-Type: application/json" \
+    -d "{\"payload\":{\"assignee_person_id\":\"$PERSON_ID\"}}")
+TASK_INSTANCE_ID=$(echo "$TASK_INSTANCE_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['instanceId'])")
+[ -n "$TASK_INSTANCE_ID" ] || fail "did not get an instanceId back from creating a task: $TASK_INSTANCE_RESPONSE"
+echo "$TASK_INSTANCE_RESPONSE" | python3 -c "import sys, json; d = json.load(sys.stdin); assert d['payload']['assignee_person_id'] == '$PERSON_ID', d" \
+    || fail "expected the task's assignee_person_id to round-trip: $TASK_INSTANCE_RESPONSE"
+log "task created and assigned: instance $TASK_INSTANCE_ID"
+
+log "tasks: confirming a task assigned to a NONEXISTENT person is rejected"
+BAD_ASSIGNEE_STATUS=$(auth -o /dev/null -w '%{http_code}' -X POST "$BACKEND_URL/api/firms/$PO_FIRM_ID/workflow-definitions/$TASK_DEFINITION_ID/instances" \
+    -H "Content-Type: application/json" \
+    -d '{"payload":{"assignee_person_id":"00000000-0000-0000-0000-000000000000"}}')
+[ "$BAD_ASSIGNEE_STATUS" = "400" ] || fail "expected 400 for a nonexistent assignee, got $BAD_ASSIGNEE_STATUS"
+log "tasks: nonexistent-assignee rejection confirmed"
+
+# By this point in the script the user owns several firms (FIRM_ID,
+# SECOND_FIRM_ID, PO_FIRM_ID, ...) - without an explicit active-firm
+# cookie, src/lib/activeFirm.ts's resolveActiveFirm falls back to
+# me.firms[0] (the FIRST-created firm), not PO_FIRM_ID, which is where
+# this section's data actually lives. Setting zonaryos_active_firm
+# directly (the same cookie the real firm-switcher UI sets, see
+# app/api/firm/switch/route.ts) is the honest way to address it - no
+# different from a real user having switched firms in their browser.
+log "tasks (UI path): confirming /tasks renders the assignee's name (the cross-module join)"
+TASKS_PAGE_HTML=$(curl -sS -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$PO_FIRM_ID" "$FRONTEND_URL/en/tasks")
+echo "$TASKS_PAGE_HTML" | grep -q "E2E Assignee" \
+    || fail "expected /tasks to render the assignee's name (E2E Assignee) via the workflow-instances + people join"
+log "tasks (UI path) confirmed - cross-module join renders correctly"
+
+log "reports: confirming GET .../reports/kpis reflects the real open task and active person just created"
+KPIS_RESPONSE=$(auth "$BACKEND_URL/api/firms/$PO_FIRM_ID/reports/kpis")
+echo "$KPIS_RESPONSE" | python3 -c "
+import sys, json
+kpis = {k['key']: k for k in json.load(sys.stdin)}
+assert kpis['openTasks']['value'] == '1', kpis['openTasks']
+assert kpis['activePeople']['value'] == '1', kpis['activePeople']
+" || fail "expected openTasks=1 and activePeople=1 in the KPI dashboard: $KPIS_RESPONSE"
+log "reports: KPI dashboard confirmed (openTasks=1, activePeople=1)"
+
+log "reports (UI path): confirming /reports renders the KPI dashboard"
+REPORTS_PAGE_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$PO_FIRM_ID" "$FRONTEND_URL/en/reports")
+[ "$REPORTS_PAGE_STATUS" = "200" ] || fail "expected /reports to render (200), got $REPORTS_PAGE_STATUS"
+log "reports (UI path) confirmed"
+
+log "HR (UI path): confirming /hr renders the new person"
+HR_PAGE_HTML=$(curl -sS -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$PO_FIRM_ID" "$FRONTEND_URL/en/hr")
+echo "$HR_PAGE_HTML" | grep -q "E2E Assignee" \
+    || fail "expected /hr to render the new person's name (E2E Assignee)"
+log "HR (UI path) confirmed"
+
 # --- Session refresh (Open Points item 41): a real, expired access token
 # --- is silently refreshed by src/proxy.ts, no re-login prompt ----------
 #
@@ -718,4 +824,4 @@ trap - EXIT
 log "session refresh: realm's accessTokenLifespan restored to its original (unset/default) value"
 
 echo ""
-echo "E2E SMOKE TEST PASSED: login + wizard -> firm creation -> add stock -> sell, plus UI-path add stock, firm switch, audit log view, a real second workflow defined + rendered through the generic UI, the Customer Pipeline default workflow walked lead -> qualified -> customer, the dashboard's counts-by-state overview, quick-create, global search, a full self-registration -> invite -> accept flow bringing a second real user into the firm with no email infrastructure, and (new) a genuine session-refresh proof - a real Keycloak access token actually expires, gets silently refreshed by src/proxy.ts with no re-login prompt, and the terminal (invalid refresh token) case cleanly falls through to a real login redirect - all against a real stack"
+echo "E2E SMOKE TEST PASSED: login + wizard -> firm creation -> add stock -> sell, plus UI-path add stock, firm switch, audit log view, a real second workflow defined + rendered through the generic UI, the Customer Pipeline default workflow walked lead -> qualified -> customer, the dashboard's counts-by-state overview, quick-create, global search, a full self-registration -> invite -> accept flow bringing a second real user into the firm with no email infrastructure, a purchase order walked draft -> sent -> received posting the correct ledger entry only on receive, (new) HR core (person + contract creation), a task assigned to that person confirmed via /tasks' cross-module join and the /reports KPI dashboard, and a genuine session-refresh proof - a real Keycloak access token actually expires, gets silently refreshed by src/proxy.ts with no re-login prompt, and the terminal (invalid refresh token) case cleanly falls through to a real login redirect - all against a real stack"

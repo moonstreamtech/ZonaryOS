@@ -113,6 +113,16 @@ const (
 	FieldTypeEnum      FieldType = "enum"
 	FieldTypeReference FieldType = "reference"
 	FieldTypeArray     FieldType = "array"
+	// FieldTypePerson (HR core batch) is FieldTypeReference's counterpart
+	// for a non-workflow entity: a value that must be a real
+	// internal/hr.Person's ID within the same firm - e.g.
+	// TaskApprovalSpec's assignee_person_id. Unlike FieldTypeReference
+	// (which resolves against another workflow_definitions/workflow_instances
+	// pair), this resolves against the `people` table directly - see
+	// engine.go's checkPersonField. Needs no extra FieldSpec fields the
+	// way Options/ReferenceDefinitionKey/ArrayItemType do, since there's
+	// only one `people` table to reference, not a choice of target.
+	FieldTypePerson FieldType = "person"
 )
 
 // FieldSpec is one declared field in a workflow definition's instance
@@ -369,6 +379,21 @@ func validateFieldShape(defKey string, f FieldSpec) error {
 		}
 		return nil
 
+	case FieldTypePerson:
+		// No extra fields needed - see FieldTypePerson's own doc comment
+		// for why (only one `people` table to reference, unlike
+		// FieldTypeReference's choice of target workflow definition).
+		if len(f.Options) > 0 {
+			return fmt.Errorf("workflow definition %q: field %q: options is only meaningful for an enum field", defKey, f.Name)
+		}
+		if f.ReferenceDefinitionKey != "" {
+			return fmt.Errorf("workflow definition %q: field %q: referenceDefinitionKey is only meaningful for a reference field", defKey, f.Name)
+		}
+		if f.ArrayItemType != "" {
+			return fmt.Errorf("workflow definition %q: field %q: arrayItemType is only meaningful for an array field", defKey, f.Name)
+		}
+		return nil
+
 	case FieldTypeArray:
 		// Deliberately restricted to the four original scalar types - no
 		// nested arrays, no arrays of enums, no arrays of references. This
@@ -396,7 +421,7 @@ func validateFieldShape(defKey string, f FieldSpec) error {
 		return nil
 
 	default:
-		return fmt.Errorf("workflow definition %q: field %q has unknown type %q (must be one of string/number/boolean/date/enum/reference/array)", defKey, f.Name, f.Type)
+		return fmt.Errorf("workflow definition %q: field %q has unknown type %q (must be one of string/number/boolean/date/enum/reference/array/person)", defKey, f.Name, f.Type)
 	}
 }
 

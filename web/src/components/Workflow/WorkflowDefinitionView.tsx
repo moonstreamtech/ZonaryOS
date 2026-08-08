@@ -14,6 +14,7 @@ import {
 } from "@/lib/workflow";
 import { fetchAuditLog } from "@/lib/auditlog";
 import { fetchRoleInFirm } from "@/lib/me";
+import { fetchPeople } from "@/lib/hr";
 import CreateInstanceForm from "./CreateInstanceForm";
 import WorkflowInstanceList from "./WorkflowInstanceList";
 import WorkflowHistory from "./WorkflowHistory";
@@ -107,9 +108,16 @@ export default async function WorkflowDefinitionView({
   // reachable from the currently-instantiated states - the closest
   // available proxy for "every transition this definition has," since no
   // endpoint returns the full state graph independent of any instance).
-  const [role, allDefinitions] = await Promise.all([
+  // people is only fetched when this definition actually has a "person"-
+  // typed field (e.g. task_approval's assignee_person_id) - CreateInstanceForm's
+  // person picker (a plain <select>, see its own doc comment) needs the
+  // real roster; every other definition skips this fetch entirely.
+  const needsPeople = (definition.fields ?? []).some((f) => f.type === "person");
+
+  const [role, allDefinitions, people] = await Promise.all([
     fetchRoleInFirm(sessionToken, firmId),
     fetchDefinitions(sessionToken, firmId),
+    needsPeople ? fetchPeople(sessionToken, firmId) : Promise.resolve(null),
   ]);
   const isOwner = role?.isOwner ?? false;
   const rules = isOwner || role ? await fetchRules(sessionToken, firmId, workflowKey) : null;
@@ -136,6 +144,7 @@ export default async function WorkflowDefinitionView({
           definitionId={definition.definitionId}
           createPermissionKey={definition.createPermissionKey}
           fields={definition.fields}
+          people={people ?? undefined}
         />
 
         <WorkflowInstanceList
