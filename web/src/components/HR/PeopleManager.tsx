@@ -99,6 +99,7 @@ export default function PeopleManager({ firmId, people, isOwner }: Props) {
           </h2>
           <button
             type="button"
+            data-permission-public="true"
             onClick={() => setCreating((v) => !v)}
             className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium text-black hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-50 dark:hover:bg-zinc-900"
           >
@@ -110,6 +111,7 @@ export default function PeopleManager({ firmId, people, isOwner }: Props) {
       {creating && (
         <form
           onSubmit={submitCreate}
+          data-permission-public="true"
           className="flex flex-col gap-3 rounded-md border border-zinc-300 p-4 dark:border-zinc-700"
         >
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -156,6 +158,7 @@ export default function PeopleManager({ firmId, people, isOwner }: Props) {
           {createError && <p className="text-sm text-red-600 dark:text-red-400">{createError}</p>}
           <button
             type="submit"
+            data-permission-public="true"
             disabled={submitting}
             className="self-start rounded-md bg-black px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50 dark:bg-zinc-50 dark:text-black"
           >
@@ -172,6 +175,7 @@ export default function PeopleManager({ firmId, people, isOwner }: Props) {
             <div key={person.id} className="rounded-md border border-zinc-300 dark:border-zinc-700">
               <button
                 type="button"
+                data-permission-public="true"
                 onClick={() => setExpandedPersonId((cur) => (cur === person.id ? null : person.id))}
                 className="flex w-full items-center justify-between gap-2 p-3 text-left text-sm"
               >
@@ -187,6 +191,7 @@ export default function PeopleManager({ firmId, people, isOwner }: Props) {
                   {isOwner && (
                     <button
                       type="button"
+                      data-permission-public="true"
                       onClick={() => toggleStatus(person)}
                       className="self-start rounded-md border border-zinc-300 px-2 py-1 text-xs font-medium text-black hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-50 dark:hover:bg-zinc-900"
                     >
@@ -275,7 +280,11 @@ function ContractForm({
   }
 
   return (
-    <form onSubmit={submit} className="flex flex-wrap items-end gap-2 border-t border-zinc-200 pt-2 dark:border-zinc-800">
+    <form
+      onSubmit={submit}
+      data-permission-public="true"
+      className="flex flex-wrap items-end gap-2 border-t border-zinc-200 pt-2 dark:border-zinc-800"
+    >
       <label className="flex flex-col gap-1 text-xs">
         {t("contractType")}
         <input
@@ -304,6 +313,7 @@ function ContractForm({
       </label>
       <button
         type="submit"
+        data-permission-public="true"
         disabled={submitting}
         className="rounded-md bg-black px-2 py-1 text-xs font-medium text-white disabled:opacity-50 dark:bg-zinc-50 dark:text-black"
       >

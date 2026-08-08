@@ -99,6 +99,7 @@ export default async function TasksPage({ params, searchParams }: PageProps) {
         </label>
         <button
           type="submit"
+          data-permission-public="true"
           className="rounded-md bg-black px-3 py-1.5 text-sm font-medium text-white dark:bg-zinc-50 dark:text-black"
         >
           {t("applyButton")}

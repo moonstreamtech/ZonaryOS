@@ -121,6 +121,7 @@ export default function InventoryManager({ firmId, products, movements, isOwner 
           </h2>
           <button
             type="button"
+            data-permission-public="true"
             onClick={() => setCreating((v) => !v)}
             className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium text-black hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-50 dark:hover:bg-zinc-900"
           >
@@ -132,6 +133,7 @@ export default function InventoryManager({ firmId, products, movements, isOwner 
       {creating && (
         <form
           onSubmit={submitCreate}
+          data-permission-public="true"
           className="flex flex-col gap-3 rounded-md border border-zinc-300 p-4 dark:border-zinc-700"
         >
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -198,6 +200,7 @@ export default function InventoryManager({ firmId, products, movements, isOwner 
           {createError && <p className="text-sm text-red-600 dark:text-red-400">{createError}</p>}
           <button
             type="submit"
+            data-permission-public="true"
             disabled={submitting}
             className="self-start rounded-md bg-black px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50 dark:bg-zinc-50 dark:text-black"
           >
@@ -219,6 +222,7 @@ export default function InventoryManager({ firmId, products, movements, isOwner 
               >
                 <button
                   type="button"
+                  data-permission-public="true"
                   onClick={() => setExpandedProductId((cur) => (cur === product.id ? null : product.id))}
                   className="flex w-full items-center justify-between gap-2 p-3 text-left text-sm"
                 >
@@ -240,6 +244,7 @@ export default function InventoryManager({ firmId, products, movements, isOwner 
                     {isOwner && (
                       <button
                         type="button"
+                        data-permission-public="true"
                         onClick={() => toggleActive(product)}
                         className="self-start rounded-md border border-zinc-300 px-2 py-1 text-xs font-medium text-black hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-50 dark:hover:bg-zinc-900"
                       >

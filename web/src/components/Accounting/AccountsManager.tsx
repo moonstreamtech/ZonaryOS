@@ -110,6 +110,7 @@ export default function AccountsManager({ firmId, accounts }: Props) {
         </h2>
         <button
           type="button"
+          data-permission-public="true"
           onClick={() => setCreating((v) => !v)}
           className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium text-black hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-50 dark:hover:bg-zinc-900"
         >
@@ -120,6 +121,7 @@ export default function AccountsManager({ firmId, accounts }: Props) {
       {creating && (
         <form
           onSubmit={submitCreate}
+          data-permission-public="true"
           className="flex flex-col gap-3 rounded-md border border-zinc-300 p-4 dark:border-zinc-700"
         >
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -172,6 +174,7 @@ export default function AccountsManager({ firmId, accounts }: Props) {
           {createError && <p className="text-sm text-red-600 dark:text-red-400">{createError}</p>}
           <button
             type="submit"
+            data-permission-public="true"
             disabled={submitting}
             className="self-start rounded-md bg-black px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50 dark:bg-zinc-50 dark:text-black"
           >
@@ -211,6 +214,7 @@ export default function AccountsManager({ firmId, accounts }: Props) {
                   <td className="py-2">
                     <button
                       type="button"
+                      data-permission-public="true"
                       disabled={pendingAccountId === a.id}
                       onClick={() => toggleActive(a)}
                       className="rounded-md border border-zinc-300 px-2 py-1 text-xs font-medium text-black hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-50 dark:hover:bg-zinc-900"
