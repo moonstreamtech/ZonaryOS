@@ -43,20 +43,27 @@ var StockToSaleSpec = DefinitionSpec{
 		{Key: "in_stock", Name: "In Stock", IsInitial: true},
 		{Key: "sold", Name: "Sold", IsTerminal: true},
 	},
-	// Fields adds one OPTIONAL payload field (Inventory management batch,
-	// same "optional and additive" contract PurchaseOrderSpec.Fields' own
-	// doc comment already establishes for this exact reason) -
-	// product_id, the real internal/inventory.Product this sale is against.
-	// Not Required=true: every ExecuteTransition call that predates this
-	// batch (this package's own tests, the E2E smoke test's earlier
-	// stock_to_sale coverage) records a sale with no product_id at all,
-	// and Required=true here would break every one of them (Rule 6).
-	// "quantity" itself is NOT declared here - it already exists as a
-	// freeform payload field (see the Journal template above, which
-	// already reads it via "quantity*unit_price") and stays exactly that
-	// way; only product_id is new.
+	// Fields adds several OPTIONAL payload fields (Inventory/Logistics/CRM
+	// batches, same "optional and additive" contract PurchaseOrderSpec.Fields'
+	// own doc comment already establishes) - product_id (the real
+	// internal/inventory.Product this sale is against), customer_id (the
+	// real internal/crm.Customer this sale is for), and four plain string
+	// fields (destination_address/origin_address/carrier/tracking_number)
+	// feeding the Delivery template below. None are Required=true: every
+	// ExecuteTransition call that predates these fields (this package's
+	// own tests, the E2E smoke test's earlier stock_to_sale coverage)
+	// records a sale with none of them at all, and Required=true on any
+	// would break every one of them (Rule 6). "quantity"/"unit_price"
+	// themselves are NOT declared here - they already exist as freeform
+	// payload fields (see the Journal template above) and stay exactly
+	// that way; only the fields below are new.
 	Fields: []FieldSpec{
 		{Name: "product_id", Type: FieldTypeProduct, Required: false},
+		{Name: "customer_id", Type: FieldTypeCustomer, Required: false},
+		{Name: "destination_address", Type: FieldTypeString, Required: false},
+		{Name: "origin_address", Type: FieldTypeString, Required: false},
+		{Name: "carrier", Type: FieldTypeString, Required: false},
+		{Name: "tracking_number", Type: FieldTypeString, Required: false},
 	},
 	Transitions: []TransitionSpec{
 		{
@@ -115,6 +122,23 @@ var StockToSaleSpec = DefinitionSpec{
 				QuantityField: "quantity",
 				Direction:     "decrease",
 				Reason:        "sale",
+			},
+			// The workflow-to-logistics bridge (Logistics management
+			// batch): "selling a product can automatically create a
+			// delivery record - operational continuity without manual
+			// steps" (design brief). When destination_address is present
+			// on this call, ExecuteTransition creates a deliveries row
+			// (status "pending") in the SAME transaction as the journal
+			// entry, stock adjustment, and state change - see
+			// DeliveryTemplate's own doc comment. Left unset on any call
+			// that predates this batch (no destination_address supplied)
+			// means "create nothing".
+			Delivery: &DeliveryTemplate{
+				DestinationAddressField: "destination_address",
+				OriginAddressField:      "origin_address",
+				CarrierField:            "carrier",
+				TrackingNumberField:     "tracking_number",
+				ReferenceField:          "item",
 			},
 		},
 	},

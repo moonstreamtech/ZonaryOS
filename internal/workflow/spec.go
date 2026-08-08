@@ -33,6 +33,39 @@ type StateSpec struct {
 
 // TransitionSpec is one edge: moving from one state to another via a named
 // action, gated by Permission (the Rule 7 tag for this transition).
+//
+// Side-effect templates: a transition can carry any number of the
+// declarative, OPTIONAL "bridge" templates below - Journal (the ledger
+// bridge), StockAdjustment (the inventory bridge), Delivery (the
+// logistics bridge), Customer (the CRM bridge). All four share one shape
+// and one contract, deliberately: each is a `*XTemplate` pointer, nil by
+// default (every TransitionSpec that predates a given template keeps
+// behaving exactly as before - Rule 6), resolved by ExecuteTransition
+// against the transition's merged instance payload at transition time
+// (never baked in ahead of time), and applied in the SAME database
+// transaction as the state change itself, through that module's own `*Tx`
+// primitive (PostJournalEntryTx / AdjustStockTx / CreateDeliveryTx /
+// CreateCustomerTx) - so a side effect can never end up out of sync with
+// the transition that produced it. A transition can carry several at
+// once (e.g. stock_to_sale's record_sale carries Journal AND
+// StockAdjustment AND Delivery) - they are independent, each resolved and
+// applied on its own, not a single combined mechanism.
+//
+// Why four separate named fields rather than one generic
+// `Effects []TransitionEffect` slice: with four, a reader can see a
+// transition's full side-effect surface at a glance in the struct
+// literal (as stock_to_sale.go's record_sale does) and the compiler
+// catches a typo'd field name - a real, concrete advantage a
+// `[]TransitionEffect` (interface-typed, JSON-discriminated by a `Kind`
+// string, resolved through a `switch` in engine.go) would trade away for
+// open-endedness this codebase doesn't need yet: every bridge so far is a
+// small, closed set the product vision itself enumerates (ledger,
+// inventory, logistics, CRM), not something firms define arbitrarily the
+// way States/Transitions/Fields are. If a fifth or sixth such bridge
+// arrives and this struct starts feeling like a junk drawer, that is the
+// signal to switch to the generic `Effects` shape - not before, since
+// premature genericization here would only replace four self-documenting
+// fields with one indirection layer for no present benefit.
 type TransitionSpec struct {
 	FromStateKey string
 	ToStateKey   string
@@ -59,6 +92,68 @@ type TransitionSpec struct {
 	// that existed before this field was added) keeps behaving exactly as
 	// before: no stock is ever adjusted for it.
 	StockAdjustment *StockAdjustmentTemplate `json:"stockAdjustment,omitempty"`
+	// Delivery is OPTIONAL: the workflow-to-logistics bridge (Logistics
+	// management batch), the same shape as Journal/StockAdjustment above
+	// but for internal/logistics.CreateDeliveryTx. When set,
+	// ExecuteTransition resolves it against the merged payload and, if a
+	// destination address is present, creates a deliveries row in the same
+	// transaction as the state change - see engine.go's resolveDelivery.
+	Delivery *DeliveryTemplate `json:"delivery,omitempty"`
+	// Customer is OPTIONAL: the workflow-to-CRM bridge (Logistics/CRM
+	// batch), the same shape as the templates above but for
+	// internal/crm.CreateCustomerTx. When set, ExecuteTransition resolves
+	// it against the merged payload and, if a name is present, creates a
+	// customers row (with SourceWorkflowInstance set) in the same
+	// transaction as the state change - see engine.go's resolveCustomer.
+	Customer *CustomerTemplate `json:"customer,omitempty"`
+}
+
+// DeliveryTemplate describes the deliveries row a transition should
+// create - the declarative shape a workflow definition carries; engine.go
+// resolves it against one specific instance's payload at ExecuteTransition
+// time, the same "resolved fresh per call, never baked in ahead of time"
+// reasoning every other template in this file gives.
+type DeliveryTemplate struct {
+	// DestinationAddressField names the payload field holding the
+	// delivery's destination address - e.g. "destination_address". The
+	// whole template is skipped (not an error) if this field is absent
+	// from the merged payload when the transition fires - the same
+	// Rule-6-in-spirit reasoning StockAdjustmentTemplate.ProductField's
+	// own doc comment gives: an existing/legit caller that never supplied
+	// a destination address must keep working unchanged, and a phantom
+	// delivery record with no destination is worse than no record at all.
+	DestinationAddressField string
+	// OriginAddressField/CarrierField/TrackingNumberField/ReferenceField
+	// name the payload fields holding the corresponding deliveries
+	// column - all OPTIONAL: an absent field simply leaves that column
+	// NULL on the created row (unlike DestinationAddressField, a missing
+	// one of these does NOT skip the whole template).
+	OriginAddressField  string
+	CarrierField        string
+	TrackingNumberField string
+	ReferenceField      string
+}
+
+// CustomerTemplate describes the customers row a transition should
+// create - the declarative shape a workflow definition carries; engine.go
+// resolves it against one specific instance's payload at ExecuteTransition
+// time, the same "resolved fresh per call, never baked in ahead of time"
+// reasoning every other template in this file gives.
+type CustomerTemplate struct {
+	// NameField names the payload field holding the customer's name -
+	// e.g. "name". The whole template is skipped (not an error) if this
+	// field is absent from the merged payload when the transition fires -
+	// customers.name is NOT NULL, so there is no meaningful customer
+	// record to create without it; the same Rule-6-in-spirit reasoning
+	// DeliveryTemplate.DestinationAddressField's own doc comment gives.
+	NameField string
+	// EmailField/PhoneField/AddressField name the payload fields holding
+	// the corresponding customers column - all OPTIONAL, same "missing
+	// just leaves that column NULL" contract DeliveryTemplate's own
+	// optional fields have.
+	EmailField   string
+	PhoneField   string
+	AddressField string
 }
 
 // StockAdjustmentTemplate describes the stock_levels change a transition
@@ -173,6 +268,16 @@ const (
 	// checkSupplierField.
 	FieldTypeProduct  FieldType = "product"
 	FieldTypeSupplier FieldType = "supplier"
+	// FieldTypeDelivery and FieldTypeCustomer (Logistics/CRM batch) are
+	// FieldTypePerson's counterparts for this batch's two new cross-module
+	// entities: a value that must be a real internal/logistics.Delivery's
+	// or internal/crm.Customer's ID within the same firm - e.g.
+	// stock_to_sale's customer_id. Same reasoning as FieldTypePerson/
+	// FieldTypeProduct: resolves against one specific table directly, not
+	// a choice of target - see engine.go's checkDeliveryField/
+	// checkCustomerField.
+	FieldTypeDelivery FieldType = "delivery"
+	FieldTypeCustomer FieldType = "customer"
 )
 
 // FieldSpec is one declared field in a workflow definition's instance
@@ -311,6 +416,16 @@ func (d DefinitionSpec) Validate() error {
 				return err
 			}
 		}
+		if t.Delivery != nil {
+			if err := validateDeliveryTemplate(d.Key, t.ActionKey, *t.Delivery); err != nil {
+				return err
+			}
+		}
+		if t.Customer != nil {
+			if err := validateCustomerTemplate(d.Key, t.ActionKey, *t.Customer); err != nil {
+				return err
+			}
+		}
 		dedupeKey := t.FromStateKey + "\x00" + t.ActionKey
 		if _, exists := transitionKeys[dedupeKey]; exists {
 			return fmt.Errorf("workflow definition %q: duplicate transition action %q from state %q", d.Key, t.ActionKey, t.FromStateKey)
@@ -434,7 +549,7 @@ func validateFieldShape(defKey string, f FieldSpec) error {
 		}
 		return nil
 
-	case FieldTypePerson, FieldTypeProduct, FieldTypeSupplier:
+	case FieldTypePerson, FieldTypeProduct, FieldTypeSupplier, FieldTypeDelivery, FieldTypeCustomer:
 		// No extra fields needed - same reasoning FieldTypePerson's own doc
 		// comment gives (only one target table to reference per type,
 		// unlike FieldTypeReference's choice of target workflow definition).
@@ -476,7 +591,7 @@ func validateFieldShape(defKey string, f FieldSpec) error {
 		return nil
 
 	default:
-		return fmt.Errorf("workflow definition %q: field %q has unknown type %q (must be one of string/number/boolean/date/enum/reference/array/person/product/supplier)", defKey, f.Name, f.Type)
+		return fmt.Errorf("workflow definition %q: field %q has unknown type %q (must be one of string/number/boolean/date/enum/reference/array/person/product/supplier/delivery/customer)", defKey, f.Name, f.Type)
 	}
 }
 
@@ -501,6 +616,30 @@ func validateStockAdjustmentTemplate(defKey, actionKey string, sat StockAdjustme
 	}
 	if sat.Reason == "" {
 		return fmt.Errorf("workflow definition %q: transition %q: stock adjustment must have a reason", defKey, actionKey)
+	}
+	return nil
+}
+
+// validateDeliveryTemplate checks one TransitionSpec's optional
+// DeliveryTemplate is structurally sound: a destination-address field
+// name. Same "cannot check the referenced field's value at spec-
+// definition time" limitation every other template validator in this file
+// documents - that happens at ExecuteTransition time instead (engine.go's
+// resolveDelivery), against a real instance payload.
+func validateDeliveryTemplate(defKey, actionKey string, dt DeliveryTemplate) error {
+	if dt.DestinationAddressField == "" {
+		return fmt.Errorf("workflow definition %q: transition %q: delivery template must name a destination address field", defKey, actionKey)
+	}
+	return nil
+}
+
+// validateCustomerTemplate checks one TransitionSpec's optional
+// CustomerTemplate is structurally sound: a name field name. Same
+// "cannot check the referenced field's value at spec-definition time"
+// limitation every other template validator in this file documents.
+func validateCustomerTemplate(defKey, actionKey string, ct CustomerTemplate) error {
+	if ct.NameField == "" {
+		return fmt.Errorf("workflow definition %q: transition %q: customer template must name a name field", defKey, actionKey)
 	}
 	return nil
 }

@@ -26,6 +26,8 @@
     "reports": "Reports",
     "inventory": "Inventory",
     "suppliers": "Suppliers",
+    "logistics": "Logistics",
+    "customers": "Customers",
     "logout": "Log out",
     "firmSwitcherLabel": "Active firm"
   },
@@ -461,7 +463,9 @@
       "openTasks": "Open tasks",
       "activePeople": "Active people",
       "lowStockProducts": "Low-stock products",
-      "totalInventoryValue": "Total inventory value"
+      "totalInventoryValue": "Total inventory value",
+      "pendingDeliveries": "Pending deliveries",
+      "activeCustomers": "Active customers"
     }
   },
   "Financials": {
@@ -618,5 +622,48 @@
     "statusInactive": "Inactive",
     "activate": "Activate",
     "deactivate": "Deactivate"
+  },
+  "Logistics": {
+    "title": "Logistics",
+    "loadError": "Couldn't load this data. Please try again.",
+    "empty": "No deliveries yet.",
+    "deliveriesTitle": "Deliveries",
+    "newDelivery": "+ New delivery",
+    "cancel": "Cancel",
+    "create": "Create",
+    "createDestinationRequired": "Please enter a destination address.",
+    "createError": "Couldn't create this delivery. Please try again.",
+    "reference": "Reference",
+    "originAddress": "Origin address",
+    "destinationAddress": "Destination address",
+    "carrier": "Carrier",
+    "trackingNumber": "Tracking number",
+    "filterStatus": "Status",
+    "filterAll": "All",
+    "applyButton": "Apply",
+    "status": {
+      "label": "Status",
+      "pending": "Pending",
+      "in_transit": "In transit",
+      "delivered": "Delivered",
+      "returned": "Returned",
+      "cancelled": "Cancelled"
+    }
+  },
+  "Customers": {
+    "title": "Customers",
+    "loadError": "Couldn't load this data. Please try again.",
+    "empty": "No customers added for this firm yet.",
+    "customersTitle": "Customers",
+    "newCustomer": "+ New customer",
+    "cancel": "Cancel",
+    "create": "Create",
+    "createNameRequired": "Please enter a name.",
+    "createError": "Couldn't create this customer. Please try again.",
+    "name": "Name",
+    "email": "Email",
+    "phone": "Phone",
+    "address": "Address",
+    "fromPipeline": "From Customer Pipeline"
   }
 }

@@ -24,8 +24,10 @@ import (
 
 	"github.com/moonstreamtech/ZonaryOS/internal/accounting"
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
+	"github.com/moonstreamtech/ZonaryOS/internal/crm"
 	"github.com/moonstreamtech/ZonaryOS/internal/hr"
 	"github.com/moonstreamtech/ZonaryOS/internal/inventory"
+	"github.com/moonstreamtech/ZonaryOS/internal/logistics"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
 )
@@ -205,6 +207,18 @@ func validatePayload(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, fields []
 		}
 		if f.Type == FieldTypeSupplier {
 			if err := checkSupplierField(ctx, tx, firmID, f, v); err != nil {
+				return err
+			}
+			continue
+		}
+		if f.Type == FieldTypeDelivery {
+			if err := checkDeliveryField(ctx, tx, firmID, f, v); err != nil {
+				return err
+			}
+			continue
+		}
+		if f.Type == FieldTypeCustomer {
+			if err := checkCustomerField(ctx, tx, firmID, f, v); err != nil {
 				return err
 			}
 			continue
@@ -471,6 +485,64 @@ func checkSupplierField(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, f Fiel
 	return nil
 }
 
+// checkDeliveryField validates a FieldTypeDelivery field's value - same
+// shape as checkProductField, against `deliveries` instead of `products`.
+//
+// ciaudit:ignore-firmid-check: internal helper called only by
+// validatePayload, itself only called by CreateInstance after
+// permission.IsMember/Has have already run in the same transaction -
+// firmID here scopes a read query (defense in depth alongside RLS, see
+// checkReferenceField's identical reasoning above), it is not itself an
+// authorization decision.
+func checkDeliveryField(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, f FieldSpec, v any) error {
+	s, ok := v.(string)
+	if !ok {
+		return fmt.Errorf("%w: field %q must be a string delivery ID", ErrPayloadValidation, f.Name)
+	}
+	deliveryID, err := uuid.Parse(s)
+	if err != nil {
+		return fmt.Errorf("%w: field %q must be a valid delivery ID (UUID)", ErrPayloadValidation, f.Name)
+	}
+
+	exists, err := logistics.DeliveryExistsTx(ctx, tx, firmID, deliveryID)
+	if err != nil {
+		return fmt.Errorf("check delivery field %q: %w", f.Name, err)
+	}
+	if !exists {
+		return fmt.Errorf("%w: field %q references a nonexistent delivery in this firm", ErrPayloadValidation, f.Name)
+	}
+	return nil
+}
+
+// checkCustomerField validates a FieldTypeCustomer field's value - same
+// shape as checkProductField, against `customers` instead of `products`.
+//
+// ciaudit:ignore-firmid-check: internal helper called only by
+// validatePayload, itself only called by CreateInstance after
+// permission.IsMember/Has have already run in the same transaction -
+// firmID here scopes a read query (defense in depth alongside RLS, see
+// checkReferenceField's identical reasoning above), it is not itself an
+// authorization decision.
+func checkCustomerField(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, f FieldSpec, v any) error {
+	s, ok := v.(string)
+	if !ok {
+		return fmt.Errorf("%w: field %q must be a string customer ID", ErrPayloadValidation, f.Name)
+	}
+	customerID, err := uuid.Parse(s)
+	if err != nil {
+		return fmt.Errorf("%w: field %q must be a valid customer ID (UUID)", ErrPayloadValidation, f.Name)
+	}
+
+	exists, err := crm.CustomerExistsTx(ctx, tx, firmID, customerID)
+	if err != nil {
+		return fmt.Errorf("check customer field %q: %w", f.Name, err)
+	}
+	if !exists {
+		return fmt.Errorf("%w: field %q references a nonexistent customer in this firm", ErrPayloadValidation, f.Name)
+	}
+	return nil
+}
+
 // marshalJournalTemplate encodes jt for storage in
 // workflow_transitions.journal_template - a nil jt returns a nil []byte
 // (SQL NULL), the same "nil in, NULL column, no schema at all" contract
@@ -580,6 +652,140 @@ func formatSignedAmount(f float64) (string, error) {
 		return "", fmt.Errorf("%w: computed stock adjustment quantity is zero", ErrPayloadValidation)
 	}
 	return strconv.FormatFloat(rounded, 'f', 4, 64), nil
+}
+
+// marshalDeliveryTemplate/unmarshalDeliveryTemplate and
+// marshalCustomerTemplate/unmarshalCustomerTemplate encode/decode
+// DeliveryTemplate/CustomerTemplate for storage in
+// workflow_transitions.delivery_template/customer_template - same
+// nil-in/NULL-out contract as marshalJournalTemplate/marshalStockAdjustmentTemplate.
+func marshalDeliveryTemplate(dt *DeliveryTemplate) ([]byte, error) {
+	if dt == nil {
+		return nil, nil
+	}
+	return json.Marshal(dt)
+}
+
+func unmarshalDeliveryTemplate(data []byte) (*DeliveryTemplate, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var dt DeliveryTemplate
+	if err := json.Unmarshal(data, &dt); err != nil {
+		return nil, fmt.Errorf("unmarshal delivery template: %w", err)
+	}
+	return &dt, nil
+}
+
+func marshalCustomerTemplate(ct *CustomerTemplate) ([]byte, error) {
+	if ct == nil {
+		return nil, nil
+	}
+	return json.Marshal(ct)
+}
+
+func unmarshalCustomerTemplate(data []byte) (*CustomerTemplate, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var ct CustomerTemplate
+	if err := json.Unmarshal(data, &ct); err != nil {
+		return nil, fmt.Errorf("unmarshal customer template: %w", err)
+	}
+	return &ct, nil
+}
+
+// lookupStringField reads payload[name] and requires it to be a JSON
+// string if present at all - present=false (no error) when the field is
+// simply absent OR name itself is empty (an unset OPTIONAL template
+// field, e.g. DeliveryTemplate.CarrierField left blank by the spec
+// author) - the same "missing means skip, not fail" contract
+// lookupNumberField already documents for the ledger/inventory bridges.
+func lookupStringField(payload map[string]any, name string) (value string, present bool, err error) {
+	if name == "" {
+		return "", false, nil
+	}
+	v, ok := payload[name]
+	if !ok || v == nil {
+		return "", false, nil
+	}
+	s, ok := v.(string)
+	if !ok {
+		return "", false, fmt.Errorf("%w: field %q must be a string", ErrPayloadValidation, name)
+	}
+	return s, true, nil
+}
+
+// resolveDelivery resolves dt against payload into the arguments
+// internal/logistics.CreateDeliveryTx needs. ok=false (not an error)
+// means DestinationAddressField was absent from payload - the whole
+// template is skipped for this call, the same non-breaking "missing
+// means skip, not fail" contract resolveStockAdjustment already documents,
+// for the identical Rule-6-in-spirit reason (see DeliveryTemplate's own
+// doc comment, spec.go). The four optional fields
+// (Origin/Carrier/TrackingNumber/Reference) simply resolve to "" (a NULL
+// column, not a skip) when absent or unset.
+func resolveDelivery(dt *DeliveryTemplate, payload map[string]any) (logistics.CreateDeliveryTxInput, bool, error) {
+	destination, present, err := lookupStringField(payload, dt.DestinationAddressField)
+	if err != nil {
+		return logistics.CreateDeliveryTxInput{}, false, err
+	}
+	if !present {
+		return logistics.CreateDeliveryTxInput{}, false, nil
+	}
+
+	origin, _, err := lookupStringField(payload, dt.OriginAddressField)
+	if err != nil {
+		return logistics.CreateDeliveryTxInput{}, false, err
+	}
+	carrier, _, err := lookupStringField(payload, dt.CarrierField)
+	if err != nil {
+		return logistics.CreateDeliveryTxInput{}, false, err
+	}
+	tracking, _, err := lookupStringField(payload, dt.TrackingNumberField)
+	if err != nil {
+		return logistics.CreateDeliveryTxInput{}, false, err
+	}
+	reference, _, err := lookupStringField(payload, dt.ReferenceField)
+	if err != nil {
+		return logistics.CreateDeliveryTxInput{}, false, err
+	}
+
+	return logistics.CreateDeliveryTxInput{
+		Reference: reference, OriginAddress: origin, DestinationAddress: destination,
+		Carrier: carrier, TrackingNumber: tracking,
+	}, true, nil
+}
+
+// resolveCustomer resolves ct against payload into the arguments
+// internal/crm.CreateCustomerTx needs (minus SourceWorkflowInstance,
+// which the caller - ExecuteTransition - fills in itself, since only it
+// knows the instance ID). ok=false (not an error) means NameField was
+// absent from payload - the whole template is skipped, same reasoning
+// resolveDelivery's own doc comment gives.
+func resolveCustomer(ct *CustomerTemplate, payload map[string]any) (crm.CreateCustomerTxInput, bool, error) {
+	name, present, err := lookupStringField(payload, ct.NameField)
+	if err != nil {
+		return crm.CreateCustomerTxInput{}, false, err
+	}
+	if !present {
+		return crm.CreateCustomerTxInput{}, false, nil
+	}
+
+	email, _, err := lookupStringField(payload, ct.EmailField)
+	if err != nil {
+		return crm.CreateCustomerTxInput{}, false, err
+	}
+	phone, _, err := lookupStringField(payload, ct.PhoneField)
+	if err != nil {
+		return crm.CreateCustomerTxInput{}, false, err
+	}
+	address, _, err := lookupStringField(payload, ct.AddressField)
+	if err != nil {
+		return crm.CreateCustomerTxInput{}, false, err
+	}
+
+	return crm.CreateCustomerTxInput{Name: name, Email: email, Phone: phone, Address: address}, true, nil
 }
 
 // interpolateTemplate substitutes every "{{field}}" placeholder in s with
@@ -708,6 +914,69 @@ func resolveJournalLines(jt *JournalTemplate, payload map[string]any) ([]account
 		})
 	}
 	return lines, true, nil
+}
+
+// customerIDPayloadField is the well-known payload field name
+// resolveJournalDescription looks for - "customer_id", the exact field
+// stock_to_sale.go declares as its own FieldTypeCustomer field (see its
+// own Fields entry). This is deliberately a fixed convention, not a
+// declarative field on JournalTemplate itself: the design brief calls for
+// one specific case (a sale's journal description naming its customer),
+// not a general "any JournalTemplate may reference any customer field"
+// capability - adding a whole new template field for a single derived
+// placeholder would be exactly the kind of unwieldy growth TransitionSpec's
+// own doc comment on its four template fields already guards against.
+const customerIDPayloadField = "customer_id"
+
+// resolveJournalDescription interpolates jt.Description against payload
+// (interpolateTemplate's usual {{field}} substitution, unchanged), then -
+// if payload's customer_id field resolves to a real customer in firmID -
+// appends " (customer: {{customer_name}})", interpolated through the
+// exact SAME interpolateTemplate mechanism against a customer_name-only
+// payload. This is the design brief's "update the journal entry's
+// description to include the customer name (via template interpolation,
+// same {{field}} pattern that already works for journal descriptions)":
+// genuinely the same substitution primitive, just composed in Go rather
+// than baked into a single static template string - deliberately, so the
+// common case (no customer_id on this call, e.g. every record_sale call
+// site that predates this batch) renders the description exactly as
+// before, with no dangling "{{customer_name}}" placeholder visible - the
+// one behavior interpolateTemplate's own "leave missing placeholders
+// literal" contract would otherwise produce if {{customer_name}} were
+// baked directly into stock_to_sale's static Description.
+//
+// A customer_id present but not a string, not a valid UUID, or not
+// resolving to a real customer in this firm is treated the same as
+// "absent" here (base description, unchanged) rather than failing the
+// transition - the journal description is cosmetic, not the transition's
+// correctness-critical path (checkCustomerField, run at CreateInstance
+// time via the FieldTypeCustomer schema check, is what actually rejects a
+// genuinely invalid customer_id before it ever reaches here).
+//
+// ciaudit:ignore-firmid-check: internal helper called only by
+// ExecuteTransition, which has already run permission.IsMember/Has in the
+// same transaction before reaching this call - firmID here scopes
+// GetCustomerNameTx's read query (defense in depth alongside RLS), it is
+// not itself an authorization decision.
+func resolveJournalDescription(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, jt *JournalTemplate, payload map[string]any) (string, error) {
+	description := interpolateTemplate(jt.Description, payload)
+
+	customerIDStr, present, err := lookupStringField(payload, customerIDPayloadField)
+	if err != nil || !present {
+		return description, nil
+	}
+	customerID, err := uuid.Parse(customerIDStr)
+	if err != nil {
+		return description, nil
+	}
+	name, ok, err := crm.GetCustomerNameTx(ctx, tx, firmID, customerID)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return description, nil
+	}
+	return interpolateTemplate(description+" (customer: {{customer_name}})", map[string]any{"customer_name": name}), nil
 }
 
 // DefineWorkflow writes spec as rows in workflow_definitions/states/
@@ -848,11 +1117,20 @@ func DefineWorkflowTx(ctx context.Context, tx pgx.Tx, firmID, granteeRoleID uuid
 		if err != nil {
 			return uuid.UUID{}, fmt.Errorf("marshal stock adjustment template for transition %q: %w", t.ActionKey, err)
 		}
+		deliveryTemplateJSON, err := marshalDeliveryTemplate(t.Delivery)
+		if err != nil {
+			return uuid.UUID{}, fmt.Errorf("marshal delivery template for transition %q: %w", t.ActionKey, err)
+		}
+		customerTemplateJSON, err := marshalCustomerTemplate(t.Customer)
+		if err != nil {
+			return uuid.UUID{}, fmt.Errorf("marshal customer template for transition %q: %w", t.ActionKey, err)
+		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO workflow_transitions
-				(firm_id, workflow_definition_id, from_state_id, to_state_id, action_key, name, permission_key, journal_template, stock_adjustment)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		`, firmID, definitionID, stateIDs[t.FromStateKey], stateIDs[t.ToStateKey], t.ActionKey, t.Name, t.Permission.Key, journalTemplateJSON, stockAdjustmentJSON); err != nil {
+				(firm_id, workflow_definition_id, from_state_id, to_state_id, action_key, name, permission_key, journal_template, stock_adjustment, delivery_template, customer_template)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		`, firmID, definitionID, stateIDs[t.FromStateKey], stateIDs[t.ToStateKey], t.ActionKey, t.Name, t.Permission.Key,
+			journalTemplateJSON, stockAdjustmentJSON, deliveryTemplateJSON, customerTemplateJSON); err != nil {
 			return uuid.UUID{}, fmt.Errorf("insert workflow transition %q: %w", t.ActionKey, err)
 		}
 	}
@@ -1154,13 +1432,13 @@ func ExecuteTransition(ctx context.Context, pool *pgxpool.Pool, firmID, userID, 
 
 		var toStateID uuid.UUID
 		var permissionKey string
-		var journalTemplateJSON, stockAdjustmentJSON []byte
+		var journalTemplateJSON, stockAdjustmentJSON, deliveryTemplateJSON, customerTemplateJSON []byte
 		err = tx.QueryRow(ctx, `
-			SELECT wt.to_state_id, ws.key, wt.permission_key, wt.journal_template, wt.stock_adjustment
+			SELECT wt.to_state_id, ws.key, wt.permission_key, wt.journal_template, wt.stock_adjustment, wt.delivery_template, wt.customer_template
 			FROM workflow_transitions wt
 			JOIN workflow_states ws ON ws.id = wt.to_state_id
 			WHERE wt.workflow_definition_id = $1 AND wt.from_state_id = $2 AND wt.action_key = $3
-		`, definitionID, currentStateID, actionKey).Scan(&toStateID, &toStateKey, &permissionKey, &journalTemplateJSON, &stockAdjustmentJSON)
+		`, definitionID, currentStateID, actionKey).Scan(&toStateID, &toStateKey, &permissionKey, &journalTemplateJSON, &stockAdjustmentJSON, &deliveryTemplateJSON, &customerTemplateJSON)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNoSuchTransition
 		}
@@ -1172,6 +1450,14 @@ func ExecuteTransition(ctx context.Context, pool *pgxpool.Pool, firmID, userID, 
 			return err
 		}
 		stockAdjustment, err := unmarshalStockAdjustmentTemplate(stockAdjustmentJSON)
+		if err != nil {
+			return err
+		}
+		deliveryTemplate, err := unmarshalDeliveryTemplate(deliveryTemplateJSON)
+		if err != nil {
+			return err
+		}
+		customerTemplate, err := unmarshalCustomerTemplate(customerTemplateJSON)
 		if err != nil {
 			return err
 		}
@@ -1231,7 +1517,10 @@ func ExecuteTransition(ctx context.Context, pool *pgxpool.Pool, firmID, userID, 
 				return err
 			}
 			if ok {
-				description := interpolateTemplate(journalTemplate.Description, mergedPayload)
+				description, err := resolveJournalDescription(ctx, tx, firmID, journalTemplate, mergedPayload)
+				if err != nil {
+					return err
+				}
 				if _, err := accounting.PostJournalEntryTx(ctx, tx, firmID, userID, description, journalEntitySourceType, &instanceID, lines); err != nil {
 					return err
 				}
@@ -1259,6 +1548,48 @@ func ExecuteTransition(ctx context.Context, pool *pgxpool.Pool, firmID, userID, 
 			}
 			if ok {
 				if err := inventory.AdjustStockTx(ctx, tx, firmID, productID, "", quantityChange, stockAdjustment.Reason, journalEntitySourceType, &instanceID); err != nil {
+					return err
+				}
+			}
+		}
+
+		// The workflow-to-logistics bridge: same "resolve against the
+		// merged payload, apply in the SAME transaction as the state
+		// change" shape as the bridges above, through
+		// internal/logistics.CreateDeliveryTx - not a new mechanism (see
+		// DeliveryTemplate's own doc comment, spec.go). ok=false means
+		// DestinationAddressField simply wasn't supplied on this call -
+		// skipped, not failed (resolveDelivery's own doc comment).
+		if deliveryTemplate != nil {
+			deliveryInput, ok, err := resolveDelivery(deliveryTemplate, mergedPayload)
+			if err != nil {
+				return err
+			}
+			if ok {
+				deliveryInput.SourceType = journalEntitySourceType
+				deliveryInput.SourceID = &instanceID
+				if _, err := logistics.CreateDeliveryTx(ctx, tx, firmID, deliveryInput); err != nil {
+					return err
+				}
+			}
+		}
+
+		// The workflow-to-CRM bridge: same shape, through
+		// internal/crm.CreateCustomerTx - customer_pipeline's own "convert"
+		// transition is this batch's real working example (see
+		// customer_pipeline.go): a lead converting to a customer state now
+		// creates an actual customers row, with SourceWorkflowInstance set
+		// to this instance, in the SAME transaction as the state change.
+		// ok=false means NameField simply wasn't supplied - skipped, not
+		// failed (resolveCustomer's own doc comment).
+		if customerTemplate != nil {
+			customerInput, ok, err := resolveCustomer(customerTemplate, mergedPayload)
+			if err != nil {
+				return err
+			}
+			if ok {
+				customerInput.SourceWorkflowInstance = instanceID
+				if _, err := crm.CreateCustomerTx(ctx, tx, firmID, customerInput); err != nil {
 					return err
 				}
 			}
@@ -1562,6 +1893,8 @@ type TransitionInfo struct {
 	PermissionKey   string
 	Journal         *JournalTemplate
 	StockAdjustment *StockAdjustmentTemplate
+	Delivery        *DeliveryTemplate
+	Customer        *CustomerTemplate
 }
 
 // fetchTransitionInfos loads every workflow_transitions row for
@@ -1570,7 +1903,7 @@ type TransitionInfo struct {
 // read path.
 func fetchTransitionInfos(ctx context.Context, tx pgx.Tx, definitionID uuid.UUID) ([]TransitionInfo, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT wt.action_key, wt.name, src.key, src.name, dst.key, dst.name, wt.permission_key, wt.journal_template, wt.stock_adjustment
+		SELECT wt.action_key, wt.name, src.key, src.name, dst.key, dst.name, wt.permission_key, wt.journal_template, wt.stock_adjustment, wt.delivery_template, wt.customer_template
 		FROM workflow_transitions wt
 		JOIN workflow_states src ON src.id = wt.from_state_id
 		JOIN workflow_states dst ON dst.id = wt.to_state_id
@@ -1585,8 +1918,9 @@ func fetchTransitionInfos(ctx context.Context, tx pgx.Tx, definitionID uuid.UUID
 	var infos []TransitionInfo
 	for rows.Next() {
 		var ti TransitionInfo
-		var journalTemplateJSON, stockAdjustmentJSON []byte
-		if err := rows.Scan(&ti.ActionKey, &ti.Name, &ti.FromState.Key, &ti.FromState.Name, &ti.ToState.Key, &ti.ToState.Name, &ti.PermissionKey, &journalTemplateJSON, &stockAdjustmentJSON); err != nil {
+		var journalTemplateJSON, stockAdjustmentJSON, deliveryTemplateJSON, customerTemplateJSON []byte
+		if err := rows.Scan(&ti.ActionKey, &ti.Name, &ti.FromState.Key, &ti.FromState.Name, &ti.ToState.Key, &ti.ToState.Name,
+			&ti.PermissionKey, &journalTemplateJSON, &stockAdjustmentJSON, &deliveryTemplateJSON, &customerTemplateJSON); err != nil {
 			return nil, err
 		}
 		ti.Journal, err = unmarshalJournalTemplate(journalTemplateJSON)
@@ -1594,6 +1928,14 @@ func fetchTransitionInfos(ctx context.Context, tx pgx.Tx, definitionID uuid.UUID
 			return nil, err
 		}
 		ti.StockAdjustment, err = unmarshalStockAdjustmentTemplate(stockAdjustmentJSON)
+		if err != nil {
+			return nil, err
+		}
+		ti.Delivery, err = unmarshalDeliveryTemplate(deliveryTemplateJSON)
+		if err != nil {
+			return nil, err
+		}
+		ti.Customer, err = unmarshalCustomerTemplate(customerTemplateJSON)
 		if err != nil {
 			return nil, err
 		}

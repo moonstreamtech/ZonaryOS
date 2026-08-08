@@ -74,6 +74,17 @@ const (
 	// than forcing either metric into an existing Kind's shape (the design
 	// brief's own explicit call here).
 	KPIKindInventoryKPI KPIKind = "inventory_kpi"
+	// KPIKindCRM (Logistics/CRM batch): dispatches further on CRMMetric
+	// below. active_customers (customers converted from the pipeline, not
+	// manually created) is a relationship-count over the customers table -
+	// a different domain from every existing Kind (accounts, workflow
+	// state, people, inventory) and, per this batch's own design brief,
+	// deliberately its own Kind rather than folded into KPIKindPersonCount
+	// (customers aren't people rows) or KPIKindInventoryKPI (a customer
+	// isn't inventory - see this batch's own classification note on
+	// pending_deliveries below for the contrasting case that DOES belong
+	// under KPIKindInventoryKPI).
+	KPIKindCRM KPIKind = "crm"
 )
 
 // InventoryMetric is KPIKindInventoryKPI's own descriptor field - which
@@ -94,6 +105,37 @@ const (
 	// matching standard inventory-valuation practice: an unsold unit is
 	// worth what it cost the firm, not what it might sell for).
 	InventoryMetricTotalInventoryValue InventoryMetric = "total_inventory_value"
+	// InventoryMetricPendingDeliveries: how many deliveries currently sit
+	// in status 'pending' or 'in_transit' (i.e. not yet delivered/returned/
+	// cancelled). Classified under KPIKindInventoryKPI, not a new
+	// KPIKindLogistics: this is an OPERATIONAL fulfillment metric - "how
+	// much outbound work is still in flight" - the same operational
+	// register low_stock_products/total_inventory_value already occupy
+	// (warehouse/fulfillment state), not a customer-RELATIONSHIP metric
+	// the way active_customers is (see KPIKindCRM's own doc comment for
+	// that contrast). A firm's inventory dashboard and its delivery
+	// backlog are naturally read together - both answer "what does
+	// operations need to act on today" - so sharing one Kind here avoids
+	// a third Kind for what is, structurally, the exact same "count rows
+	// matching a status/threshold condition" shape low_stock_products
+	// already has.
+	InventoryMetricPendingDeliveries InventoryMetric = "pending_deliveries"
+)
+
+// CRMMetric is KPIKindCRM's own descriptor field - which CRM-specific
+// aggregation to compute (see computeCRMKPI). Kept as its own named type,
+// the same "room to grow without a new Kind" pattern InventoryMetric
+// already establishes, even though this batch defines only one CRMMetric
+// today.
+type CRMMetric string
+
+const (
+	// CRMMetricActiveCustomers: how many customers rows have a non-null
+	// source_workflow_instance - i.e. converted from the customer_pipeline
+	// workflow, not created directly via the HTTP API (see
+	// migrations/0013_logistics_crm_core.up.sql's own doc comment on this
+	// distinction).
+	CRMMetricActiveCustomers CRMMetric = "active_customers"
 )
 
 // Period is KPIKindAccountBalancePeriod's own descriptor field - which
@@ -139,6 +181,9 @@ type KPIDescriptor struct {
 
 	// InventoryMetric is used by KPIKindInventoryKPI.
 	InventoryMetric InventoryMetric
+
+	// CRMMetric is used by KPIKindCRM.
+	CRMMetric CRMMetric
 }
 
 // kpiDescriptors is the dashboard's actual KPI list - the design brief's
@@ -182,6 +227,14 @@ var kpiDescriptors = []KPIDescriptor{
 	{
 		Key: "totalInventoryValue", Kind: KPIKindInventoryKPI,
 		InventoryMetric: InventoryMetricTotalInventoryValue,
+	},
+	{
+		Key: "pendingDeliveries", Kind: KPIKindInventoryKPI,
+		InventoryMetric: InventoryMetricPendingDeliveries,
+	},
+	{
+		Key: "activeCustomers", Kind: KPIKindCRM,
+		CRMMetric: CRMMetricActiveCustomers,
 	},
 }
 
@@ -284,6 +337,9 @@ func computeKPI(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, d KPIDescripto
 	case KPIKindInventoryKPI:
 		return computeInventoryKPI(ctx, tx, firmID, d)
 
+	case KPIKindCRM:
+		return computeCRMKPI(ctx, tx, firmID, d)
+
 	default:
 		return KPIResult{}, fmt.Errorf("unknown KPI kind %q", d.Kind)
 	}
@@ -348,8 +404,40 @@ func computeInventoryKPI(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, d KPI
 		}
 		return KPIResult{Key: d.Key, Unit: unitCurrency, Value: value}, nil
 
+	case InventoryMetricPendingDeliveries:
+		var count int
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM deliveries WHERE firm_id = $1 AND status IN ('pending', 'in_transit')
+		`, firmID).Scan(&count); err != nil {
+			return KPIResult{}, fmt.Errorf("count pending deliveries: %w", err)
+		}
+		return KPIResult{Key: d.Key, Unit: unitCount, Value: fmt.Sprintf("%d", count)}, nil
+
 	default:
 		return KPIResult{}, fmt.Errorf("unknown inventory metric %q", d.InventoryMetric)
+	}
+}
+
+// computeCRMKPI dispatches on d.CRMMetric - the same role computeInventoryKPI's
+// own switch plays for InventoryMetric.
+//
+// ciaudit:ignore-firmid-check: internal helper called only by computeKPI,
+// itself only called by GetDashboardKPIs after permission.IsMember has
+// already run - firmID here scopes the query (defense in depth alongside
+// RLS), it is not itself an authorization decision.
+func computeCRMKPI(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, d KPIDescriptor) (KPIResult, error) {
+	switch d.CRMMetric {
+	case CRMMetricActiveCustomers:
+		var count int
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM customers WHERE firm_id = $1 AND source_workflow_instance IS NOT NULL
+		`, firmID).Scan(&count); err != nil {
+			return KPIResult{}, fmt.Errorf("count active customers: %w", err)
+		}
+		return KPIResult{Key: d.Key, Unit: unitCount, Value: fmt.Sprintf("%d", count)}, nil
+
+	default:
+		return KPIResult{}, fmt.Errorf("unknown CRM metric %q", d.CRMMetric)
 	}
 }
 

@@ -29,7 +29,9 @@ export type FieldType =
   | "array"
   | "person"
   | "product"
-  | "supplier";
+  | "supplier"
+  | "delivery"
+  | "customer";
 
 // ScalarFieldType is the subset of FieldType a FieldSpecInput's
 // arrayItemType may be (see FieldSpecInput.arrayItemType below) - the
@@ -109,10 +111,32 @@ export type StockAdjustmentTemplateInfo = {
   reason: string;
 };
 
+// DeliveryTemplateInfo/CustomerTemplateInfo are
+// internal/workflow.DeliveryTemplate/CustomerTemplate's (spec.go) wire
+// shape - the Logistics/CRM batch's workflow-to-logistics/workflow-to-CRM
+// bridges, the same "read-only on the frontend, a transition either
+// carries one or it doesn't" role StockAdjustmentTemplateInfo already has
+// above.
+export type DeliveryTemplateInfo = {
+  destinationAddressField: string;
+  originAddressField?: string;
+  carrierField?: string;
+  trackingNumberField?: string;
+  referenceField?: string;
+};
+
+export type CustomerTemplateInfo = {
+  nameField: string;
+  emailField?: string;
+  phoneField?: string;
+  addressField?: string;
+};
+
 // TransitionInfo is internal/workflow.TransitionInfo's wire shape - one
 // transition in a definition's full state graph, with its OPTIONAL
-// journal template and/or stock adjustment template attached (see
-// JournalTemplateInfo/StockAdjustmentTemplateInfo above).
+// journal/stock-adjustment/delivery/customer templates attached (see
+// JournalTemplateInfo/StockAdjustmentTemplateInfo/DeliveryTemplateInfo/
+// CustomerTemplateInfo above).
 export type TransitionInfo = {
   actionKey: string;
   name: string;
@@ -121,6 +145,8 @@ export type TransitionInfo = {
   permissionKey: string;
   journal?: JournalTemplateInfo;
   stockAdjustment?: StockAdjustmentTemplateInfo;
+  delivery?: DeliveryTemplateInfo;
+  customer?: CustomerTemplateInfo;
 };
 
 export type WorkflowDefinition = {

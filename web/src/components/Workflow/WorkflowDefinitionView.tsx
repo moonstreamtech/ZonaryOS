@@ -16,6 +16,8 @@ import { fetchAuditLog } from "@/lib/auditlog";
 import { fetchRoleInFirm } from "@/lib/me";
 import { fetchPeople } from "@/lib/hr";
 import { fetchProducts, fetchSuppliers } from "@/lib/inventory";
+import { fetchDeliveries } from "@/lib/logistics";
+import { fetchCustomers } from "@/lib/crm";
 import CreateInstanceForm from "./CreateInstanceForm";
 import WorkflowInstanceList from "./WorkflowInstanceList";
 import WorkflowHistory from "./WorkflowHistory";
@@ -121,13 +123,19 @@ export default async function WorkflowDefinitionView({
   // shape as its person picker) need the real catalogs.
   const needsProducts = (definition.fields ?? []).some((f) => f.type === "product");
   const needsSuppliers = (definition.fields ?? []).some((f) => f.type === "supplier");
+  // needsDeliveries/needsCustomers (Logistics/CRM batch) are the exact
+  // same pattern as needsProducts/needsSuppliers above.
+  const needsDeliveries = (definition.fields ?? []).some((f) => f.type === "delivery");
+  const needsCustomers = (definition.fields ?? []).some((f) => f.type === "customer");
 
-  const [role, allDefinitions, people, products, suppliers] = await Promise.all([
+  const [role, allDefinitions, people, products, suppliers, deliveries, customers] = await Promise.all([
     fetchRoleInFirm(sessionToken, firmId),
     fetchDefinitions(sessionToken, firmId),
     needsPeople ? fetchPeople(sessionToken, firmId) : Promise.resolve(null),
     needsProducts ? fetchProducts(sessionToken, firmId) : Promise.resolve(null),
     needsSuppliers ? fetchSuppliers(sessionToken, firmId) : Promise.resolve(null),
+    needsDeliveries ? fetchDeliveries(sessionToken, firmId) : Promise.resolve(null),
+    needsCustomers ? fetchCustomers(sessionToken, firmId) : Promise.resolve(null),
   ]);
   const isOwner = role?.isOwner ?? false;
   const rules = isOwner || role ? await fetchRules(sessionToken, firmId, workflowKey) : null;
@@ -157,6 +165,8 @@ export default async function WorkflowDefinitionView({
           people={people ?? undefined}
           products={products ?? undefined}
           suppliers={suppliers ?? undefined}
+          deliveries={deliveries ?? undefined}
+          customers={customers ?? undefined}
         />
 
         <WorkflowInstanceList

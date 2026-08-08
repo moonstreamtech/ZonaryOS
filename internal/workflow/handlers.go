@@ -271,6 +271,63 @@ func toStockAdjustmentTemplateResponse(sat *StockAdjustmentTemplate) *stockAdjus
 	}
 }
 
+// deliveryTemplateResponse/customerTemplateResponse are
+// DeliveryTemplate/CustomerTemplate's (spec.go) JSON wire shape - the
+// Logistics/CRM batch's counterparts to stockAdjustmentTemplateResponse
+// above, same "included on transitionInfoResponse, omitempty" reasoning.
+type deliveryTemplateResponse struct {
+	DestinationAddressField string `json:"destinationAddressField"`
+	OriginAddressField      string `json:"originAddressField,omitempty"`
+	CarrierField            string `json:"carrierField,omitempty"`
+	TrackingNumberField     string `json:"trackingNumberField,omitempty"`
+	ReferenceField          string `json:"referenceField,omitempty"`
+}
+
+type customerTemplateResponse struct {
+	NameField    string `json:"nameField"`
+	EmailField   string `json:"emailField,omitempty"`
+	PhoneField   string `json:"phoneField,omitempty"`
+	AddressField string `json:"addressField,omitempty"`
+}
+
+func toDeliveryTemplateSpec(req *defineDeliveryTemplateRequest) *DeliveryTemplate {
+	if req == nil {
+		return nil
+	}
+	return &DeliveryTemplate{
+		DestinationAddressField: req.DestinationAddressField, OriginAddressField: req.OriginAddressField,
+		CarrierField: req.CarrierField, TrackingNumberField: req.TrackingNumberField, ReferenceField: req.ReferenceField,
+	}
+}
+
+func toDeliveryTemplateResponse(dt *DeliveryTemplate) *deliveryTemplateResponse {
+	if dt == nil {
+		return nil
+	}
+	return &deliveryTemplateResponse{
+		DestinationAddressField: dt.DestinationAddressField, OriginAddressField: dt.OriginAddressField,
+		CarrierField: dt.CarrierField, TrackingNumberField: dt.TrackingNumberField, ReferenceField: dt.ReferenceField,
+	}
+}
+
+func toCustomerTemplateSpec(req *defineCustomerTemplateRequest) *CustomerTemplate {
+	if req == nil {
+		return nil
+	}
+	return &CustomerTemplate{
+		NameField: req.NameField, EmailField: req.EmailField, PhoneField: req.PhoneField, AddressField: req.AddressField,
+	}
+}
+
+func toCustomerTemplateResponse(ct *CustomerTemplate) *customerTemplateResponse {
+	if ct == nil {
+		return nil
+	}
+	return &customerTemplateResponse{
+		NameField: ct.NameField, EmailField: ct.EmailField, PhoneField: ct.PhoneField, AddressField: ct.AddressField,
+	}
+}
+
 // transitionInfoResponse is TransitionInfo's (engine.go) JSON wire shape.
 type transitionInfoResponse struct {
 	ActionKey       string                           `json:"actionKey"`
@@ -280,6 +337,8 @@ type transitionInfoResponse struct {
 	PermissionKey   string                           `json:"permissionKey"`
 	Journal         *journalTemplateResponse         `json:"journal,omitempty"`
 	StockAdjustment *stockAdjustmentTemplateResponse `json:"stockAdjustment,omitempty"`
+	Delivery        *deliveryTemplateResponse        `json:"delivery,omitempty"`
+	Customer        *customerTemplateResponse        `json:"customer,omitempty"`
 }
 
 func toTransitionInfoResponses(transitions []TransitionInfo) []transitionInfoResponse {
@@ -296,6 +355,8 @@ func toTransitionInfoResponses(transitions []TransitionInfo) []transitionInfoRes
 			PermissionKey:   t.PermissionKey,
 			Journal:         toJournalTemplateResponse(t.Journal),
 			StockAdjustment: toStockAdjustmentTemplateResponse(t.StockAdjustment),
+			Delivery:        toDeliveryTemplateResponse(t.Delivery),
+			Customer:        toCustomerTemplateResponse(t.Customer),
 		})
 	}
 	return resp
@@ -488,6 +549,14 @@ type defineTransitionRequest struct {
 	// "adjust nothing", exactly TransitionSpec.StockAdjustment's own
 	// zero-value contract.
 	StockAdjustment *defineStockAdjustmentTemplateRequest `json:"stockAdjustment,omitempty"`
+	// Delivery/Customer are OPTIONAL (the Logistics/CRM batch's
+	// workflow-to-logistics/workflow-to-CRM bridges, spec.go's
+	// TransitionSpec.Delivery/Customer) - same "separate request/response
+	// struct pair" convention Journal's own doc comment above describes.
+	// Omitted entirely (or nil) means "create nothing", exactly
+	// TransitionSpec.Delivery/Customer's own zero-value contract.
+	Delivery *defineDeliveryTemplateRequest `json:"delivery,omitempty"`
+	Customer *defineCustomerTemplateRequest `json:"customer,omitempty"`
 }
 
 type defineLineTemplateRequest struct {
@@ -511,6 +580,26 @@ type defineStockAdjustmentTemplateRequest struct {
 	QuantityField string `json:"quantityField"`
 	Direction     string `json:"direction"`
 	Reason        string `json:"reason"`
+}
+
+// defineDeliveryTemplateRequest/defineCustomerTemplateRequest are
+// DeliveryTemplate/CustomerTemplate's (spec.go) JSON wire shape on the
+// request side - mirror deliveryTemplateResponse/customerTemplateResponse's
+// shape (this file's response side), the same "separate request/response
+// struct pair" convention every other template in this file already uses.
+type defineDeliveryTemplateRequest struct {
+	DestinationAddressField string `json:"destinationAddressField"`
+	OriginAddressField      string `json:"originAddressField"`
+	CarrierField            string `json:"carrierField"`
+	TrackingNumberField     string `json:"trackingNumberField"`
+	ReferenceField          string `json:"referenceField"`
+}
+
+type defineCustomerTemplateRequest struct {
+	NameField    string `json:"nameField"`
+	EmailField   string `json:"emailField"`
+	PhoneField   string `json:"phoneField"`
+	AddressField string `json:"addressField"`
 }
 
 // defineFieldRequest is FieldSpec's (spec.go) JSON wire shape for the
@@ -612,6 +701,8 @@ func handleDefineWorkflow(pool *pgxpool.Pool) http.HandlerFunc {
 				},
 				Journal:         toJournalTemplateSpec(t.Journal),
 				StockAdjustment: toStockAdjustmentTemplateSpec(t.StockAdjustment),
+				Delivery:        toDeliveryTemplateSpec(t.Delivery),
+				Customer:        toCustomerTemplateSpec(t.Customer),
 			})
 		}
 		if len(req.Fields) > 0 {

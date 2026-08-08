@@ -379,6 +379,95 @@ echo "$CONVERT_RESPONSE" | python3 -c "import sys, json; d = json.load(sys.stdin
     || fail "expected the lead's state to be customer after convert: $CONVERT_RESPONSE"
 log "lead converted: instance $LEAD_ID is now a customer"
 
+# --- Logistics + customer-facing data: the CustomerTemplate on
+# --- customer_pipeline's own "convert" transition (there is no
+# --- "qualify_to_customer" transition in the real spec - the qualified ->
+# --- customer transition has always been named "convert") should have
+# --- auto-created a real customers row from the lead's own payload
+# --- (name="E2E Smoke Lead", carried on the merged instance payload since
+# --- creation). Then a fresh stock_to_sale sale referencing that customer
+# --- via customer_id proves the workflow -> ledger bridge's description
+# --- interpolation picks up the customer's name, and a delivery address on
+# --- the same sale proves the DeliveryTemplate side of the same
+# --- transition fires in the same transaction. -------------------------
+
+log "customers: confirming the convert transition auto-created a real customer record"
+CUSTOMERS_RESPONSE=$(auth "$BACKEND_URL/api/firms/$FIRM_ID/customers")
+CUSTOMER_ID=$(echo "$CUSTOMERS_RESPONSE" | python3 -c "
+import sys, json
+customers = json.load(sys.stdin)
+matches = [c for c in customers if c.get('sourceWorkflowInstance') == '$LEAD_ID']
+assert len(matches) == 1, customers
+assert matches[0]['name'] == 'E2E Smoke Lead', matches[0]
+print(matches[0]['id'])
+")
+[ -n "$CUSTOMER_ID" ] || fail "expected a customer auto-created from the converted lead: $CUSTOMERS_RESPONSE"
+log "customer auto-created: $CUSTOMER_ID (source_workflow_instance=$LEAD_ID)"
+
+log "customers (UI path): confirming /customers renders the new customer"
+CUSTOMERS_PAGE_HTML=$(curl -sS -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$FIRM_ID" "$FRONTEND_URL/en/customers")
+echo "$CUSTOMERS_PAGE_HTML" | grep -q "E2E Smoke Lead" \
+    || fail "expected /customers to render the converted lead's name (E2E Smoke Lead)"
+log "customers (UI path) confirmed"
+
+log "logistics: creating a second stock_to_sale instance referencing the new customer, with a delivery address"
+CUSTOMER_SALE_INSTANCE=$(auth -X POST "$BACKEND_URL/api/firms/$FIRM_ID/workflow-definitions/$DEFINITION_ID/instances" \
+    -H "Content-Type: application/json" \
+    -d "{\"payload\":{\"item\":\"E2E Customer Widget\",\"quantity\":1,\"customer_id\":\"$CUSTOMER_ID\",\"destination_address\":\"789 Delivery Ln\",\"carrier\":\"E2E Carrier\"}}")
+CUSTOMER_SALE_INSTANCE_ID=$(echo "$CUSTOMER_SALE_INSTANCE" | python3 -c "import sys, json; print(json.load(sys.stdin)['instanceId'])")
+[ -n "$CUSTOMER_SALE_INSTANCE_ID" ] || fail "did not get an instanceId back from the customer-linked sale instance: $CUSTOMER_SALE_INSTANCE"
+log "instance created: $CUSTOMER_SALE_INSTANCE_ID"
+
+log "logistics + CRM: executing record_sale (customer_id + destination_address present)"
+CUSTOMER_SALE_RESPONSE=$(auth -X POST "$BACKEND_URL/api/firms/$FIRM_ID/workflow-instances/$CUSTOMER_SALE_INSTANCE_ID/transitions/record_sale" \
+    -H "Content-Type: application/json" -d '{"payload":{"unit_price":9.50}}')
+echo "$CUSTOMER_SALE_RESPONSE" | python3 -c "import sys, json; d = json.load(sys.stdin); assert d['state']['key'] == 'sold', d" \
+    || fail "expected the instance's state to be sold after record_sale: $CUSTOMER_SALE_RESPONSE"
+log "sale recorded: instance $CUSTOMER_SALE_INSTANCE_ID is now sold"
+
+log "financial management core: confirming the journal entry's description includes the customer's name"
+CUSTOMER_SALE_JOURNAL=$(auth "$BACKEND_URL/api/firms/$FIRM_ID/journal-entries")
+echo "$CUSTOMER_SALE_JOURNAL" | python3 -c "
+import sys, json
+entries = json.load(sys.stdin)
+matches = [e for e in entries if e.get('sourceType') == 'workflow_instance' and e.get('sourceId') == '$CUSTOMER_SALE_INSTANCE_ID']
+assert len(matches) == 1, entries
+entry = matches[0]
+assert entry['description'] == 'Sale of E2E Customer Widget (customer: E2E Smoke Lead)', entry
+" || fail "expected the journal entry's description to name the customer: $CUSTOMER_SALE_JOURNAL"
+log "journal entry description confirmed to include the customer's name"
+
+log "logistics: confirming the DeliveryTemplate on the same transition auto-created a delivery"
+DELIVERIES_RESPONSE=$(auth "$BACKEND_URL/api/firms/$FIRM_ID/deliveries")
+echo "$DELIVERIES_RESPONSE" | python3 -c "
+import sys, json
+deliveries = json.load(sys.stdin)
+matches = [d for d in deliveries if d.get('sourceId') == '$CUSTOMER_SALE_INSTANCE_ID']
+assert len(matches) == 1, deliveries
+d = matches[0]
+assert d['destinationAddress'] == '789 Delivery Ln', d
+assert d['carrier'] == 'E2E Carrier', d
+assert d['status'] == 'pending', d
+assert d['sourceType'] == 'workflow_instance', d
+" || fail "expected a delivery auto-created for the customer-linked sale: $DELIVERIES_RESPONSE"
+log "delivery auto-created from the same transition, confirmed"
+
+log "logistics (UI path): confirming /logistics renders the new delivery"
+LOGISTICS_PAGE_HTML=$(curl -sS -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$FIRM_ID" "$FRONTEND_URL/en/logistics")
+echo "$LOGISTICS_PAGE_HTML" | grep -q "789 Delivery Ln" \
+    || fail "expected /logistics to render the new delivery's destination address (789 Delivery Ln)"
+log "logistics (UI path) confirmed"
+
+log "reports: confirming activeCustomers and pendingDeliveries KPIs reflect the new records"
+CRM_LOGISTICS_KPIS=$(auth "$BACKEND_URL/api/firms/$FIRM_ID/reports/kpis")
+echo "$CRM_LOGISTICS_KPIS" | python3 -c "
+import sys, json
+kpis = {k['key']: k for k in json.load(sys.stdin)}
+assert int(kpis['activeCustomers']['value']) >= 1, kpis['activeCustomers']
+assert int(kpis['pendingDeliveries']['value']) >= 1, kpis['pendingDeliveries']
+" || fail "expected activeCustomers>=1 and pendingDeliveries>=1: $CRM_LOGISTICS_KPIS"
+log "reports: CRM/logistics KPIs confirmed"
+
 log "dashboard overview (backend path): confirming GET .../workflow-instance-counts reports both workflows correctly"
 COUNTS_RESPONSE=$(auth "$BACKEND_URL/api/firms/$FIRM_ID/workflow-instance-counts")
 echo "$COUNTS_RESPONSE" | python3 -c "
@@ -954,4 +1043,4 @@ trap - EXIT
 log "session refresh: realm's accessTokenLifespan restored to its original (unset/default) value"
 
 echo ""
-echo "E2E SMOKE TEST PASSED: login + wizard -> firm creation -> add stock -> sell, plus UI-path add stock, firm switch, audit log view, a real second workflow defined + rendered through the generic UI, the Customer Pipeline default workflow walked lead -> qualified -> customer, the dashboard's counts-by-state overview, quick-create, global search, a full self-registration -> invite -> accept flow bringing a second real user into the firm with no email infrastructure, a purchase order walked draft -> sent -> received posting the correct ledger entry only on receive, (new) HR core (person + contract creation), a task assigned to that person confirmed via /tasks' cross-module join and the /reports KPI dashboard, (new) Inventory management - a product created, stock topped up via the purchase_order 'purchase_receive' hook, an insufficient-stock sale rejected then a real sale decreasing stock and appending a movement row, confirmed via /inventory and /suppliers and the inventory KPI dashboard - and a genuine session-refresh proof - a real Keycloak access token actually expires, gets silently refreshed by src/proxy.ts with no re-login prompt, and the terminal (invalid refresh token) case cleanly falls through to a real login redirect - all against a real stack"
+echo "E2E SMOKE TEST PASSED: login + wizard -> firm creation -> add stock -> sell, plus UI-path add stock, firm switch, audit log view, a real second workflow defined + rendered through the generic UI, the Customer Pipeline default workflow walked lead -> qualified -> customer, (new) the convert transition's CustomerTemplate auto-creating a real customer record confirmed via /customers, a customer-linked sale whose DeliveryTemplate auto-created a delivery confirmed via /logistics and whose journal entry description names the customer, the activeCustomers/pendingDeliveries KPIs, the dashboard's counts-by-state overview, quick-create, global search, a full self-registration -> invite -> accept flow bringing a second real user into the firm with no email infrastructure, a purchase order walked draft -> sent -> received posting the correct ledger entry only on receive, (new) HR core (person + contract creation), a task assigned to that person confirmed via /tasks' cross-module join and the /reports KPI dashboard, (new) Inventory management - a product created, stock topped up via the purchase_order 'purchase_receive' hook, an insufficient-stock sale rejected then a real sale decreasing stock and appending a movement row, confirmed via /inventory and /suppliers and the inventory KPI dashboard - and a genuine session-refresh proof - a real Keycloak access token actually expires, gets silently refreshed by src/proxy.ts with no re-login prompt, and the terminal (invalid refresh token) case cleanly falls through to a real login redirect - all against a real stack"

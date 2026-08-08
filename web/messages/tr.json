@@ -24,6 +24,8 @@
     "hr": "Personel",
     "inventory": "Envanter",
     "suppliers": "Tedarikçiler",
+    "logistics": "Lojistik",
+    "customers": "Müşteriler",
     "tasks": "Görevler",
     "reports": "Raporlar",
     "logout": "Çıkış yap",
@@ -461,7 +463,9 @@
       "openTasks": "Açık görevler",
       "activePeople": "Aktif kişiler",
       "lowStockProducts": "Düşük stoklu ürünler",
-      "totalInventoryValue": "Toplam envanter değeri"
+      "totalInventoryValue": "Toplam envanter değeri",
+      "pendingDeliveries": "Bekleyen teslimatlar",
+      "activeCustomers": "Aktif müşteriler"
     }
   },
   "Financials": {
@@ -618,5 +622,48 @@
     "statusInactive": "Pasif",
     "activate": "Aktifleştir",
     "deactivate": "Pasifleştir"
+  },
+  "Logistics": {
+    "title": "Lojistik",
+    "loadError": "Bu veri yüklenemedi. Lütfen tekrar deneyin.",
+    "empty": "Henüz teslimat yok.",
+    "deliveriesTitle": "Teslimatlar",
+    "newDelivery": "+ Yeni teslimat",
+    "cancel": "Vazgeç",
+    "create": "Oluştur",
+    "createDestinationRequired": "Lütfen bir teslimat adresi girin.",
+    "createError": "Bu teslimat oluşturulamadı. Lütfen tekrar deneyin.",
+    "reference": "Referans",
+    "originAddress": "Çıkış adresi",
+    "destinationAddress": "Teslimat adresi",
+    "carrier": "Kargo firması",
+    "trackingNumber": "Takip numarası",
+    "filterStatus": "Durum",
+    "filterAll": "Tümü",
+    "applyButton": "Uygula",
+    "status": {
+      "label": "Durum",
+      "pending": "Bekliyor",
+      "in_transit": "Yolda",
+      "delivered": "Teslim edildi",
+      "returned": "İade edildi",
+      "cancelled": "İptal edildi"
+    }
+  },
+  "Customers": {
+    "title": "Müşteriler",
+    "loadError": "Bu veri yüklenemedi. Lütfen tekrar deneyin.",
+    "empty": "Bu firma için henüz müşteri eklenmedi.",
+    "customersTitle": "Müşteriler",
+    "newCustomer": "+ Yeni müşteri",
+    "cancel": "Vazgeç",
+    "create": "Oluştur",
+    "createNameRequired": "Lütfen bir ad girin.",
+    "createError": "Bu müşteri oluşturulamadı. Lütfen tekrar deneyin.",
+    "name": "Ad",
+    "email": "E-posta",
+    "phone": "Telefon",
+    "address": "Adres",
+    "fromPipeline": "Müşteri Hattından"
   }
 }

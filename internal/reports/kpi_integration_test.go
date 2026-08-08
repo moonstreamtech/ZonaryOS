@@ -48,7 +48,8 @@ func setupTest(t *testing.T) (adminPool, appPool *pgxpool.Pool) {
 		TRUNCATE firms, users, roles, role_permissions, user_firm_roles,
 			accounts, journal_entries, journal_lines,
 			workflow_definitions, workflow_states, workflow_transitions, workflow_instances,
-			people, contracts, products, stock_levels, stock_movements, suppliers, audit_log, permissions CASCADE
+			people, contracts, products, stock_levels, stock_movements, suppliers,
+			deliveries, customers, audit_log, permissions CASCADE
 	`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
@@ -261,6 +262,76 @@ func TestGetDashboardKPIs_InventoryMetrics(t *testing.T) {
 	}
 }
 
+// TestGetDashboardKPIs_LogisticsCRMMetrics confirms the Logistics/CRM
+// batch's two new descriptors: pendingDeliveries (KPIKindInventoryKPI,
+// this batch's own operational-metric classification - see
+// InventoryMetricPendingDeliveries' own doc comment, kpi.go) counts only
+// 'pending'/'in_transit' deliveries, not 'delivered'/'returned'/'cancelled'
+// ones; activeCustomers (the new KPIKindCRM) counts only customers with a
+// non-null source_workflow_instance, not manually-created ones.
+func TestGetDashboardKPIs_LogisticsCRMMetrics(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	firmID, userID, roleID := seedOwner(ctx, t, adminPool, appPool, "Firm Logistics CRM KPI", "kpi-logistics-crm-owner")
+
+	if _, err := adminPool.Exec(ctx, `
+		INSERT INTO deliveries (firm_id, destination_address, status) VALUES
+			($1, 'Addr 1', 'pending'),
+			($1, 'Addr 2', 'in_transit'),
+			($1, 'Addr 3', 'delivered'),
+			($1, 'Addr 4', 'cancelled')
+	`, firmID); err != nil {
+		t.Fatalf("seed deliveries: %v", err)
+	}
+
+	// A manually-created customer (source_workflow_instance NULL) must
+	// NOT count toward activeCustomers.
+	if _, err := adminPool.Exec(ctx, `INSERT INTO customers (firm_id, name) VALUES ($1, 'Manual Customer')`, firmID); err != nil {
+		t.Fatalf("seed manual customer: %v", err)
+	}
+
+	// A pipeline-converted customer needs a real workflow_instances row to
+	// reference (source_workflow_instance is a real FK). Seeded via
+	// SeedCustomerPipelineWorkflowTx (not the pool-based
+	// SeedCustomerPipelineWorkflow) so the owner role actually gets
+	// customer_pipeline's permissions granted (the self-action
+	// auto-grant) - CreateInstance below needs that grant to succeed as
+	// this test's owner user, the same reasoning
+	// TestGetDashboardKPIs_AggregatesAcrossModules' own task_approval
+	// seeding gives.
+	var leadDefinitionID uuid.UUID
+	err := zdb.WithFirmContext(ctx, appPool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		id, err := workflow.SeedCustomerPipelineWorkflowTx(ctx, tx, firmID, roleID)
+		leadDefinitionID = id
+		return err
+	})
+	if err != nil {
+		t.Fatalf("seed customer_pipeline: %v", err)
+	}
+	instanceID, err := workflow.CreateInstance(ctx, appPool, firmID, userID, leadDefinitionID, map[string]any{"name": "Pipeline Customer"})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	if _, err := adminPool.Exec(ctx, `
+		INSERT INTO customers (firm_id, name, source_workflow_instance) VALUES ($1, 'Pipeline Customer', $2)
+	`, firmID, instanceID); err != nil {
+		t.Fatalf("seed pipeline customer: %v", err)
+	}
+
+	results, err := reports.GetDashboardKPIs(ctx, appPool, firmID, userID)
+	if err != nil {
+		t.Fatalf("GetDashboardKPIs: %v", err)
+	}
+
+	if v := kpiValue(t, results, "pendingDeliveries"); v != "2" {
+		t.Errorf("expected pendingDeliveries 2 (pending + in_transit only), got %q", v)
+	}
+	if v := kpiValue(t, results, "activeCustomers"); v != "1" {
+		t.Errorf("expected activeCustomers 1 (the pipeline-converted one only), got %q", v)
+	}
+}
+
 // TestGetDashboardKPIs_EmptyFirmReadsZeros confirms a brand-new firm with
 // no accounts/workflows/people yet reads back real zeros, not errors -
 // see GetDashboardKPIs' own doc comment for why that's the correct
@@ -275,8 +346,8 @@ func TestGetDashboardKPIs_EmptyFirmReadsZeros(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetDashboardKPIs: %v", err)
 	}
-	if len(results) != 8 {
-		t.Fatalf("expected 8 KPI results, got %d: %+v", len(results), results)
+	if len(results) != 10 {
+		t.Fatalf("expected 10 KPI results, got %d: %+v", len(results), results)
 	}
 	for _, r := range results {
 		// A plain "0" or a zero-valued decimal string ("0.0000") both mean
