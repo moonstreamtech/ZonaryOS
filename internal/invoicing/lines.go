@@ -90,16 +90,16 @@ func AddInvoiceLine(ctx context.Context, pool *pgxpool.Pool, firmID, userID, inv
 			return err
 		}
 
-		taxRate := strings.TrimSpace(input.TaxRate)
-		if taxRate == "" {
-			taxRate = "0"
+		taxRate, taxRateID, err := resolveLineTaxRate(ctx, tx, firmID, input)
+		if err != nil {
+			return err
 		}
 		var lineID uuid.UUID
 		if err := tx.QueryRow(ctx, `
-			INSERT INTO invoice_lines (invoice_id, description, quantity, unit_price, tax_rate, line_total, product_id)
-			VALUES ($1, $2, $3::numeric, $4::numeric, $5::numeric, ($3::numeric * $4::numeric), $6)
+			INSERT INTO invoice_lines (invoice_id, description, quantity, unit_price, tax_rate, tax_rate_id, line_total, product_id)
+			VALUES ($1, $2, $3::numeric, $4::numeric, $5::numeric, $6, ($3::numeric * $4::numeric), $7)
 			RETURNING id
-		`, invoiceID, strings.TrimSpace(input.Description), input.Quantity, input.UnitPrice, taxRate, input.ProductID).Scan(&lineID); err != nil {
+		`, invoiceID, strings.TrimSpace(input.Description), input.Quantity, input.UnitPrice, taxRate, taxRateID, input.ProductID).Scan(&lineID); err != nil {
 			return fmt.Errorf("insert invoice line: %w", err)
 		}
 
@@ -107,7 +107,6 @@ func AddInvoiceLine(ctx context.Context, pool *pgxpool.Pool, firmID, userID, inv
 			return err
 		}
 
-		var err error
 		inv, err = fetchInvoiceForResponseTx(ctx, tx, firmID, invoiceID)
 		if err != nil {
 			return err
@@ -144,16 +143,16 @@ func UpdateInvoiceLine(ctx context.Context, pool *pgxpool.Pool, firmID, userID, 
 			return err
 		}
 
-		taxRate := strings.TrimSpace(input.TaxRate)
-		if taxRate == "" {
-			taxRate = "0"
+		taxRate, taxRateID, err := resolveLineTaxRate(ctx, tx, firmID, input)
+		if err != nil {
+			return err
 		}
 		tag, err := tx.Exec(ctx, `
 			UPDATE invoice_lines SET
 				description = $1, quantity = $2::numeric, unit_price = $3::numeric,
-				tax_rate = $4::numeric, line_total = ($2::numeric * $3::numeric), product_id = $5
-			WHERE id = $6 AND invoice_id = $7
-		`, strings.TrimSpace(input.Description), input.Quantity, input.UnitPrice, taxRate, input.ProductID, lineID, invoiceID)
+				tax_rate = $4::numeric, tax_rate_id = $5, line_total = ($2::numeric * $3::numeric), product_id = $6
+			WHERE id = $7 AND invoice_id = $8
+		`, strings.TrimSpace(input.Description), input.Quantity, input.UnitPrice, taxRate, taxRateID, input.ProductID, lineID, invoiceID)
 		if err != nil {
 			return fmt.Errorf("update invoice line: %w", err)
 		}

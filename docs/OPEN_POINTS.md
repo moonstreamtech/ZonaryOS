@@ -40,6 +40,7 @@ Rule 1: No item in this file moves to the main document (`docs/VISION.md`) until
 
 * UI text multi-language support (i18n) is finalized (see Vision §4) — this item now only concerns fiscal/legal compliance: each country's tax system and e-invoice/e-ledger standards differ. How will a single global core handle this — will there be country-specific "compliance plug-ins"?
 * No country restriction in scope was finalized (see Vision §1) — this means localization needs to be built into the architecture from the start (as a plug-in/module), but the concrete approach hasn't been determined yet.
+* **Update: a later batch shipped a foundation-only data model, not a resolution.** `internal/localization` (see `docs/DEVELOPMENT.md`'s "Address and tax framework" section) added a firm-scoped address book and a firm-scoped named-tax-rate list with plain CRUD, plus an optional override wiring one named rate onto an invoice line. This is explicitly bounded: no VAT/GST calculation logic, no e-invoice/e-ledger standard support, no country-specific compliance plug-in mechanism, no fiscal reporting. Both open questions above remain fully open.
 
 25. Backup Frequency / SLA Target (partially finalized)
 

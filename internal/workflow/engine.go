@@ -25,7 +25,6 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/accounting"
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
 	"github.com/moonstreamtech/ZonaryOS/internal/crm"
-	"github.com/moonstreamtech/ZonaryOS/internal/hr"
 	"github.com/moonstreamtech/ZonaryOS/internal/inventory"
 	"github.com/moonstreamtech/ZonaryOS/internal/invoicing"
 	"github.com/moonstreamtech/ZonaryOS/internal/logistics"
@@ -154,394 +153,6 @@ func unmarshalPayloadSchema(data []byte) ([]FieldSpec, error) {
 		})
 	}
 	return fields, nil
-}
-
-// validatePayload checks payload against fields - CreateInstance's server
-// side of Open Points item 35 (extended by item 38): every required field
-// present, and a best-effort type check of whatever fields are present (a
-// JSON body decodes numbers as float64, so this accepts any Go numeric
-// kind for FieldTypeNumber, not just float64, so direct Go-side callers
-// like this package's own tests aren't forced to write float64(...)
-// everywhere). A nil/empty fields (the overwhelmingly common case today -
-// every DefinitionSpec that predates item 35) is a no-op: this function
-// isn't even called in that case, see CreateInstance below, but it also
-// tolerates being called with nil for that reason.
-//
-// Takes ctx/tx/firmID (item 38's addition over item 35's original
-// signature) because FieldTypeReference's check is a real database query,
-// not a pure in-memory check like the other six types - see
-// checkReferenceField. tx/ctx are CreateInstance's own already-open
-// transaction, not a new one - this function never opens its own
-// connection or transaction.
-//
-// ciaudit:ignore-firmid-check: internal helper called only by
-// CreateInstance, which has already run permission.IsMember/Has before
-// reaching this call - firmID is only threaded through to
-// checkReferenceField (see its own doc comment/suppression) to scope its
-// query, not to make an authorization decision of its own.
-func validatePayload(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, fields []FieldSpec, payload map[string]any) error {
-	for _, f := range fields {
-		v, present := payload[f.Name]
-		if !present || v == nil {
-			if f.Required {
-				return fmt.Errorf("%w: missing required field %q", ErrPayloadValidation, f.Name)
-			}
-			continue
-		}
-		if f.Type == FieldTypeReference {
-			if err := checkReferenceField(ctx, tx, firmID, f, v); err != nil {
-				return err
-			}
-			continue
-		}
-		if f.Type == FieldTypePerson {
-			if err := checkPersonField(ctx, tx, firmID, f, v); err != nil {
-				return err
-			}
-			continue
-		}
-		if f.Type == FieldTypeProduct {
-			if err := checkProductField(ctx, tx, firmID, f, v); err != nil {
-				return err
-			}
-			continue
-		}
-		if f.Type == FieldTypeSupplier {
-			if err := checkSupplierField(ctx, tx, firmID, f, v); err != nil {
-				return err
-			}
-			continue
-		}
-		if f.Type == FieldTypeDelivery {
-			if err := checkDeliveryField(ctx, tx, firmID, f, v); err != nil {
-				return err
-			}
-			continue
-		}
-		if f.Type == FieldTypeCustomer {
-			if err := checkCustomerField(ctx, tx, firmID, f, v); err != nil {
-				return err
-			}
-			continue
-		}
-		if err := checkFieldType(f, v); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// checkScalarValue is the type check shared by a plain scalar field
-// (FieldTypeString/Number/Boolean/Date) and, per-element, a
-// FieldTypeArray field's ArrayItemType - pulled out on its own so the two
-// call sites (checkFieldType's own scalar arms and its array arm below)
-// share one implementation instead of the array arm duplicating this
-// switch. fieldName is only used for error messages.
-func checkScalarValue(fieldName string, ft FieldType, v any) error {
-	switch ft {
-	case FieldTypeString:
-		if _, ok := v.(string); !ok {
-			return fmt.Errorf("%w: field %q must be a string", ErrPayloadValidation, fieldName)
-		}
-	case FieldTypeNumber:
-		switch v.(type) {
-		case float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
-			// valid
-		default:
-			return fmt.Errorf("%w: field %q must be a number", ErrPayloadValidation, fieldName)
-		}
-	case FieldTypeBoolean:
-		if _, ok := v.(bool); !ok {
-			return fmt.Errorf("%w: field %q must be a boolean", ErrPayloadValidation, fieldName)
-		}
-	case FieldTypeDate:
-		s, ok := v.(string)
-		if !ok {
-			return fmt.Errorf("%w: field %q must be a date string (YYYY-MM-DD)", ErrPayloadValidation, fieldName)
-		}
-		if _, err := time.Parse(payloadDateLayout, s); err != nil {
-			return fmt.Errorf("%w: field %q must be a valid date (YYYY-MM-DD)", ErrPayloadValidation, fieldName)
-		}
-	default:
-		// Unreachable for any spec that passed DefinitionSpec.Validate,
-		// which restricts an array field's ArrayItemType to these four
-		// values before it can ever be persisted (spec.go's
-		// validateFieldShape) - defensive only.
-		return fmt.Errorf("%w: field %q has unsupported scalar type %q", ErrPayloadValidation, fieldName, ft)
-	}
-	return nil
-}
-
-// checkFieldType is validatePayload's single-field type check for every
-// FieldType except FieldTypeReference (handled separately by
-// checkReferenceField, since it needs a database round trip this
-// function's pure signature doesn't have).
-func checkFieldType(f FieldSpec, v any) error {
-	switch f.Type {
-	case FieldTypeString, FieldTypeNumber, FieldTypeBoolean, FieldTypeDate:
-		return checkScalarValue(f.Name, f.Type, v)
-
-	case FieldTypeEnum:
-		s, ok := v.(string)
-		if !ok {
-			return fmt.Errorf("%w: field %q must be a string", ErrPayloadValidation, f.Name)
-		}
-		for _, opt := range f.Options {
-			if s == opt {
-				return nil
-			}
-		}
-		return fmt.Errorf("%w: field %q must be one of %v, got %q", ErrPayloadValidation, f.Name, f.Options, s)
-
-	case FieldTypeArray:
-		arr, ok := v.([]any)
-		if !ok {
-			return fmt.Errorf("%w: field %q must be an array", ErrPayloadValidation, f.Name)
-		}
-		itemType := FieldType(f.ArrayItemType)
-		for i, elem := range arr {
-			if err := checkScalarValue(f.Name, itemType, elem); err != nil {
-				return fmt.Errorf("%w: field %q index %d is invalid: %s", ErrPayloadValidation, f.Name, i, err)
-			}
-		}
-		return nil
-
-	default:
-		// Unreachable for any spec that passed DefinitionSpec.Validate,
-		// which rejects an unknown FieldType before it can ever be
-		// persisted - defensive only.
-		return fmt.Errorf("%w: field %q has unknown type %q", ErrPayloadValidation, f.Name, f.Type)
-	}
-}
-
-// checkReferenceField validates a FieldTypeReference field's value: it
-// must be a string that parses as a UUID, and that UUID must be an
-// existing workflow_instances row, in THIS firm (firmID), belonging to
-// the definition named by f.ReferenceDefinitionKey - not just any
-// instance ID that happens to exist somewhere in the database. Runs
-// inside CreateInstance's own already-open transaction (tx/ctx are passed
-// in, never a new connection or transaction opened here) so this check
-// and the INSERT it's gating are atomic with each other.
-//
-// Race-condition reasoning (this batch's most architecturally significant
-// decision - see also the same reasoning in this batch's final report):
-// as of this batch, there is no delete path anywhere in this codebase for
-// workflow_instances (grepped: no `DELETE FROM workflow_instances`, no
-// DeleteInstance function) - so the literal "the referenced instance gets
-// deleted between this check and the INSERT below" race is not reachable
-// today. This function is still written defensively for if that ever
-// changes: `FOR SHARE OF wi` below takes a shared row lock on the
-// referenced workflow_instances row for the rest of THIS transaction. A
-// future DELETE (which needs its own row lock to remove the row) would
-// block until this transaction commits or rolls back, rather than being
-// able to remove the row out from under a reference that was just
-// validated against it. This is a single query-level lock modifier, not
-// bespoke distributed-locking machinery - deliberately proportionate to a
-// threat that doesn't exist yet, not built out further than that.
-//
-// firmID is included explicitly in the WHERE clause even though this
-// transaction's RLS session variable (app.current_firm_id, set by
-// WithFirmContext - see zdb.WithFirmContext) already confines every query
-// on this connection to firmID's own rows: RLS is the actual enforcement
-// mechanism (Never-Violate Rule 3), but stating the same constraint
-// explicitly here keeps this specific isolation property (a reference
-// can't cross firm boundaries) legible by reading this one query, not
-// only by trusting the connection-level session state is correctly set -
-// the same "defense in depth, not defense instead of" reasoning this
-// package's own doc comments use elsewhere for IsMember checks alongside
-// RLS.
-//
-// ciaudit:ignore-firmid-check: internal helper called only by
-// validatePayload, itself only called by CreateInstance after
-// permission.IsMember/Has have already run in the same transaction -
-// firmID here scopes a read query (defense in depth alongside RLS, see
-// this doc comment above), it is not itself an authorization decision.
-func checkReferenceField(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, f FieldSpec, v any) error {
-	s, ok := v.(string)
-	if !ok {
-		return fmt.Errorf("%w: field %q must be a string instance ID", ErrPayloadValidation, f.Name)
-	}
-	refID, err := uuid.Parse(s)
-	if err != nil {
-		return fmt.Errorf("%w: field %q must be a valid instance ID (UUID)", ErrPayloadValidation, f.Name)
-	}
-
-	var lockedID uuid.UUID
-	err = tx.QueryRow(ctx, `
-		SELECT wi.id
-		FROM workflow_instances wi
-		JOIN workflow_definitions wd ON wd.id = wi.workflow_definition_id
-		WHERE wi.id = $1 AND wi.firm_id = $2 AND wd.key = $3
-		FOR SHARE OF wi
-	`, refID, firmID, f.ReferenceDefinitionKey).Scan(&lockedID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("%w: field %q references a nonexistent %q instance in this firm", ErrPayloadValidation, f.Name, f.ReferenceDefinitionKey)
-	}
-	if err != nil {
-		return fmt.Errorf("check reference field %q: %w", f.Name, err)
-	}
-	return nil
-}
-
-// checkPersonField validates a FieldTypePerson field's value: it must be
-// a string that parses as a UUID, and that UUID must name a real people
-// row in THIS firm - the HR core batch's cross-module analog of
-// checkReferenceField above (a workflow instance referencing a `people`
-// row instead of another workflow instance). Runs inside CreateInstance's
-// own already-open transaction, same reasoning as checkReferenceField -
-// this check and the INSERT it's gating are atomic with each other. No
-// row-locking equivalent to checkReferenceField's `FOR SHARE OF wi`: this
-// batch has no delete path for `people` either (mirroring
-// checkReferenceField's own reasoning for workflow_instances), so the
-// same "delete the referenced row out from under a just-validated
-// reference" race isn't reachable today.
-//
-// ciaudit:ignore-firmid-check: internal helper called only by
-// validatePayload, itself only called by CreateInstance after
-// permission.IsMember/Has have already run in the same transaction -
-// firmID here scopes a read query (defense in depth alongside RLS, see
-// checkReferenceField's identical reasoning above), it is not itself an
-// authorization decision.
-func checkPersonField(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, f FieldSpec, v any) error {
-	s, ok := v.(string)
-	if !ok {
-		return fmt.Errorf("%w: field %q must be a string person ID", ErrPayloadValidation, f.Name)
-	}
-	personID, err := uuid.Parse(s)
-	if err != nil {
-		return fmt.Errorf("%w: field %q must be a valid person ID (UUID)", ErrPayloadValidation, f.Name)
-	}
-
-	exists, err := hr.PersonExistsTx(ctx, tx, firmID, personID)
-	if err != nil {
-		return fmt.Errorf("check person field %q: %w", f.Name, err)
-	}
-	if !exists {
-		return fmt.Errorf("%w: field %q references a nonexistent person in this firm", ErrPayloadValidation, f.Name)
-	}
-	return nil
-}
-
-// checkProductField validates a FieldTypeProduct field's value: it must be
-// a string that parses as a UUID, and that UUID must name a real products
-// row in THIS firm - the Inventory management batch's counterpart to
-// checkPersonField above (a workflow instance referencing a `products` row
-// instead of a `people` row). Same reasoning throughout: runs inside
-// CreateInstance's own already-open transaction, no row-locking equivalent
-// to checkReferenceField's `FOR SHARE OF wi` since there's no delete path
-// for `products` either.
-//
-// ciaudit:ignore-firmid-check: internal helper called only by
-// validatePayload, itself only called by CreateInstance after
-// permission.IsMember/Has have already run in the same transaction -
-// firmID here scopes a read query (defense in depth alongside RLS, see
-// checkReferenceField's identical reasoning above), it is not itself an
-// authorization decision.
-func checkProductField(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, f FieldSpec, v any) error {
-	s, ok := v.(string)
-	if !ok {
-		return fmt.Errorf("%w: field %q must be a string product ID", ErrPayloadValidation, f.Name)
-	}
-	productID, err := uuid.Parse(s)
-	if err != nil {
-		return fmt.Errorf("%w: field %q must be a valid product ID (UUID)", ErrPayloadValidation, f.Name)
-	}
-
-	exists, err := inventory.ProductExistsTx(ctx, tx, firmID, productID)
-	if err != nil {
-		return fmt.Errorf("check product field %q: %w", f.Name, err)
-	}
-	if !exists {
-		return fmt.Errorf("%w: field %q references a nonexistent product in this firm", ErrPayloadValidation, f.Name)
-	}
-	return nil
-}
-
-// checkSupplierField validates a FieldTypeSupplier field's value - same
-// shape as checkProductField, against `suppliers` instead of `products`.
-//
-// ciaudit:ignore-firmid-check: internal helper called only by
-// validatePayload, itself only called by CreateInstance after
-// permission.IsMember/Has have already run in the same transaction -
-// firmID here scopes a read query (defense in depth alongside RLS, see
-// checkReferenceField's identical reasoning above), it is not itself an
-// authorization decision.
-func checkSupplierField(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, f FieldSpec, v any) error {
-	s, ok := v.(string)
-	if !ok {
-		return fmt.Errorf("%w: field %q must be a string supplier ID", ErrPayloadValidation, f.Name)
-	}
-	supplierID, err := uuid.Parse(s)
-	if err != nil {
-		return fmt.Errorf("%w: field %q must be a valid supplier ID (UUID)", ErrPayloadValidation, f.Name)
-	}
-
-	exists, err := inventory.SupplierExistsTx(ctx, tx, firmID, supplierID)
-	if err != nil {
-		return fmt.Errorf("check supplier field %q: %w", f.Name, err)
-	}
-	if !exists {
-		return fmt.Errorf("%w: field %q references a nonexistent supplier in this firm", ErrPayloadValidation, f.Name)
-	}
-	return nil
-}
-
-// checkDeliveryField validates a FieldTypeDelivery field's value - same
-// shape as checkProductField, against `deliveries` instead of `products`.
-//
-// ciaudit:ignore-firmid-check: internal helper called only by
-// validatePayload, itself only called by CreateInstance after
-// permission.IsMember/Has have already run in the same transaction -
-// firmID here scopes a read query (defense in depth alongside RLS, see
-// checkReferenceField's identical reasoning above), it is not itself an
-// authorization decision.
-func checkDeliveryField(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, f FieldSpec, v any) error {
-	s, ok := v.(string)
-	if !ok {
-		return fmt.Errorf("%w: field %q must be a string delivery ID", ErrPayloadValidation, f.Name)
-	}
-	deliveryID, err := uuid.Parse(s)
-	if err != nil {
-		return fmt.Errorf("%w: field %q must be a valid delivery ID (UUID)", ErrPayloadValidation, f.Name)
-	}
-
-	exists, err := logistics.DeliveryExistsTx(ctx, tx, firmID, deliveryID)
-	if err != nil {
-		return fmt.Errorf("check delivery field %q: %w", f.Name, err)
-	}
-	if !exists {
-		return fmt.Errorf("%w: field %q references a nonexistent delivery in this firm", ErrPayloadValidation, f.Name)
-	}
-	return nil
-}
-
-// checkCustomerField validates a FieldTypeCustomer field's value - same
-// shape as checkProductField, against `customers` instead of `products`.
-//
-// ciaudit:ignore-firmid-check: internal helper called only by
-// validatePayload, itself only called by CreateInstance after
-// permission.IsMember/Has have already run in the same transaction -
-// firmID here scopes a read query (defense in depth alongside RLS, see
-// checkReferenceField's identical reasoning above), it is not itself an
-// authorization decision.
-func checkCustomerField(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, f FieldSpec, v any) error {
-	s, ok := v.(string)
-	if !ok {
-		return fmt.Errorf("%w: field %q must be a string customer ID", ErrPayloadValidation, f.Name)
-	}
-	customerID, err := uuid.Parse(s)
-	if err != nil {
-		return fmt.Errorf("%w: field %q must be a valid customer ID (UUID)", ErrPayloadValidation, f.Name)
-	}
-
-	exists, err := crm.CustomerExistsTx(ctx, tx, firmID, customerID)
-	if err != nil {
-		return fmt.Errorf("check customer field %q: %w", f.Name, err)
-	}
-	if !exists {
-		return fmt.Errorf("%w: field %q references a nonexistent customer in this firm", ErrPayloadValidation, f.Name)
-	}
-	return nil
 }
 
 // marshalEffects/unmarshalEffects encode/decode a transition's
@@ -925,6 +536,23 @@ func formatAmount(f float64) (string, error) {
 // field WAS present but malformed - a real data problem worth failing the
 // transition (and rolling back the state change with it) over.
 func resolveJournalLines(jt *JournalTemplate, payload map[string]any) ([]accounting.LineInput, bool, error) {
+	// instanceCurrencyPayloadField (this batch's multi-currency
+	// foundation) mirrors customerIDPayloadField's own "fixed, well-known
+	// field name" convention below: a payload's optional "currency"
+	// string field, when present, is threaded onto every resolved line
+	// as its own currency, so PostJournalEntryTx (internal/accounting)
+	// can auto-convert into each line's target account's own currency
+	// when they differ - see that function's own doc comment for the
+	// conversion/fallback logic. Absent (the overwhelmingly common case
+	// today - no existing DefinitionSpec sets a "currency" field), every
+	// line's Currency stays "" and PostJournalEntryTx's existing
+	// behavior (default to the account's own currency, no conversion
+	// attempted) is completely unchanged.
+	instanceCurrency, _, err := lookupStringField(payload, instanceCurrencyPayloadField)
+	if err != nil {
+		return nil, false, err
+	}
+
 	lines := make([]accounting.LineInput, 0, len(jt.Lines))
 	for _, lt := range jt.Lines {
 		amount, ok, err := resolveAmountField(payload, lt.AmountField)
@@ -938,10 +566,16 @@ func resolveJournalLines(jt *JournalTemplate, payload map[string]any) ([]account
 			AccountCode: lt.AccountCode,
 			Side:        accounting.Side(lt.Side),
 			Amount:      amount,
+			Currency:    instanceCurrency,
 		})
 	}
 	return lines, true, nil
 }
+
+// instanceCurrencyPayloadField is the well-known payload field name
+// resolveJournalLines looks for - see its own doc comment above for why
+// this is a fixed convention rather than a new JournalTemplate field.
+const instanceCurrencyPayloadField = "currency"
 
 // customerIDPayloadField is the well-known payload field name
 // resolveJournalDescription looks for - "customer_id", the exact field
