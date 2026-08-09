@@ -287,7 +287,21 @@
     "roleUnavailable": "Kullanılamıyor",
     "workflowsTitle": "Aktif iş akışları",
     "workflowsEmpty": "Bu firma için henüz kurulmuş bir iş akışı yok.",
-    "workflowsLoadError": "Bu firmanın iş akışları yüklenemedi. Lütfen tekrar deneyin."
+    "workflowsLoadError": "Bu firmanın iş akışları yüklenemedi. Lütfen tekrar deneyin.",
+    "exportTitle": "Firma verilerini dışa aktar",
+    "exportDescription": "Bu firmanın yapılandırmasının ve verilerinin tam bir JSON anlık görüntüsünü indirin - hesaplar, iş akışları, kurallar, kişiler, ürünler ve daha fazlası.",
+    "exportButton": "Dışa aktar",
+    "exportInProgress": "Dışa aktarılıyor…",
+    "exportError": "Bu firmanın verileri dışa aktarılamadı. Lütfen tekrar deneyin.",
+    "importTitle": "Yapılandırma içe aktar",
+    "importDescription": "Bu firmaya yapılandırmasını (iş akışları, kurallar, hesap planı, ürün kataloğu) içe aktarmak için daha önce dışa aktarılmış bir JSON dosyası yükleyin. Zaten var olan kayıtlar üzerine yazılmaz, atlanır. Geçmiş veriler (işlemler, iş akışı örnekleri, yevmiye kayıtları) hiçbir zaman içe aktarılmaz.",
+    "importPermissionDenied": "Bu firmaya yapılandırma içe aktarma izniniz yok.",
+    "importInvalidDocument": "Bu dosya geçerli bir dışa aktarma belgesi değil.",
+    "importError": "Bu dosya içe aktarılamadı. Lütfen tekrar deneyin.",
+    "importSummaryWorkflowDefinitions": "İş akışları: {imported} içe aktarıldı, {skipped} atlandı",
+    "importSummaryRules": "Kurallar: {imported} içe aktarıldı, {skipped} atlandı",
+    "importSummaryAccounts": "Hesaplar: {imported} içe aktarıldı, {skipped} atlandı",
+    "importSummaryProducts": "Ürünler: {imported} içe aktarıldı, {skipped} atlandı"
   },
   "AuditLog": {
     "title": "Denetim Kaydı",

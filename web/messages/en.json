@@ -287,7 +287,21 @@
     "roleUnavailable": "Unavailable",
     "workflowsTitle": "Active workflows",
     "workflowsEmpty": "No workflows set up for this firm yet.",
-    "workflowsLoadError": "Couldn't load this firm's workflows. Please try again."
+    "workflowsLoadError": "Couldn't load this firm's workflows. Please try again.",
+    "exportTitle": "Export firm data",
+    "exportDescription": "Download a complete JSON snapshot of this firm's configuration and data - accounts, workflows, rules, people, products, and more.",
+    "exportButton": "Export",
+    "exportInProgress": "Exporting…",
+    "exportError": "Couldn't export this firm's data. Please try again.",
+    "importTitle": "Import configuration",
+    "importDescription": "Upload a previously exported JSON file to import its configuration (workflows, rules, chart of accounts, product catalog) into this firm. Entries that already exist are skipped, not overwritten. Historical data (transactions, workflow instances, journal entries) is never imported.",
+    "importPermissionDenied": "You don't have permission to import configuration into this firm.",
+    "importInvalidDocument": "This file isn't a valid export document.",
+    "importError": "Couldn't import this file. Please try again.",
+    "importSummaryWorkflowDefinitions": "Workflows: {imported} imported, {skipped} skipped",
+    "importSummaryRules": "Rules: {imported} imported, {skipped} skipped",
+    "importSummaryAccounts": "Accounts: {imported} imported, {skipped} skipped",
+    "importSummaryProducts": "Products: {imported} imported, {skipped} skipped"
   },
   "AuditLog": {
     "title": "Audit Log",

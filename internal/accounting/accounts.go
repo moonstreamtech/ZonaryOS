@@ -152,6 +152,45 @@ func CreateAccount(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.
 	return account, nil
 }
 
+// CreateAccountTx is CreateAccount's already-open-transaction counterpart,
+// for callers (internal/portability's configuration import) that need
+// account creation as one step inside a larger atomic operation - the
+// same "*Tx, no authorization of its own, shared by every entry point"
+// pattern internal/workflow.DefineWorkflowTx already establishes.
+// Returns ErrAccountCodeExists on a (firm_id, code) collision, the exact
+// same sentinel CreateAccount itself returns - the caller decides whether
+// that's a hard failure or (as configuration import does) a natural
+// "already imported, skip" signal.
+//
+// ciaudit:ignore-firmid-check: shared account-creation primitive; every
+// caller has already run its own authorization check before calling this.
+func CreateAccountTx(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, code, name string, accType AccountType, parentID *uuid.UUID, currency string) (Account, error) {
+	code = strings.TrimSpace(code)
+	name = strings.TrimSpace(name)
+	currency = strings.TrimSpace(currency)
+	if currency == "" {
+		currency = defaultCurrency
+	}
+	if code == "" || name == "" || !accType.valid() {
+		return Account{}, ErrInvalidAccount
+	}
+
+	account := Account{FirmID: firmID, Code: code, Name: name, Type: accType, ParentID: parentID, Currency: currency, IsActive: true}
+	err := tx.QueryRow(ctx, `
+		INSERT INTO accounts (firm_id, code, name, type, parent_id, currency)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id, created_at
+	`, firmID, code, name, string(accType), parentID, currency).Scan(&account.ID, &account.CreatedAt)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == postgresUniqueViolation {
+			return Account{}, ErrAccountCodeExists
+		}
+		return Account{}, fmt.Errorf("insert account: %w", err)
+	}
+	return account, nil
+}
+
 // AccountUpdate is UpdateAccount's partial-update input - a nil field
 // leaves that column unchanged, matching internal/workflow.RuleUpdate's
 // convention. Code and type are deliberately not here at all: the design

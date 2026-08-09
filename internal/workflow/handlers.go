@@ -374,23 +374,55 @@ type transitionInfoResponse struct {
 	Invoice         *invoiceTemplateResponse         `json:"invoice,omitempty"`
 }
 
+// toTransitionInfoResponses builds the HTTP-facing transitionInfoResponse
+// list from TransitionInfo's own generic Effects slice - extracting each
+// bridge kind out of Effects (extractEffect, engine.go) to populate the
+// exact same journal/stockAdjustment/delivery/customer/invoice response
+// fields the API returned before the Effects refactor. An extractEffect
+// error here (a stored Payload that fails to unmarshal into its own
+// Kind's struct) can only happen for data this same package itself wrote
+// via marshalEffects/JournalEffect etc., so it's treated as an internal
+// error rather than surfaced per-field - logged and the field left nil,
+// the same "don't fail an entire definition listing over one malformed
+// legacy row" resilience every other read path in this file already
+// favors over a hard error.
 func toTransitionInfoResponses(transitions []TransitionInfo) []transitionInfoResponse {
 	if len(transitions) == 0 {
 		return nil
 	}
 	resp := make([]transitionInfoResponse, 0, len(transitions))
 	for _, t := range transitions {
+		journal, err := extractEffect[JournalTemplate](t.Effects, EffectKindJournal)
+		if err != nil {
+			journal = nil
+		}
+		stockAdjustment, err := extractEffect[StockAdjustmentTemplate](t.Effects, EffectKindStock)
+		if err != nil {
+			stockAdjustment = nil
+		}
+		delivery, err := extractEffect[DeliveryTemplate](t.Effects, EffectKindDelivery)
+		if err != nil {
+			delivery = nil
+		}
+		customer, err := extractEffect[CustomerTemplate](t.Effects, EffectKindCustomer)
+		if err != nil {
+			customer = nil
+		}
+		invoice, err := extractEffect[InvoiceTemplate](t.Effects, EffectKindInvoice)
+		if err != nil {
+			invoice = nil
+		}
 		resp = append(resp, transitionInfoResponse{
 			ActionKey:       t.ActionKey,
 			Name:            t.Name,
 			FromState:       stateInfoResponse{Key: t.FromState.Key, Name: t.FromState.Name},
 			ToState:         stateInfoResponse{Key: t.ToState.Key, Name: t.ToState.Name},
 			PermissionKey:   t.PermissionKey,
-			Journal:         toJournalTemplateResponse(t.Journal),
-			StockAdjustment: toStockAdjustmentTemplateResponse(t.StockAdjustment),
-			Delivery:        toDeliveryTemplateResponse(t.Delivery),
-			Customer:        toCustomerTemplateResponse(t.Customer),
-			Invoice:         toInvoiceTemplateResponse(t.Invoice),
+			Journal:         toJournalTemplateResponse(journal),
+			StockAdjustment: toStockAdjustmentTemplateResponse(stockAdjustment),
+			Delivery:        toDeliveryTemplateResponse(delivery),
+			Customer:        toCustomerTemplateResponse(customer),
+			Invoice:         toInvoiceTemplateResponse(invoice),
 		})
 	}
 	return resp
@@ -743,6 +775,28 @@ func handleDefineWorkflow(pool *pgxpool.Pool) http.HandlerFunc {
 			})
 		}
 		for _, t := range req.Transitions {
+			// Builds Effects from whichever of the request's own named
+			// journal/stockAdjustment/delivery/customer/invoice fields are
+			// present - the request JSON shape itself is unchanged by the
+			// Effects refactor (see TransitionSpec's own doc comment,
+			// spec.go); only the internal TransitionSpec this becomes is
+			// now a slice rather than five named fields.
+			var effects []TransitionEffect
+			if jt := toJournalTemplateSpec(t.Journal); jt != nil {
+				effects = append(effects, JournalEffect(*jt))
+			}
+			if sat := toStockAdjustmentTemplateSpec(t.StockAdjustment); sat != nil {
+				effects = append(effects, StockEffect(*sat))
+			}
+			if dt := toDeliveryTemplateSpec(t.Delivery); dt != nil {
+				effects = append(effects, DeliveryEffect(*dt))
+			}
+			if ct := toCustomerTemplateSpec(t.Customer); ct != nil {
+				effects = append(effects, CustomerEffect(*ct))
+			}
+			if it := toInvoiceTemplateSpec(t.Invoice); it != nil {
+				effects = append(effects, InvoiceEffect(*it))
+			}
 			spec.Transitions = append(spec.Transitions, TransitionSpec{
 				FromStateKey: t.FromStateKey,
 				ToStateKey:   t.ToStateKey,
@@ -752,11 +806,7 @@ func handleDefineWorkflow(pool *pgxpool.Pool) http.HandlerFunc {
 					Key:         t.Permission.Key,
 					Description: t.Permission.Description,
 				},
-				Journal:         toJournalTemplateSpec(t.Journal),
-				StockAdjustment: toStockAdjustmentTemplateSpec(t.StockAdjustment),
-				Delivery:        toDeliveryTemplateSpec(t.Delivery),
-				Customer:        toCustomerTemplateSpec(t.Customer),
-				Invoice:         toInvoiceTemplateSpec(t.Invoice),
+				Effects: effects,
 			})
 		}
 		if len(req.Fields) > 0 {

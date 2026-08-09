@@ -130,27 +130,29 @@ var PurchaseOrderSpec = DefinitionSpec{
 			// includes InventoryAccountCode specifically so a firm that
 			// purchases without also selling products still has
 			// somewhere to post received goods).
-			Journal: &JournalTemplate{
-				Description: "Received purchase order from {{supplier_name}}",
-				Lines: []LineTemplate{
-					{AccountCode: accounting.InventoryAccountCode, Side: "debit", AmountField: "total_amount"},
-					{AccountCode: accounting.TradePayablesAccountCode, Side: "credit", AmountField: "total_amount"},
-				},
-			},
-			// The workflow-to-inventory bridge's "purchase_receive" hook
-			// (Inventory management batch design brief): the same physical
-			// event that justifies the Journal template just above - goods
-			// actually received from the supplier - also increases real
-			// on-hand stock, when product_id/quantity are present on this
-			// call. Wired to "receive" for the identical reasoning the
-			// Journal template's own doc comment gives for why it isn't on
-			// "send": no goods have changed hands until they're received,
-			// so stock can't increase before then either.
-			StockAdjustment: &StockAdjustmentTemplate{
-				ProductField:  "product_id",
-				QuantityField: "quantity",
-				Direction:     "increase",
-				Reason:        "purchase",
+			Effects: []TransitionEffect{
+				JournalEffect(JournalTemplate{
+					Description: "Received purchase order from {{supplier_name}}",
+					Lines: []LineTemplate{
+						{AccountCode: accounting.InventoryAccountCode, Side: "debit", AmountField: "total_amount"},
+						{AccountCode: accounting.TradePayablesAccountCode, Side: "credit", AmountField: "total_amount"},
+					},
+				}),
+				// The workflow-to-inventory bridge's "purchase_receive" hook
+				// (Inventory management batch design brief): the same physical
+				// event that justifies the Journal effect just above - goods
+				// actually received from the supplier - also increases real
+				// on-hand stock, when product_id/quantity are present on this
+				// call. Wired to "receive" for the identical reasoning the
+				// Journal effect's own doc comment gives for why it isn't on
+				// "send": no goods have changed hands until they're received,
+				// so stock can't increase before then either.
+				StockEffect(StockAdjustmentTemplate{
+					ProductField:  "product_id",
+					QuantityField: "quantity",
+					Direction:     "increase",
+					Reason:        "purchase",
+				}),
 			},
 		},
 		{

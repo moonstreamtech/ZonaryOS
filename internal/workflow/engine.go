@@ -544,53 +544,58 @@ func checkCustomerField(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, f Fiel
 	return nil
 }
 
-// marshalJournalTemplate encodes jt for storage in
-// workflow_transitions.journal_template - a nil jt returns a nil []byte
-// (SQL NULL), the same "nil in, NULL column, no schema at all" contract
-// marshalPayloadSchema uses for a definition's payload schema.
-func marshalJournalTemplate(jt *JournalTemplate) ([]byte, error) {
-	if jt == nil {
-		return nil, nil
+// marshalEffects/unmarshalEffects encode/decode a transition's
+// []TransitionEffect for storage in the single
+// workflow_transitions.effects jsonb column (the Effects refactor - see
+// migrations/0017_workflow_effects_refactor.up.sql and TransitionSpec's
+// own doc comment, spec.go) - this replaces what used to be five separate
+// marshalJournalTemplate/marshalStockAdjustmentTemplate/
+// marshalDeliveryTemplate/marshalCustomerTemplate/marshalInvoiceTemplate
+// functions, one per bridge template, each with its own storage column. A
+// nil/empty slice marshals to "[]" (effects is NOT NULL DEFAULT
+// '[]'::jsonb, never SQL NULL - see the migration's own doc comment for
+// why), and an empty/NULL column unmarshals back to a nil slice, matching
+// every "no effects" TransitionSpec's own zero-value contract.
+func marshalEffects(effects []TransitionEffect) ([]byte, error) {
+	if effects == nil {
+		effects = []TransitionEffect{}
 	}
-	return json.Marshal(jt)
+	return json.Marshal(effects)
 }
 
-// unmarshalJournalTemplate decodes workflow_transitions.journal_template
-// back into a *JournalTemplate - nil for a SQL NULL column (a transition
-// with no journal template), same convention as unmarshalPayloadSchema.
-func unmarshalJournalTemplate(data []byte) (*JournalTemplate, error) {
+func unmarshalEffects(data []byte) ([]TransitionEffect, error) {
 	if len(data) == 0 {
 		return nil, nil
 	}
-	var jt JournalTemplate
-	if err := json.Unmarshal(data, &jt); err != nil {
-		return nil, fmt.Errorf("unmarshal journal template: %w", err)
+	var effects []TransitionEffect
+	if err := json.Unmarshal(data, &effects); err != nil {
+		return nil, fmt.Errorf("unmarshal transition effects: %w", err)
 	}
-	return &jt, nil
+	return effects, nil
 }
 
-// marshalStockAdjustmentTemplate encodes sat for storage in
-// workflow_transitions.stock_adjustment - same nil-in/NULL-out contract as
-// marshalJournalTemplate.
-func marshalStockAdjustmentTemplate(sat *StockAdjustmentTemplate) ([]byte, error) {
-	if sat == nil {
-		return nil, nil
+// extractEffect finds effects' entry of the given kind (if any) and
+// unmarshals its Payload into T - the generic replacement for what used
+// to be five separate unmarshalXTemplate functions, one per bridge (see
+// marshalEffects' own doc comment). A missing kind returns (nil, nil),
+// the exact same "absent means this bridge doesn't apply to this
+// transition" contract every one of those five functions already had for
+// a NULL/absent column - every existing ExecuteTransition/
+// fetchTransitionInfos call site that already checks `if journalTemplate
+// != nil { ... }` (etc.) keeps working completely unchanged against the
+// value this returns.
+func extractEffect[T any](effects []TransitionEffect, kind string) (*T, error) {
+	for _, e := range effects {
+		if e.Kind != kind {
+			continue
+		}
+		var v T
+		if err := json.Unmarshal(e.Payload, &v); err != nil {
+			return nil, fmt.Errorf("unmarshal %s effect: %w", kind, err)
+		}
+		return &v, nil
 	}
-	return json.Marshal(sat)
-}
-
-// unmarshalStockAdjustmentTemplate decodes
-// workflow_transitions.stock_adjustment back into a *StockAdjustmentTemplate -
-// nil for a SQL NULL column, same convention as unmarshalJournalTemplate.
-func unmarshalStockAdjustmentTemplate(data []byte) (*StockAdjustmentTemplate, error) {
-	if len(data) == 0 {
-		return nil, nil
-	}
-	var sat StockAdjustmentTemplate
-	if err := json.Unmarshal(data, &sat); err != nil {
-		return nil, fmt.Errorf("unmarshal stock adjustment template: %w", err)
-	}
-	return &sat, nil
+	return nil, nil
 }
 
 // resolveStockAdjustment resolves sat against payload into the arguments
@@ -653,65 +658,6 @@ func formatSignedAmount(f float64) (string, error) {
 		return "", fmt.Errorf("%w: computed stock adjustment quantity is zero", ErrPayloadValidation)
 	}
 	return strconv.FormatFloat(rounded, 'f', 4, 64), nil
-}
-
-// marshalDeliveryTemplate/unmarshalDeliveryTemplate and
-// marshalCustomerTemplate/unmarshalCustomerTemplate encode/decode
-// DeliveryTemplate/CustomerTemplate for storage in
-// workflow_transitions.delivery_template/customer_template - same
-// nil-in/NULL-out contract as marshalJournalTemplate/marshalStockAdjustmentTemplate.
-func marshalDeliveryTemplate(dt *DeliveryTemplate) ([]byte, error) {
-	if dt == nil {
-		return nil, nil
-	}
-	return json.Marshal(dt)
-}
-
-func unmarshalDeliveryTemplate(data []byte) (*DeliveryTemplate, error) {
-	if len(data) == 0 {
-		return nil, nil
-	}
-	var dt DeliveryTemplate
-	if err := json.Unmarshal(data, &dt); err != nil {
-		return nil, fmt.Errorf("unmarshal delivery template: %w", err)
-	}
-	return &dt, nil
-}
-
-func marshalCustomerTemplate(ct *CustomerTemplate) ([]byte, error) {
-	if ct == nil {
-		return nil, nil
-	}
-	return json.Marshal(ct)
-}
-
-func unmarshalCustomerTemplate(data []byte) (*CustomerTemplate, error) {
-	if len(data) == 0 {
-		return nil, nil
-	}
-	var ct CustomerTemplate
-	if err := json.Unmarshal(data, &ct); err != nil {
-		return nil, fmt.Errorf("unmarshal customer template: %w", err)
-	}
-	return &ct, nil
-}
-
-func marshalInvoiceTemplate(it *InvoiceTemplate) ([]byte, error) {
-	if it == nil {
-		return nil, nil
-	}
-	return json.Marshal(it)
-}
-
-func unmarshalInvoiceTemplate(data []byte) (*InvoiceTemplate, error) {
-	if len(data) == 0 {
-		return nil, nil
-	}
-	var it InvoiceTemplate
-	if err := json.Unmarshal(data, &it); err != nil {
-		return nil, fmt.Errorf("unmarshal invoice template: %w", err)
-	}
-	return &it, nil
 }
 
 // lookupStringField reads payload[name] and requires it to be a JSON
@@ -1190,32 +1136,16 @@ func DefineWorkflowTx(ctx context.Context, tx pgx.Tx, firmID, granteeRoleID uuid
 	}
 
 	for _, t := range spec.Transitions {
-		journalTemplateJSON, err := marshalJournalTemplate(t.Journal)
+		effectsJSON, err := marshalEffects(t.Effects)
 		if err != nil {
-			return uuid.UUID{}, fmt.Errorf("marshal journal template for transition %q: %w", t.ActionKey, err)
-		}
-		stockAdjustmentJSON, err := marshalStockAdjustmentTemplate(t.StockAdjustment)
-		if err != nil {
-			return uuid.UUID{}, fmt.Errorf("marshal stock adjustment template for transition %q: %w", t.ActionKey, err)
-		}
-		deliveryTemplateJSON, err := marshalDeliveryTemplate(t.Delivery)
-		if err != nil {
-			return uuid.UUID{}, fmt.Errorf("marshal delivery template for transition %q: %w", t.ActionKey, err)
-		}
-		customerTemplateJSON, err := marshalCustomerTemplate(t.Customer)
-		if err != nil {
-			return uuid.UUID{}, fmt.Errorf("marshal customer template for transition %q: %w", t.ActionKey, err)
-		}
-		invoiceTemplateJSON, err := marshalInvoiceTemplate(t.Invoice)
-		if err != nil {
-			return uuid.UUID{}, fmt.Errorf("marshal invoice template for transition %q: %w", t.ActionKey, err)
+			return uuid.UUID{}, fmt.Errorf("marshal effects for transition %q: %w", t.ActionKey, err)
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO workflow_transitions
-				(firm_id, workflow_definition_id, from_state_id, to_state_id, action_key, name, permission_key, journal_template, stock_adjustment, delivery_template, customer_template, invoice_template)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+				(firm_id, workflow_definition_id, from_state_id, to_state_id, action_key, name, permission_key, effects)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		`, firmID, definitionID, stateIDs[t.FromStateKey], stateIDs[t.ToStateKey], t.ActionKey, t.Name, t.Permission.Key,
-			journalTemplateJSON, stockAdjustmentJSON, deliveryTemplateJSON, customerTemplateJSON, invoiceTemplateJSON); err != nil {
+			effectsJSON); err != nil {
 			return uuid.UUID{}, fmt.Errorf("insert workflow transition %q: %w", t.ActionKey, err)
 		}
 	}
@@ -1517,36 +1447,40 @@ func ExecuteTransition(ctx context.Context, pool *pgxpool.Pool, firmID, userID, 
 
 		var toStateID uuid.UUID
 		var permissionKey string
-		var journalTemplateJSON, stockAdjustmentJSON, deliveryTemplateJSON, customerTemplateJSON, invoiceTemplateJSON []byte
+		var effectsJSON []byte
 		err = tx.QueryRow(ctx, `
-			SELECT wt.to_state_id, ws.key, wt.permission_key, wt.journal_template, wt.stock_adjustment, wt.delivery_template, wt.customer_template, wt.invoice_template
+			SELECT wt.to_state_id, ws.key, wt.permission_key, wt.effects
 			FROM workflow_transitions wt
 			JOIN workflow_states ws ON ws.id = wt.to_state_id
 			WHERE wt.workflow_definition_id = $1 AND wt.from_state_id = $2 AND wt.action_key = $3
-		`, definitionID, currentStateID, actionKey).Scan(&toStateID, &toStateKey, &permissionKey, &journalTemplateJSON, &stockAdjustmentJSON, &deliveryTemplateJSON, &customerTemplateJSON, &invoiceTemplateJSON)
+		`, definitionID, currentStateID, actionKey).Scan(&toStateID, &toStateKey, &permissionKey, &effectsJSON)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNoSuchTransition
 		}
 		if err != nil {
 			return fmt.Errorf("look up transition: %w", err)
 		}
-		journalTemplate, err := unmarshalJournalTemplate(journalTemplateJSON)
+		effects, err := unmarshalEffects(effectsJSON)
 		if err != nil {
 			return err
 		}
-		stockAdjustment, err := unmarshalStockAdjustmentTemplate(stockAdjustmentJSON)
+		journalTemplate, err := extractEffect[JournalTemplate](effects, EffectKindJournal)
 		if err != nil {
 			return err
 		}
-		deliveryTemplate, err := unmarshalDeliveryTemplate(deliveryTemplateJSON)
+		stockAdjustment, err := extractEffect[StockAdjustmentTemplate](effects, EffectKindStock)
 		if err != nil {
 			return err
 		}
-		customerTemplate, err := unmarshalCustomerTemplate(customerTemplateJSON)
+		deliveryTemplate, err := extractEffect[DeliveryTemplate](effects, EffectKindDelivery)
 		if err != nil {
 			return err
 		}
-		invoiceTemplate, err := unmarshalInvoiceTemplate(invoiceTemplateJSON)
+		customerTemplate, err := extractEffect[CustomerTemplate](effects, EffectKindCustomer)
+		if err != nil {
+			return err
+		}
+		invoiceTemplate, err := extractEffect[InvoiceTemplate](effects, EffectKindInvoice)
 		if err != nil {
 			return err
 		}
@@ -1990,30 +1924,30 @@ type DefinitionInfo struct {
 }
 
 // TransitionInfo is one workflow_transitions row, read back with its
-// endpoints' state keys resolved and its OPTIONAL JournalTemplate
-// attached - the structural counterpart to AvailableAction (which is
-// scoped to one instance's current state) at the definition level,
-// scoped to the whole transition graph instead.
+// endpoints' state keys resolved and its Effects attached - the
+// structural counterpart to AvailableAction (which is scoped to one
+// instance's current state) at the definition level, scoped to the whole
+// transition graph instead. handlers.go's toTransitionInfoResponses
+// extracts each bridge kind out of Effects to build the same
+// journal/stockAdjustment/delivery/customer/invoice response fields the
+// HTTP API returned before the Effects refactor - this struct itself no
+// longer carries one field per bridge.
 type TransitionInfo struct {
-	ActionKey       string
-	Name            string
-	FromState       StateInfo
-	ToState         StateInfo
-	PermissionKey   string
-	Journal         *JournalTemplate
-	StockAdjustment *StockAdjustmentTemplate
-	Delivery        *DeliveryTemplate
-	Customer        *CustomerTemplate
-	Invoice         *InvoiceTemplate
+	ActionKey     string
+	Name          string
+	FromState     StateInfo
+	ToState       StateInfo
+	PermissionKey string
+	Effects       []TransitionEffect
 }
 
 // fetchTransitionInfos loads every workflow_transitions row for
 // definitionID, in action-key order - shared by LookupDefinitionByKey and
-// ListDefinitions so both expose the exact same transition/journal-template
-// read path.
+// ListDefinitions so both expose the exact same transition/effects read
+// path.
 func fetchTransitionInfos(ctx context.Context, tx pgx.Tx, definitionID uuid.UUID) ([]TransitionInfo, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT wt.action_key, wt.name, src.key, src.name, dst.key, dst.name, wt.permission_key, wt.journal_template, wt.stock_adjustment, wt.delivery_template, wt.customer_template, wt.invoice_template
+		SELECT wt.action_key, wt.name, src.key, src.name, dst.key, dst.name, wt.permission_key, wt.effects
 		FROM workflow_transitions wt
 		JOIN workflow_states src ON src.id = wt.from_state_id
 		JOIN workflow_states dst ON dst.id = wt.to_state_id
@@ -2028,28 +1962,12 @@ func fetchTransitionInfos(ctx context.Context, tx pgx.Tx, definitionID uuid.UUID
 	var infos []TransitionInfo
 	for rows.Next() {
 		var ti TransitionInfo
-		var journalTemplateJSON, stockAdjustmentJSON, deliveryTemplateJSON, customerTemplateJSON, invoiceTemplateJSON []byte
+		var effectsJSON []byte
 		if err := rows.Scan(&ti.ActionKey, &ti.Name, &ti.FromState.Key, &ti.FromState.Name, &ti.ToState.Key, &ti.ToState.Name,
-			&ti.PermissionKey, &journalTemplateJSON, &stockAdjustmentJSON, &deliveryTemplateJSON, &customerTemplateJSON, &invoiceTemplateJSON); err != nil {
+			&ti.PermissionKey, &effectsJSON); err != nil {
 			return nil, err
 		}
-		ti.Journal, err = unmarshalJournalTemplate(journalTemplateJSON)
-		if err != nil {
-			return nil, err
-		}
-		ti.StockAdjustment, err = unmarshalStockAdjustmentTemplate(stockAdjustmentJSON)
-		if err != nil {
-			return nil, err
-		}
-		ti.Delivery, err = unmarshalDeliveryTemplate(deliveryTemplateJSON)
-		if err != nil {
-			return nil, err
-		}
-		ti.Customer, err = unmarshalCustomerTemplate(customerTemplateJSON)
-		if err != nil {
-			return nil, err
-		}
-		ti.Invoice, err = unmarshalInvoiceTemplate(invoiceTemplateJSON)
+		ti.Effects, err = unmarshalEffects(effectsJSON)
 		if err != nil {
 			return nil, err
 		}
@@ -2161,6 +2079,148 @@ func ListDefinitions(ctx context.Context, pool *pgxpool.Pool, firmID, userID uui
 		return nil, err
 	}
 	return results, nil
+}
+
+// ExportDefinitionSpecs reads every workflow_definitions row for firmID
+// back out as a real DefinitionSpec - the exact shape DefineWorkflow/
+// DefineWorkflowTx themselves consume - rather than a second, parallel
+// export-only representation. This is what makes the import side of
+// internal/portability's configuration import/export engine simple: it
+// marshals these values directly for export, and for import it feeds
+// them straight back into DefineWorkflowTx, reusing that function's own
+// validation and permission upsert logic rather than duplicating it.
+// Includes every state (not just ones a transition happens to
+// reference - unlike TransitionInfo.FromState/ToState, which only cover
+// states actually connected by an edge) and every transition's Effects
+// and Permission.Description (joined from the global permissions
+// catalog, since workflow_transitions.permission_key is only a foreign
+// key - DefineWorkflowTx needs the description text too, to upsert the
+// permission catalog entry on the importing firm). Member-gated (not
+// owner-gated): mirrors ListDefinitions' own tier - this is a read.
+func ExportDefinitionSpecs(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.UUID) ([]DefinitionSpec, error) {
+	var specs []DefinitionSpec
+	err := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		isMember, err := permission.IsMember(ctx, tx, firmID, userID)
+		if err != nil {
+			return err
+		}
+		if !isMember {
+			return ErrDefinitionNotFound
+		}
+
+		type defRow struct {
+			id             uuid.UUID
+			key, name      string
+			createPermKey  string
+			createPermDesc string
+			schemaJSON     []byte
+		}
+		defRows, err := tx.Query(ctx, `
+			SELECT wd.id, wd.key, wd.name, wd.create_permission_key, p.description, wd.payload_schema
+			FROM workflow_definitions wd
+			JOIN permissions p ON p.key = wd.create_permission_key
+			ORDER BY wd.name
+		`)
+		if err != nil {
+			return fmt.Errorf("list workflow definitions: %w", err)
+		}
+		var defs []defRow
+		for defRows.Next() {
+			var d defRow
+			if err := defRows.Scan(&d.id, &d.key, &d.name, &d.createPermKey, &d.createPermDesc, &d.schemaJSON); err != nil {
+				defRows.Close()
+				return err
+			}
+			defs = append(defs, d)
+		}
+		if err := defRows.Err(); err != nil {
+			return err
+		}
+		defRows.Close()
+
+		// Two more round trips per definition (states, then transitions),
+		// only after the previous result set is fully drained and closed -
+		// pgx does not support an interleaved Query() on the same
+		// transaction while a previous Rows is still open (the same
+		// reason ListDefinitions' own two-pass shape, just above, closes
+		// its first Rows before opening a second).
+		for _, d := range defs {
+			fields, err := unmarshalPayloadSchema(d.schemaJSON)
+			if err != nil {
+				return err
+			}
+
+			stateRows, err := tx.Query(ctx, `
+				SELECT key, name, is_initial, is_terminal FROM workflow_states WHERE workflow_definition_id = $1
+			`, d.id)
+			if err != nil {
+				return fmt.Errorf("list states for definition %q: %w", d.key, err)
+			}
+			var states []StateSpec
+			for stateRows.Next() {
+				var s StateSpec
+				if err := stateRows.Scan(&s.Key, &s.Name, &s.IsInitial, &s.IsTerminal); err != nil {
+					stateRows.Close()
+					return err
+				}
+				states = append(states, s)
+			}
+			if err := stateRows.Err(); err != nil {
+				return err
+			}
+			stateRows.Close()
+
+			transitionRows, err := tx.Query(ctx, `
+				SELECT wt.action_key, wt.name, src.key, dst.key, wt.permission_key, p.description, wt.effects
+				FROM workflow_transitions wt
+				JOIN workflow_states src ON src.id = wt.from_state_id
+				JOIN workflow_states dst ON dst.id = wt.to_state_id
+				JOIN permissions p ON p.key = wt.permission_key
+				WHERE wt.workflow_definition_id = $1
+				ORDER BY wt.action_key
+			`, d.id)
+			if err != nil {
+				return fmt.Errorf("list transitions for definition %q: %w", d.key, err)
+			}
+			var transitions []TransitionSpec
+			for transitionRows.Next() {
+				var t TransitionSpec
+				var permDesc string
+				var effectsJSON []byte
+				if err := transitionRows.Scan(&t.ActionKey, &t.Name, &t.FromStateKey, &t.ToStateKey, &t.Permission.Key, &permDesc, &effectsJSON); err != nil {
+					transitionRows.Close()
+					return err
+				}
+				t.Permission.Description = permDesc
+				if t.Effects, err = unmarshalEffects(effectsJSON); err != nil {
+					transitionRows.Close()
+					return err
+				}
+				transitions = append(transitions, t)
+			}
+			if err := transitionRows.Err(); err != nil {
+				return err
+			}
+			transitionRows.Close()
+
+			specs = append(specs, DefinitionSpec{
+				Key:  d.key,
+				Name: d.name,
+				CreatePermission: PermissionSpec{
+					Key:         d.createPermKey,
+					Description: d.createPermDesc,
+				},
+				States:      states,
+				Transitions: transitions,
+				Fields:      fields,
+			})
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return specs, nil
 }
 
 // StateCount is one state's instance count within a single workflow

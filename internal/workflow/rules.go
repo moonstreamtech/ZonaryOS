@@ -658,6 +658,49 @@ func CreateRule(ctx context.Context, pool *pgxpool.Pool, rule Rule) (uuid.UUID, 
 	return id, nil
 }
 
+// CreateRuleTx is CreateRule's already-open-transaction counterpart, for
+// callers (internal/portability's configuration import) that need rule
+// creation as one step inside a larger atomic operation - the same "*Tx,
+// no authorization of its own, shared by every entry point" pattern
+// DefineWorkflowTx already establishes.
+//
+// ciaudit:ignore-firmid-check: shared rule-creation primitive; every
+// caller has already run its own authorization check before calling this.
+func CreateRuleTx(ctx context.Context, tx pgx.Tx, rule Rule) (Rule, error) {
+	if err := validateRuleShape(rule); err != nil {
+		return Rule{}, err
+	}
+	id, createdAt, err := createRuleTx(ctx, tx, rule)
+	if err != nil {
+		return Rule{}, err
+	}
+	rule.ID = id
+	rule.CreatedAt = createdAt
+	return rule, nil
+}
+
+// RuleExistsTx reports whether firmID already has a rule with this exact
+// (definitionKey, name) pair - workflow_rules carries no DB-level unique
+// constraint on that pair (a rule has no other natural identity the way
+// a workflow's own key, an account's code, or a product's SKU do), so
+// configuration import's own idempotent "skip if exists" dedup for rules
+// is an explicit application-level check against this, rather than
+// catching a UNIQUE-violation error the schema doesn't raise.
+//
+// ciaudit:ignore-firmid-check: internal cross-package helper, called only
+// by internal/portability's import path after its own owner-gate check
+// has already run - firmID here scopes the query (defense in depth
+// alongside RLS), it is not itself an authorization decision.
+func RuleExistsTx(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, definitionKey, name string) (bool, error) {
+	var exists bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM workflow_rules WHERE firm_id = $1 AND definition_key = $2 AND name = $3)
+	`, firmID, definitionKey, name).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check rule exists: %w", err)
+	}
+	return exists, nil
+}
+
 // definitionExistsTx reports whether firmID has a workflow_definitions row
 // keyed by definitionKey - the existence check CreateRuleForFirm runs
 // before creating a rule against it, so a rule can't be created against a
