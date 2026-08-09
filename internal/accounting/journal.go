@@ -30,6 +30,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"time"
 
@@ -38,6 +39,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
+	fx "github.com/moonstreamtech/ZonaryOS/internal/currency"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
 )
@@ -196,19 +198,49 @@ func PostJournalEntryTx(ctx context.Context, tx pgx.Tx, firmID, userID uuid.UUID
 			return uuid.UUID{}, fmt.Errorf("%w: account code %q", ErrAccountInactive, l.AccountCode)
 		}
 
+		// Multi-currency foundation (this batch): a caller-supplied
+		// l.Currency that differs from the resolved account's own
+		// currency is auto-converted INTO that account's currency before
+		// storage - every journal_lines row then ends up self-consistent
+		// (amount denominated in its own stored currency), which is what
+		// keeps the balance check below (a currency-blind SUM(amount))
+		// correct rather than silently comparing apples to oranges.
+		//
+		// Safety guarantee: a missing exchange rate NEVER fails this
+		// transition. ConvertAmountTx's only failure mode besides
+		// fx.ErrRateNotFound is a genuine infrastructure error (the query
+		// itself failing) - propagated as a real error, same as any other
+		// DB failure elsewhere in this function; ErrRateNotFound
+		// specifically is caught here and degrades to storing the
+		// original, unconverted amount tagged with the account's own
+		// currency (a documented 1:1 fallback, logged so an operator can
+		// notice and add the missing rate) rather than blocking a real
+		// business operation on exchange-rate data entry.
 		currency := l.Currency
-		if currency == "" {
+		amount := l.Amount
+		if currency != "" && currency != accountCurrency {
+			converted, convErr := fx.ConvertAmountTx(ctx, tx, l.Amount, currency, accountCurrency, time.Now())
+			if convErr != nil {
+				if !errors.Is(convErr, fx.ErrRateNotFound) {
+					return uuid.UUID{}, fmt.Errorf("convert journal line amount for account %q: %w", l.AccountCode, convErr)
+				}
+				slog.Warn("journal entry: no exchange rate on file, falling back to 1:1", "from", currency, "to", accountCurrency, "accountCode", l.AccountCode)
+			} else {
+				amount = converted
+			}
+		}
+		if currency == "" || currency != accountCurrency {
 			currency = accountCurrency
 		}
 
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO journal_lines (firm_id, entry_id, account_id, amount, side, currency)
 			VALUES ($1, $2, $3, $4::numeric, $5, $6)
-		`, firmID, entryID, accountID, l.Amount, string(l.Side), currency); err != nil {
+		`, firmID, entryID, accountID, amount, string(l.Side), currency); err != nil {
 			return uuid.UUID{}, fmt.Errorf("insert journal line for account %q: %w", l.AccountCode, err)
 		}
 		lineSummaries = append(lineSummaries, map[string]any{
-			"accountCode": l.AccountCode, "side": string(l.Side), "amount": l.Amount, "currency": currency,
+			"accountCode": l.AccountCode, "side": string(l.Side), "amount": amount, "currency": currency,
 		})
 	}
 

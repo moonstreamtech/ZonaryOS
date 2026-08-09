@@ -16,6 +16,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/accounting"
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
 	"github.com/moonstreamtech/ZonaryOS/internal/crm"
+	"github.com/moonstreamtech/ZonaryOS/internal/currency"
 	"github.com/moonstreamtech/ZonaryOS/internal/discovery"
 	"github.com/moonstreamtech/ZonaryOS/internal/edgeagent"
 	"github.com/moonstreamtech/ZonaryOS/internal/firm"
@@ -26,6 +27,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/invite"
 	"github.com/moonstreamtech/ZonaryOS/internal/invoicing"
 	"github.com/moonstreamtech/ZonaryOS/internal/license"
+	"github.com/moonstreamtech/ZonaryOS/internal/localization"
 	"github.com/moonstreamtech/ZonaryOS/internal/logistics"
 	"github.com/moonstreamtech/ZonaryOS/internal/notification"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
@@ -179,7 +181,20 @@ func main() {
 	invoicing.RegisterRoutes(mux, verifier, pool)
 	portability.RegisterRoutes(mux, verifier, pool)
 	reports.RegisterRoutes(mux, verifier, pool)
-	platformadmin.RegisterRoutes(mux, verifier, pool, platformadmin.NewAllowlist(cfg.PlatformAdminEmails), licenseVerifier)
+	// platformAdminAllowlist is shared between internal/platformadmin's
+	// own routes and internal/currency's platform-admin-only
+	// POST /api/exchange-rates - one allowlist, the same "which real
+	// ZonaryOS-the-company staff emails" config value, not a second
+	// independent gate.
+	platformAdminAllowlist := platformadmin.NewAllowlist(cfg.PlatformAdminEmails)
+	platformadmin.RegisterRoutes(mux, verifier, pool, platformAdminAllowlist, licenseVerifier)
+	// internal/currency (this batch): the multi-currency foundation -
+	// platform-admin-gated rate creation, unauthenticated rate lookup.
+	currency.RegisterRoutes(mux, verifier, pool, platformAdminAllowlist)
+	// internal/localization (this batch, Open Points item 24's
+	// foundation-only address/tax data model): owner-gated, firm-scoped
+	// CRUD for addresses and tax rates.
+	localization.RegisterRoutes(mux, verifier, pool)
 	// internal/edgeagent (this batch, Vision §9's Edge Agent protocol
 	// foundation): registers both the ordinary Keycloak-authenticated
 	// firm-scoped routes (register/list agents, issue/list tokens, list

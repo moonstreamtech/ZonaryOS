@@ -43,6 +43,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
+	"github.com/moonstreamtech/ZonaryOS/internal/localization"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
 )
@@ -152,6 +153,7 @@ type InvoiceLine struct {
 	Quantity    string
 	UnitPrice   string
 	TaxRate     string
+	TaxRateID   *uuid.UUID
 	LineTotal   string
 	ProductID   *uuid.UUID
 }
@@ -161,8 +163,17 @@ type InvoiceLineInput struct {
 	Description string
 	Quantity    string // decimal string
 	UnitPrice   string // decimal string
-	TaxRate     string // decimal string, optional - "" means 0
-	ProductID   *uuid.UUID
+	TaxRate     string // decimal string, optional - "" means 0. Ignored
+	// when TaxRateID is set - see resolveLineTaxRate.
+	//
+	// TaxRateID, when set, overrides TaxRate: the referenced
+	// internal/localization tax_rates row's own rate (a fraction, e.g.
+	// "0.2000") is resolved and converted to invoice_lines.tax_rate's
+	// percentage shape (multiplied by 100) at write time - see
+	// resolveLineTaxRate's own doc comment for why this is resolved once,
+	// not re-derived later.
+	TaxRateID *uuid.UUID
+	ProductID *uuid.UUID
 }
 
 func validateLineInput(l InvoiceLineInput) error {
@@ -180,6 +191,45 @@ func validateLineInput(l InvoiceLineInput) error {
 		return fmt.Errorf("%w: taxRate %q must be a decimal with at most 2 fraction digits", ErrInvalidInvoiceLine, l.TaxRate)
 	}
 	return nil
+}
+
+// resolveLineTaxRate resolves what actually gets written to
+// invoice_lines.tax_rate/tax_rate_id for one InvoiceLineInput: if
+// TaxRateID is set, the referenced internal/localization tax_rates row
+// is looked up (within THIS already-open, already-authorized
+// transaction - requireInvoiceOwner has already run in every caller
+// before this), its own rate (a fraction, e.g. "0.2000") converted to
+// invoice_lines.tax_rate's percentage shape via an exact Postgres
+// `numeric` multiply (never a Go float, same discipline every other
+// money-adjacent conversion in this codebase follows), and returned
+// alongside the tax_rate_id to store. Resolved once, at write time, not
+// re-derived later if the tax_rates row subsequently changes or is
+// deleted - see migrations/0020's own comment on invoice_lines.tax_rate_id
+// for why. Otherwise (TaxRateID unset) falls back to the plain TaxRate
+// string, "0" when empty - unchanged from before this batch.
+//
+// ciaudit:ignore-firmid-check: internal *Tx primitive called only from
+// insertInvoiceTx/AddInvoiceLine/UpdateInvoiceLine, each of which has
+// already run requireInvoiceOwner (or the workflow bridge's own
+// equivalent check) before opening the transaction this runs inside.
+func resolveLineTaxRate(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, l InvoiceLineInput) (taxRate string, taxRateID *uuid.UUID, err error) {
+	if l.TaxRateID == nil {
+		taxRate = strings.TrimSpace(l.TaxRate)
+		if taxRate == "" {
+			taxRate = "0"
+		}
+		return taxRate, nil, nil
+	}
+
+	rate, err := localization.GetTaxRateTx(ctx, tx, firmID, *l.TaxRateID)
+	if err != nil {
+		return "", nil, err
+	}
+	var percentage string
+	if err := tx.QueryRow(ctx, `SELECT ($1::numeric * 100)::text`, rate.Rate).Scan(&percentage); err != nil {
+		return "", nil, fmt.Errorf("convert tax rate %s to percentage: %w", rate.ID, err)
+	}
+	return percentage, l.TaxRateID, nil
 }
 
 // nextInvoiceNumberTx atomically allocates the next sequential invoice
@@ -270,14 +320,14 @@ func insertInvoiceTx(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, customerI
 	}
 
 	for _, l := range lines {
-		taxRate := strings.TrimSpace(l.TaxRate)
-		if taxRate == "" {
-			taxRate = "0"
+		taxRate, taxRateID, err := resolveLineTaxRate(ctx, tx, firmID, l)
+		if err != nil {
+			return Invoice{}, err
 		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO invoice_lines (invoice_id, description, quantity, unit_price, tax_rate, line_total, product_id)
-			VALUES ($1, $2, $3::numeric, $4::numeric, $5::numeric, ($3::numeric * $4::numeric), $6)
-		`, inv.ID, strings.TrimSpace(l.Description), l.Quantity, l.UnitPrice, taxRate, l.ProductID); err != nil {
+			INSERT INTO invoice_lines (invoice_id, description, quantity, unit_price, tax_rate, tax_rate_id, line_total, product_id)
+			VALUES ($1, $2, $3::numeric, $4::numeric, $5::numeric, $6, ($3::numeric * $4::numeric), $7)
+		`, inv.ID, strings.TrimSpace(l.Description), l.Quantity, l.UnitPrice, taxRate, taxRateID, l.ProductID); err != nil {
 			return Invoice{}, fmt.Errorf("insert invoice line: %w", err)
 		}
 	}
@@ -412,7 +462,7 @@ func recomputeInvoiceTotalsTx(ctx context.Context, tx pgx.Tx, invoiceID uuid.UUI
 
 func fetchInvoiceLinesTx(ctx context.Context, tx pgx.Tx, invoiceID uuid.UUID) ([]InvoiceLine, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT id, invoice_id, description, quantity::text, unit_price::text, tax_rate::text, line_total::text, product_id
+		SELECT id, invoice_id, description, quantity::text, unit_price::text, tax_rate::text, tax_rate_id, line_total::text, product_id
 		FROM invoice_lines WHERE invoice_id = $1 ORDER BY id
 	`, invoiceID)
 	if err != nil {
@@ -422,7 +472,7 @@ func fetchInvoiceLinesTx(ctx context.Context, tx pgx.Tx, invoiceID uuid.UUID) ([
 	var lines []InvoiceLine
 	for rows.Next() {
 		var l InvoiceLine
-		if err := rows.Scan(&l.ID, &l.InvoiceID, &l.Description, &l.Quantity, &l.UnitPrice, &l.TaxRate, &l.LineTotal, &l.ProductID); err != nil {
+		if err := rows.Scan(&l.ID, &l.InvoiceID, &l.Description, &l.Quantity, &l.UnitPrice, &l.TaxRate, &l.TaxRateID, &l.LineTotal, &l.ProductID); err != nil {
 			return nil, err
 		}
 		lines = append(lines, l)

@@ -109,6 +109,7 @@ type invoiceLineResponse struct {
 	Quantity    string  `json:"quantity"`
 	UnitPrice   string  `json:"unitPrice"`
 	TaxRate     string  `json:"taxRate"`
+	TaxRateID   *string `json:"taxRateId,omitempty"`
 	LineTotal   string  `json:"lineTotal"`
 	ProductID   *string `json:"productId,omitempty"`
 }
@@ -119,9 +120,14 @@ func toInvoiceLineResponse(l InvoiceLine) invoiceLineResponse {
 		s := l.ProductID.String()
 		productID = &s
 	}
+	var taxRateID *string
+	if l.TaxRateID != nil {
+		s := l.TaxRateID.String()
+		taxRateID = &s
+	}
 	return invoiceLineResponse{
 		ID: l.ID.String(), Description: l.Description, Quantity: l.Quantity, UnitPrice: l.UnitPrice,
-		TaxRate: l.TaxRate, LineTotal: l.LineTotal, ProductID: productID,
+		TaxRate: l.TaxRate, TaxRateID: taxRateID, LineTotal: l.LineTotal, ProductID: productID,
 	}
 }
 
@@ -195,6 +201,7 @@ type createInvoiceLineRequest struct {
 	Quantity    string  `json:"quantity"`
 	UnitPrice   string  `json:"unitPrice"`
 	TaxRate     string  `json:"taxRate"`
+	TaxRateID   *string `json:"taxRateId"`
 	ProductID   *string `json:"productId"`
 }
 
@@ -207,8 +214,17 @@ func toLineInput(req createInvoiceLineRequest) (InvoiceLineInput, error) {
 		}
 		productID = &id
 	}
+	var taxRateID *uuid.UUID
+	if req.TaxRateID != nil && *req.TaxRateID != "" {
+		id, err := uuid.Parse(*req.TaxRateID)
+		if err != nil {
+			return InvoiceLineInput{}, err
+		}
+		taxRateID = &id
+	}
 	return InvoiceLineInput{
-		Description: req.Description, Quantity: req.Quantity, UnitPrice: req.UnitPrice, TaxRate: req.TaxRate, ProductID: productID,
+		Description: req.Description, Quantity: req.Quantity, UnitPrice: req.UnitPrice, TaxRate: req.TaxRate,
+		TaxRateID: taxRateID, ProductID: productID,
 	}, nil
 }
 
