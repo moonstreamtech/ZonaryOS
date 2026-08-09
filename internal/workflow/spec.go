@@ -11,7 +11,10 @@
 // flow is just a bigger DefinitionSpec value, not a new code path.
 package workflow
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // PermissionSpec is a permission catalog entry a workflow definition or
 // transition requires. DefineWorkflow upserts these into the global
@@ -35,78 +38,114 @@ type StateSpec struct {
 // action, gated by Permission (the Rule 7 tag for this transition).
 //
 // Side-effect templates: a transition can carry any number of the
-// declarative, OPTIONAL "bridge" templates below - Journal (the ledger
-// bridge), StockAdjustment (the inventory bridge), Delivery (the
-// logistics bridge), Customer (the CRM bridge). All four share one shape
-// and one contract, deliberately: each is a `*XTemplate` pointer, nil by
-// default (every TransitionSpec that predates a given template keeps
-// behaving exactly as before - Rule 6), resolved by ExecuteTransition
-// against the transition's merged instance payload at transition time
-// (never baked in ahead of time), and applied in the SAME database
-// transaction as the state change itself, through that module's own `*Tx`
-// primitive (PostJournalEntryTx / AdjustStockTx / CreateDeliveryTx /
-// CreateCustomerTx) - so a side effect can never end up out of sync with
-// the transition that produced it. A transition can carry several at
-// once (e.g. stock_to_sale's record_sale carries Journal AND
-// StockAdjustment AND Delivery) - they are independent, each resolved and
-// applied on its own, not a single combined mechanism.
+// declarative, OPTIONAL "bridge" templates below, each attached as an
+// entry in Effects - the ledger bridge (JournalTemplate), the inventory
+// bridge (StockAdjustmentTemplate), the logistics bridge
+// (DeliveryTemplate), the CRM bridge (CustomerTemplate), and the
+// invoicing bridge (InvoiceTemplate). All five share one shape and one
+// contract, deliberately: each is resolved by ExecuteTransition against
+// the transition's merged instance payload at transition time (never
+// baked in ahead of time), and applied in the SAME database transaction
+// as the state change itself, through that module's own `*Tx` primitive
+// (PostJournalEntryTx / AdjustStockTx / CreateDeliveryTx /
+// CreateCustomerTx / CreateInvoiceTx) - so a side effect can never end up
+// out of sync with the transition that produced it. A transition can
+// carry several at once (e.g. stock_to_sale's record_sale carries
+// Journal AND StockAdjustment AND Delivery AND Invoice effects) - they
+// are independent, each resolved and applied on its own, not a single
+// combined mechanism. A TransitionSpec with no Effects (every
+// TransitionSpec that existed before the first bridge template was
+// added) keeps behaving exactly as before - Rule 6.
 //
-// Why four separate named fields rather than one generic
-// `Effects []TransitionEffect` slice: with four, a reader can see a
-// transition's full side-effect surface at a glance in the struct
-// literal (as stock_to_sale.go's record_sale does) and the compiler
-// catches a typo'd field name - a real, concrete advantage a
-// `[]TransitionEffect` (interface-typed, JSON-discriminated by a `Kind`
-// string, resolved through a `switch` in engine.go) would trade away for
-// open-endedness this codebase doesn't need yet: every bridge so far is a
-// small, closed set the product vision itself enumerates (ledger,
-// inventory, logistics, CRM), not something firms define arbitrarily the
-// way States/Transitions/Fields are. If a fifth or sixth such bridge
-// arrives and this struct starts feeling like a junk drawer, that is the
-// signal to switch to the generic `Effects` shape - not before, since
-// premature genericization here would only replace four self-documenting
-// fields with one indirection layer for no present benefit.
+// Effects (this refactor): a generic `[]TransitionEffect` slice, each
+// entry a `{Kind, Payload}` pair - Payload is the exact same
+// JournalTemplate/StockAdjustmentTemplate/DeliveryTemplate/
+// CustomerTemplate/InvoiceTemplate struct every one of those five bridges
+// already used, just marshalled into a Kind-tagged envelope instead of
+// living behind its own named `*XTemplate` struct field. This replaces
+// what used to be five separate named fields (Journal, StockAdjustment,
+// Delivery, Customer, Invoice) - the fifth of which (Invoice) crossed
+// this struct's own previously-documented threshold ("a fifth or sixth
+// such bridge... is the signal to switch to the generic Effects shape").
+// That refactor is this one. See the JournalEffect/StockEffect/
+// DeliveryEffect/CustomerEffect/InvoiceEffect constructors below for how
+// a DefinitionSpec author attaches one (stock_to_sale.go's record_sale is
+// the concrete multi-effect example), and engine.go's extractEffect for
+// how ExecuteTransition/fetchTransitionInfos read one back out - both
+// keep the exact same per-kind Go types and per-kind HTTP JSON wire shape
+// (`journal`/`stockAdjustment`/`delivery`/`customer`/`invoice` request and
+// response fields, handlers.go) that existed before this refactor; only
+// TransitionSpec's own internal shape and workflow_transitions' storage
+// column changed - see migrations/0017_workflow_effects_refactor.up.sql's
+// own doc comment for the stored-data migration, and this batch's report
+// for the full backward-compatibility proof.
+//
+// A sixth genuinely distinct bridge kind is a new EffectKind constant, a
+// new `*Template` struct, a new constructor, and a new case in
+// extractEffect's callers - no further schema change, since Effects is
+// already the open-ended shape this batch's threshold called for.
 type TransitionSpec struct {
 	FromStateKey string
 	ToStateKey   string
 	ActionKey    string
 	Name         string
 	Permission   PermissionSpec
-	// Journal is OPTIONAL: the workflow-to-ledger bridge (Vision §3's
-	// financial management core). When set, ExecuteTransition
-	// automatically posts a journal entry (internal/accounting.PostJournalEntryTx)
-	// alongside the state change itself, resolved from the transition's
-	// merged instance payload - see engine.go's resolveJournalLines. A nil
-	// Journal (every TransitionSpec that existed before this field was
-	// added) keeps behaving exactly as before: no ledger entry is ever
-	// posted for it.
-	Journal *JournalTemplate `json:"journal,omitempty"`
-	// StockAdjustment is OPTIONAL: the workflow-to-inventory bridge
-	// (Inventory management batch), the exact same shape Journal
-	// establishes above but for internal/inventory.AdjustStockTx instead
-	// of internal/accounting.PostJournalEntryTx - not a new mechanism. When
-	// set, ExecuteTransition resolves it against the transition's merged
-	// instance payload and applies the resulting stock change in the same
-	// transaction as the state change itself - see engine.go's
-	// resolveStockAdjustment. A nil StockAdjustment (every TransitionSpec
-	// that existed before this field was added) keeps behaving exactly as
-	// before: no stock is ever adjusted for it.
-	StockAdjustment *StockAdjustmentTemplate `json:"stockAdjustment,omitempty"`
-	// Delivery is OPTIONAL: the workflow-to-logistics bridge (Logistics
-	// management batch), the same shape as Journal/StockAdjustment above
-	// but for internal/logistics.CreateDeliveryTx. When set,
-	// ExecuteTransition resolves it against the merged payload and, if a
-	// destination address is present, creates a deliveries row in the same
-	// transaction as the state change - see engine.go's resolveDelivery.
-	Delivery *DeliveryTemplate `json:"delivery,omitempty"`
-	// Customer is OPTIONAL: the workflow-to-CRM bridge (Logistics/CRM
-	// batch), the same shape as the templates above but for
-	// internal/crm.CreateCustomerTx. When set, ExecuteTransition resolves
-	// it against the merged payload and, if a name is present, creates a
-	// customers row (with SourceWorkflowInstance set) in the same
-	// transaction as the state change - see engine.go's resolveCustomer.
-	Customer *CustomerTemplate `json:"customer,omitempty"`
+	Effects      []TransitionEffect `json:"effects,omitempty"`
 }
+
+// TransitionEffect is one Kind-tagged side effect a transition carries -
+// Payload is the corresponding template struct
+// (JournalTemplate/StockAdjustmentTemplate/DeliveryTemplate/
+// CustomerTemplate/InvoiceTemplate), marshalled - see this file's
+// EffectKind constants for the closed set of valid Kind values and the
+// JournalEffect/StockEffect/DeliveryEffect/CustomerEffect/InvoiceEffect
+// constructors for the normal way to build one.
+type TransitionEffect struct {
+	Kind    string          `json:"kind"`
+	Payload json.RawMessage `json:"payload"`
+}
+
+// EffectKind is TransitionEffect.Kind's closed vocabulary - one constant
+// per bridge template this package defines. Deliberately plain strings
+// (not a named EffectKind type) so TransitionEffect.Kind round-trips
+// through JSON/jsonb storage with no custom marshalling.
+const (
+	EffectKindJournal  = "journal"
+	EffectKindStock    = "stock"
+	EffectKindDelivery = "delivery"
+	EffectKindCustomer = "customer"
+	EffectKindInvoice  = "invoice"
+)
+
+// newEffect marshals payload (always one of this package's own template
+// structs) into a Kind-tagged TransitionEffect - the shared primitive
+// JournalEffect/StockEffect/DeliveryEffect/CustomerEffect/InvoiceEffect
+// below all call. Every caller in this codebase passes a static Go
+// literal built at package-init time (stock_to_sale.go/customer_pipeline.go/
+// purchase_order.go's own DefinitionSpec vars) - a marshal failure here
+// would mean one of those literals is itself unmarshalable, which never
+// happens for the plain string/slice fields these template structs
+// actually have, so a panic (surfacing at process startup, long before
+// any HTTP request) is preferable to silently dropping an effect.
+func newEffect(kind string, payload any) TransitionEffect {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		panic(fmt.Sprintf("workflow: marshal %s effect: %v", kind, err))
+	}
+	return TransitionEffect{Kind: kind, Payload: json.RawMessage(data)}
+}
+
+// JournalEffect/StockEffect/DeliveryEffect/CustomerEffect/InvoiceEffect
+// wrap the corresponding template struct into a TransitionEffect ready to
+// append to TransitionSpec.Effects - see stock_to_sale.go's record_sale
+// for the concrete multi-effect example.
+func JournalEffect(jt JournalTemplate) TransitionEffect { return newEffect(EffectKindJournal, jt) }
+func StockEffect(sat StockAdjustmentTemplate) TransitionEffect {
+	return newEffect(EffectKindStock, sat)
+}
+func DeliveryEffect(dt DeliveryTemplate) TransitionEffect { return newEffect(EffectKindDelivery, dt) }
+func CustomerEffect(ct CustomerTemplate) TransitionEffect { return newEffect(EffectKindCustomer, ct) }
+func InvoiceEffect(it InvoiceTemplate) TransitionEffect   { return newEffect(EffectKindInvoice, it) }
 
 // DeliveryTemplate describes the deliveries row a transition should
 // create - the declarative shape a workflow definition carries; engine.go
@@ -154,6 +193,47 @@ type CustomerTemplate struct {
 	EmailField   string
 	PhoneField   string
 	AddressField string
+}
+
+// InvoiceTemplate describes the draft invoice (with one line) a
+// transition should create - the declarative shape a workflow definition
+// carries; engine.go resolves it against one specific instance's payload
+// at ExecuteTransition time, the same "resolved fresh per call, never
+// baked in ahead of time" reasoning every other template in this file
+// gives.
+type InvoiceTemplate struct {
+	// Description becomes the created line's description, with
+	// "{{field}}" placeholders substituted from the transition's merged
+	// instance payload - the same interpolateTemplate mechanism
+	// JournalTemplate.Description already uses (e.g. "Sale of {{item}}").
+	Description string
+	// ProductField OPTIONALLY names the payload field holding the line's
+	// product ID (a string UUID) - e.g. "product_id". Absent simply
+	// leaves invoice_lines.product_id NULL, the same "missing optional
+	// field means NULL column, not a skip" contract
+	// DeliveryTemplate.OriginAddressField's own doc comment gives.
+	ProductField string
+	// QuantityField/UnitPriceField name the payload fields holding the
+	// line's quantity and unit price - e.g. "quantity"/"unit_price".
+	// BOTH must be present (and numeric) on a given transition call for
+	// the whole template to apply; either absent skips it entirely (not
+	// an error) - the same Rule-6-in-spirit reasoning
+	// StockAdjustmentTemplate.ProductField's own doc comment gives: many
+	// existing/legitimate callers of a transition that later gains an
+	// InvoiceTemplate won't supply a price on every call, and this bridge
+	// must never turn "the caller didn't send a price" into a broken
+	// state transition.
+	QuantityField  string
+	UnitPriceField string
+	// CustomerField OPTIONALLY names the payload field holding the
+	// invoice's customer ID (a string UUID) - e.g. "customer_id". Absent
+	// simply leaves invoices.customer_id NULL. Declared explicitly here
+	// (unlike resolveJournalDescription's hardcoded customer_id
+	// convention, engine.go) since a firm-defined workflow carrying an
+	// InvoiceTemplate may use any field name for its own customer
+	// reference, not just the one well-known convention stock_to_sale
+	// happens to use.
+	CustomerField string
 }
 
 // StockAdjustmentTemplate describes the stock_levels change a transition
@@ -406,23 +486,8 @@ func (d DefinitionSpec) Validate() error {
 		if t.Permission.Key == "" {
 			return fmt.Errorf("workflow definition %q: transition %q must have a permission key", d.Key, t.ActionKey)
 		}
-		if t.Journal != nil {
-			if err := validateJournalTemplate(d.Key, t.ActionKey, *t.Journal); err != nil {
-				return err
-			}
-		}
-		if t.StockAdjustment != nil {
-			if err := validateStockAdjustmentTemplate(d.Key, t.ActionKey, *t.StockAdjustment); err != nil {
-				return err
-			}
-		}
-		if t.Delivery != nil {
-			if err := validateDeliveryTemplate(d.Key, t.ActionKey, *t.Delivery); err != nil {
-				return err
-			}
-		}
-		if t.Customer != nil {
-			if err := validateCustomerTemplate(d.Key, t.ActionKey, *t.Customer); err != nil {
+		for _, e := range t.Effects {
+			if err := validateEffect(d.Key, t.ActionKey, e); err != nil {
 				return err
 			}
 		}
@@ -642,6 +707,73 @@ func validateCustomerTemplate(defKey, actionKey string, ct CustomerTemplate) err
 		return fmt.Errorf("workflow definition %q: transition %q: customer template must name a name field", defKey, actionKey)
 	}
 	return nil
+}
+
+// validateInvoiceTemplate checks one TransitionSpec's optional
+// InvoiceTemplate is structurally sound: a non-empty description, a
+// quantity field name, and a unit price field name. Same "cannot check
+// the referenced field's value at spec-definition time" limitation every
+// other template validator in this file documents - that happens at
+// ExecuteTransition time instead (engine.go's resolveInvoice), against a
+// real instance payload.
+func validateInvoiceTemplate(defKey, actionKey string, it InvoiceTemplate) error {
+	if it.Description == "" {
+		return fmt.Errorf("workflow definition %q: transition %q: invoice template description must not be empty", defKey, actionKey)
+	}
+	if it.QuantityField == "" {
+		return fmt.Errorf("workflow definition %q: transition %q: invoice template must name a quantity field", defKey, actionKey)
+	}
+	if it.UnitPriceField == "" {
+		return fmt.Errorf("workflow definition %q: transition %q: invoice template must name a unit price field", defKey, actionKey)
+	}
+	return nil
+}
+
+// validateEffect dispatches one TransitionEffect to the validator for its
+// own Kind - the Effects-refactor's counterpart to what used to be five
+// separate `if t.Journal != nil { validateJournalTemplate(...) }`-shaped
+// blocks in Validate's own transition loop. An unknown Kind (e.g. a typo
+// in a hand-authored DefinitionSpec, or a malicious/malformed value in a
+// firm-supplied `POST .../workflow-definitions` request body) is
+// rejected outright - Effects is a closed vocabulary (EffectKind's own
+// doc comment), not something a firm extends. A Payload that fails to
+// unmarshal into its Kind's own template struct is reported the same way
+// a malformed request body anywhere else in this codebase is.
+func validateEffect(defKey, actionKey string, e TransitionEffect) error {
+	switch e.Kind {
+	case EffectKindJournal:
+		var jt JournalTemplate
+		if err := json.Unmarshal(e.Payload, &jt); err != nil {
+			return fmt.Errorf("workflow definition %q: transition %q: invalid journal effect payload: %w", defKey, actionKey, err)
+		}
+		return validateJournalTemplate(defKey, actionKey, jt)
+	case EffectKindStock:
+		var sat StockAdjustmentTemplate
+		if err := json.Unmarshal(e.Payload, &sat); err != nil {
+			return fmt.Errorf("workflow definition %q: transition %q: invalid stock effect payload: %w", defKey, actionKey, err)
+		}
+		return validateStockAdjustmentTemplate(defKey, actionKey, sat)
+	case EffectKindDelivery:
+		var dt DeliveryTemplate
+		if err := json.Unmarshal(e.Payload, &dt); err != nil {
+			return fmt.Errorf("workflow definition %q: transition %q: invalid delivery effect payload: %w", defKey, actionKey, err)
+		}
+		return validateDeliveryTemplate(defKey, actionKey, dt)
+	case EffectKindCustomer:
+		var ct CustomerTemplate
+		if err := json.Unmarshal(e.Payload, &ct); err != nil {
+			return fmt.Errorf("workflow definition %q: transition %q: invalid customer effect payload: %w", defKey, actionKey, err)
+		}
+		return validateCustomerTemplate(defKey, actionKey, ct)
+	case EffectKindInvoice:
+		var it InvoiceTemplate
+		if err := json.Unmarshal(e.Payload, &it); err != nil {
+			return fmt.Errorf("workflow definition %q: transition %q: invalid invoice effect payload: %w", defKey, actionKey, err)
+		}
+		return validateInvoiceTemplate(defKey, actionKey, it)
+	default:
+		return fmt.Errorf("workflow definition %q: transition %q: unknown effect kind %q (must be one of journal/stock/delivery/customer/invoice)", defKey, actionKey, e.Kind)
+	}
 }
 
 // PermissionKeys lists every permission key this spec references (its

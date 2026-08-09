@@ -85,6 +85,22 @@ const (
 	// pending_deliveries below for the contrasting case that DOES belong
 	// under KPIKindInventoryKPI).
 	KPIKindCRM KPIKind = "crm"
+	// KPIKindReceivables (Invoicing/payment tracking batch): dispatches
+	// further on ReceivablesMetric below. Both of this Kind's metrics
+	// (overdue_invoices, total_outstanding) read internal/invoicing's own
+	// invoices/payments tables directly - a genuinely different data
+	// source and shape from KPIKindAccountBalanceNow's own
+	// outstandingReceivables descriptor above (which sums the ledger's
+	// Trade Receivables account balance). The two intentionally coexist,
+	// not a replacement for one another: outstandingReceivables answers
+	// "what does the ledger say is owed" (every DR Trade Receivables
+	// entry, regardless of whether an invoices row exists behind it -
+	// e.g. a manually-posted journal entry), while total_outstanding
+	// here answers "what do open INVOICES specifically say is owed,
+	// per-invoice, net of their own recorded payments" - the aging
+	// report's own per-invoice arithmetic (internal/invoicing.ReceivablesAging),
+	// surfaced as a single dashboard number.
+	KPIKindReceivables KPIKind = "receivables"
 )
 
 // InventoryMetric is KPIKindInventoryKPI's own descriptor field - which
@@ -138,6 +154,29 @@ const (
 	CRMMetricActiveCustomers CRMMetric = "active_customers"
 )
 
+// ReceivablesMetric is KPIKindReceivables' own descriptor field - which
+// receivables-specific aggregation to compute (see computeReceivablesKPI).
+type ReceivablesMetric string
+
+const (
+	// ReceivablesMetricOverdueInvoices: how many invoices are either
+	// explicitly status='overdue', or still status='sent' but past their
+	// own due_date as of today - the same "an invoice can be overdue in
+	// substance before anything has manually flipped its status" reasoning
+	// internal/invoicing.ReceivablesAging's own bucket-by-age query
+	// already applies (an invoice doesn't need a cron job or a manual
+	// PATCH to "count" as overdue for this KPI).
+	ReceivablesMetricOverdueInvoices ReceivablesMetric = "overdue_invoices"
+	// ReceivablesMetricTotalOutstanding: SUM(invoice.total minus that
+	// invoice's own recorded payments) across every unpaid invoice
+	// ('sent' or 'overdue' - 'draft' isn't a real receivable yet, 'paid'/
+	// 'cancelled' are no longer outstanding). Computed entirely in
+	// Postgres's own exact `numeric` arithmetic (never a Go float), same
+	// discipline internal/invoicing.recomputeInvoiceTotalsTx's own doc
+	// comment establishes.
+	ReceivablesMetricTotalOutstanding ReceivablesMetric = "total_outstanding"
+)
+
 // Period is KPIKindAccountBalancePeriod's own descriptor field - which
 // calendar period (relative to now, computed at query time) to sum over.
 type Period string
@@ -184,6 +223,9 @@ type KPIDescriptor struct {
 
 	// CRMMetric is used by KPIKindCRM.
 	CRMMetric CRMMetric
+
+	// ReceivablesMetric is used by KPIKindReceivables.
+	ReceivablesMetric ReceivablesMetric
 }
 
 // kpiDescriptors is the dashboard's actual KPI list - the design brief's
@@ -235,6 +277,14 @@ var kpiDescriptors = []KPIDescriptor{
 	{
 		Key: "activeCustomers", Kind: KPIKindCRM,
 		CRMMetric: CRMMetricActiveCustomers,
+	},
+	{
+		Key: "overdueInvoices", Kind: KPIKindReceivables,
+		ReceivablesMetric: ReceivablesMetricOverdueInvoices,
+	},
+	{
+		Key: "totalOutstanding", Kind: KPIKindReceivables,
+		ReceivablesMetric: ReceivablesMetricTotalOutstanding,
 	},
 }
 
@@ -340,6 +390,9 @@ func computeKPI(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, d KPIDescripto
 	case KPIKindCRM:
 		return computeCRMKPI(ctx, tx, firmID, d)
 
+	case KPIKindReceivables:
+		return computeReceivablesKPI(ctx, tx, firmID, d)
+
 	default:
 		return KPIResult{}, fmt.Errorf("unknown KPI kind %q", d.Kind)
 	}
@@ -438,6 +491,51 @@ func computeCRMKPI(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, d KPIDescri
 
 	default:
 		return KPIResult{}, fmt.Errorf("unknown CRM metric %q", d.CRMMetric)
+	}
+}
+
+// computeReceivablesKPI dispatches on d.ReceivablesMetric - the same role
+// computeInventoryKPI/computeCRMKPI's own switches play for their metric
+// types.
+//
+// ciaudit:ignore-firmid-check: internal helper called only by computeKPI,
+// itself only called by GetDashboardKPIs after permission.IsMember has
+// already run - firmID here scopes each query (defense in depth alongside
+// RLS), it is not itself an authorization decision.
+func computeReceivablesKPI(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, d KPIDescriptor) (KPIResult, error) {
+	switch d.ReceivablesMetric {
+	case ReceivablesMetricOverdueInvoices:
+		var count int
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM invoices
+			WHERE firm_id = $1 AND (status = 'overdue' OR (status = 'sent' AND due_date < CURRENT_DATE))
+		`, firmID).Scan(&count); err != nil {
+			return KPIResult{}, fmt.Errorf("count overdue invoices: %w", err)
+		}
+		return KPIResult{Key: d.Key, Unit: unitCount, Value: fmt.Sprintf("%d", count)}, nil
+
+	case ReceivablesMetricTotalOutstanding:
+		// GREATEST(..., 0): an overpaid invoice (this batch does not
+		// reject overpayment, see internal/invoicing.RecordPayment's own
+		// doc comment) would otherwise contribute a negative "outstanding"
+		// amount to the sum - defense in depth, since an overpaid invoice
+		// also auto-closes to 'paid' and so is excluded by the WHERE
+		// clause below anyway in the ordinary case.
+		var value string
+		if err := tx.QueryRow(ctx, `
+			SELECT COALESCE(SUM(GREATEST(i.total - COALESCE(p.paid, 0), 0)), 0)::numeric(19,4)::text
+			FROM invoices i
+			LEFT JOIN (
+				SELECT invoice_id, SUM(amount) AS paid FROM payments GROUP BY invoice_id
+			) p ON p.invoice_id = i.id
+			WHERE i.firm_id = $1 AND i.status IN ('sent', 'overdue')
+		`, firmID).Scan(&value); err != nil {
+			return KPIResult{}, fmt.Errorf("sum total outstanding: %w", err)
+		}
+		return KPIResult{Key: d.Key, Unit: unitCurrency, Value: value}, nil
+
+	default:
+		return KPIResult{}, fmt.Errorf("unknown receivables metric %q", d.ReceivablesMetric)
 	}
 }
 

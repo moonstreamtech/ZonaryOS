@@ -122,11 +122,13 @@ var CustomerPipelineSpec = DefinitionSpec{
 			// nothing" - this package's own pre-existing tests that
 			// convert a lead with a freeform, name-less payload keep
 			// working unchanged (Rule 6).
-			Customer: &CustomerTemplate{
-				NameField:    "name",
-				EmailField:   "email",
-				PhoneField:   "phone",
-				AddressField: "address",
+			Effects: []TransitionEffect{
+				CustomerEffect(CustomerTemplate{
+					NameField:    "name",
+					EmailField:   "email",
+					PhoneField:   "phone",
+					AddressField: "address",
+				}),
 			},
 		},
 		{

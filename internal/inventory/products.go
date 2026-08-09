@@ -199,6 +199,79 @@ func CreateProduct(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.
 	return product, nil
 }
 
+// CreateProductTx is CreateProduct's already-open-transaction counterpart,
+// for callers (internal/portability's configuration import) that need
+// product creation as one step inside a larger atomic operation - the
+// same "*Tx, no authorization of its own, shared by every entry point"
+// pattern internal/workflow.DefineWorkflowTx already establishes. Returns
+// ErrProductSKUExists on a (firm_id, sku) collision, the exact same
+// sentinel CreateProduct itself returns - the caller decides whether
+// that's a hard failure or (as configuration import does) a natural
+// "already imported, skip" signal.
+//
+// ciaudit:ignore-firmid-check: shared product-creation primitive; every
+// caller has already run its own authorization check before calling this.
+func CreateProductTx(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, input CreateProductInput) (Product, error) {
+	sku := strings.TrimSpace(input.SKU)
+	name := strings.TrimSpace(input.Name)
+	if sku == "" {
+		return Product{}, fmt.Errorf("%w: sku must not be empty", ErrInvalidProduct)
+	}
+	if name == "" {
+		return Product{}, fmt.Errorf("%w: name must not be empty", ErrInvalidProduct)
+	}
+	unit := strings.TrimSpace(input.Unit)
+	if unit == "" {
+		unit = defaultUnit
+	}
+	unitPrice, err := decimalOrNil(input.UnitPrice)
+	if err != nil {
+		return Product{}, err
+	}
+	costPrice, err := decimalOrNil(input.CostPrice)
+	if err != nil {
+		return Product{}, err
+	}
+	taxRate, err := decimalOrNil(input.TaxRate)
+	if err != nil {
+		return Product{}, err
+	}
+	minQuantity := strings.TrimSpace(input.MinQuantity)
+	if minQuantity == "" {
+		minQuantity = "0"
+	} else if !amountPattern.MatchString(minQuantity) {
+		return Product{}, fmt.Errorf("%w: minQuantity %q must be a positive decimal with at most 4 fraction digits", ErrInvalidProduct, minQuantity)
+	}
+	customFields := input.CustomFields
+	if customFields == nil {
+		customFields = map[string]any{}
+	}
+	customFieldsJSON, err := json.Marshal(customFields)
+	if err != nil {
+		return Product{}, fmt.Errorf("marshal custom fields: %w", err)
+	}
+
+	product := Product{
+		FirmID: firmID, SKU: sku, Name: name, Description: optionalString(input.Description),
+		Unit: unit, UnitPrice: unitPrice, CostPrice: costPrice, TaxRate: taxRate,
+		Category: optionalString(input.Category), MinQuantity: minQuantity, CustomFields: customFields, IsActive: true,
+	}
+	err = tx.QueryRow(ctx, `
+		INSERT INTO products (firm_id, sku, name, description, unit, unit_price, cost_price, tax_rate, category, min_quantity, custom_fields)
+		VALUES ($1, $2, $3, $4, $5, $6::numeric, $7::numeric, $8::numeric, $9, $10::numeric, $11)
+		RETURNING id, created_at
+	`, firmID, sku, name, product.Description, unit, unitPrice, costPrice, taxRate, product.Category, minQuantity, customFieldsJSON,
+	).Scan(&product.ID, &product.CreatedAt)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == postgresUniqueViolation {
+			return Product{}, ErrProductSKUExists
+		}
+		return Product{}, fmt.Errorf("insert product: %w", err)
+	}
+	return product, nil
+}
+
 // ProductUpdate is UpdateProduct's partial-update input - nil leaves that
 // column unchanged, matching internal/accounting.AccountUpdate/internal/hr.PersonUpdate's
 // convention. SKU is immutable once created (same "identity field"

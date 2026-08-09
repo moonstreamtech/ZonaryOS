@@ -28,6 +28,7 @@
     "suppliers": "Suppliers",
     "logistics": "Logistics",
     "customers": "Customers",
+    "invoices": "Invoices",
     "logout": "Log out",
     "firmSwitcherLabel": "Active firm"
   },
@@ -286,7 +287,21 @@
     "roleUnavailable": "Unavailable",
     "workflowsTitle": "Active workflows",
     "workflowsEmpty": "No workflows set up for this firm yet.",
-    "workflowsLoadError": "Couldn't load this firm's workflows. Please try again."
+    "workflowsLoadError": "Couldn't load this firm's workflows. Please try again.",
+    "exportTitle": "Export firm data",
+    "exportDescription": "Download a complete JSON snapshot of this firm's configuration and data - accounts, workflows, rules, people, products, and more.",
+    "exportButton": "Export",
+    "exportInProgress": "Exporting…",
+    "exportError": "Couldn't export this firm's data. Please try again.",
+    "importTitle": "Import configuration",
+    "importDescription": "Upload a previously exported JSON file to import its configuration (workflows, rules, chart of accounts, product catalog) into this firm. Entries that already exist are skipped, not overwritten. Historical data (transactions, workflow instances, journal entries) is never imported.",
+    "importPermissionDenied": "You don't have permission to import configuration into this firm.",
+    "importInvalidDocument": "This file isn't a valid export document.",
+    "importError": "Couldn't import this file. Please try again.",
+    "importSummaryWorkflowDefinitions": "Workflows: {imported} imported, {skipped} skipped",
+    "importSummaryRules": "Rules: {imported} imported, {skipped} skipped",
+    "importSummaryAccounts": "Accounts: {imported} imported, {skipped} skipped",
+    "importSummaryProducts": "Products: {imported} imported, {skipped} skipped"
   },
   "AuditLog": {
     "title": "Audit Log",
@@ -465,7 +480,9 @@
       "lowStockProducts": "Low-stock products",
       "totalInventoryValue": "Total inventory value",
       "pendingDeliveries": "Pending deliveries",
-      "activeCustomers": "Active customers"
+      "activeCustomers": "Active customers",
+      "overdueInvoices": "Overdue invoices",
+      "totalOutstanding": "Total outstanding"
     }
   },
   "Financials": {
@@ -483,6 +500,11 @@
     "tabBalances": "Account Balances",
     "tabPnL": "Profit & Loss",
     "tabBalanceSheet": "Balance Sheet",
+    "tabAging": "Receivables Aging",
+    "agingTitle": "Receivables aging",
+    "agingBucket": "Days overdue",
+    "agingCount": "Invoices",
+    "agingOutstanding": "Outstanding",
     "fromLabel": "From",
     "toLabel": "To",
     "asOfLabel": "As of",
@@ -665,5 +687,49 @@
     "phone": "Phone",
     "address": "Address",
     "fromPipeline": "From Customer Pipeline"
+  },
+  "Invoices": {
+    "title": "Invoices",
+    "loadError": "Couldn't load this data. Please try again.",
+    "empty": "No invoices yet.",
+    "invoicesTitle": "Invoices",
+    "newInvoice": "+ New invoice",
+    "cancel": "Cancel",
+    "create": "Create",
+    "createRequired": "Please fill in the issued date, line description, quantity, and unit price.",
+    "createError": "Couldn't create this invoice. Please try again.",
+    "customer": "Customer",
+    "customerNone": "No customer",
+    "issuedDate": "Issued date",
+    "dueDate": "Due date",
+    "lineDescription": "Description",
+    "lineQuantity": "Quantity",
+    "lineUnitPrice": "Unit price",
+    "lineTotal": "Line total",
+    "columnNumber": "Invoice #",
+    "columnStatus": "Status",
+    "columnTotal": "Total",
+    "columnIssuedDate": "Issued",
+    "subtotalAndTax": "Subtotal + tax",
+    "changeStatus": "Change status:",
+    "statusUpdateError": "Couldn't update the invoice's status. Please try again.",
+    "linesTitle": "Lines",
+    "paymentsTitle": "Payments",
+    "noPayments": "No payments recorded yet.",
+    "recordPaymentTitle": "Record a payment",
+    "recordPayment": "Record payment",
+    "paymentAmount": "Amount",
+    "paymentDate": "Paid on",
+    "paymentMethod": "Method",
+    "paymentReference": "Reference",
+    "paymentRequired": "Please enter an amount and a payment date.",
+    "paymentError": "Couldn't record this payment. Please try again.",
+    "status": {
+      "draft": "Draft",
+      "sent": "Sent",
+      "paid": "Paid",
+      "overdue": "Overdue",
+      "cancelled": "Cancelled"
+    }
   }
 }

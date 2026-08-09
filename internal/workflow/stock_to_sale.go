@@ -75,70 +75,95 @@ var StockToSaleSpec = DefinitionSpec{
 				Key:         RecordSalePermission,
 				Description: "Record the sale of an in-stock item.",
 			},
-			// The workflow-to-ledger bridge's real working example
-			// (Vision §3's financial management core): recording a sale
-			// posts DR Trade Receivables / CR Sales Revenue, for
-			// quantity * unit_price - both fields realistically present
-			// on a sale ("quantity" is the field this package's own
-			// tests already use for stock_to_sale instances, see
-			// rules_integration_test.go; "unit_price" is this batch's
-			// addition, since a sale amount needs a price, not just a
-			// quantity). Account codes 1100/4000 match the core chart of
-			// accounts internal/wizard.CreateDefaultFirm seeds via
-			// internal/accounting.SeedDefaultChartOfAccountsTx whenever a
-			// firm answers "yes" to selling products - the same
-			// precondition (Sells && TracksInventory) that seeds this
-			// workflow in the first place, so the accounts this template
-			// names are always present when this workflow exists. Left
-			// unset (nil) on any transition means "post nothing" - see
-			// TransitionSpec.Journal's own doc comment - so a caller that
-			// executes record_sale without supplying quantity/unit_price
-			// (every call site that predates this batch) keeps working
-			// exactly as before; the entry is only posted once both
-			// fields are actually present (see resolveJournalLines in
-			// engine.go).
-			Journal: &JournalTemplate{
-				Description: "Sale of {{item}}",
-				Lines: []LineTemplate{
-					{AccountCode: accounting.TradeReceivablesAccountCode, Side: "debit", AmountField: "quantity*unit_price"},
-					{AccountCode: accounting.SalesRevenueAccountCode, Side: "credit", AmountField: "quantity*unit_price"},
-				},
-			},
-			// The workflow-to-inventory bridge (Inventory management
-			// batch), wired the exact same way the Journal template just
-			// above is: when both product_id and quantity are present on
-			// this call, ExecuteTransition decreases stock_levels.quantity
-			// by quantity, in the SAME transaction as this journal entry
-			// and the state change itself (engine.go's
-			// resolveStockAdjustment/internal/inventory.AdjustStockTx) - a
-			// sale that would take stock below zero fails the whole
-			// transition (ErrInsufficientStock), not just this hook, per
-			// the design brief's "reject, don't just warn". Left unset on
-			// any call that predates this batch (no product_id supplied)
-			// means "adjust nothing" - see StockAdjustmentTemplate's own
-			// doc comment.
-			StockAdjustment: &StockAdjustmentTemplate{
-				ProductField:  "product_id",
-				QuantityField: "quantity",
-				Direction:     "decrease",
-				Reason:        "sale",
-			},
-			// The workflow-to-logistics bridge (Logistics management
-			// batch): "selling a product can automatically create a
-			// delivery record - operational continuity without manual
-			// steps" (design brief). When destination_address is present
-			// on this call, ExecuteTransition creates a deliveries row
-			// (status "pending") in the SAME transaction as the journal
-			// entry, stock adjustment, and state change - see
-			// DeliveryTemplate's own doc comment. Left unset on any call
-			// that predates this batch (no destination_address supplied)
-			// means "create nothing".
-			Delivery: &DeliveryTemplate{
-				DestinationAddressField: "destination_address",
-				OriginAddressField:      "origin_address",
-				CarrierField:            "carrier",
-				TrackingNumberField:     "tracking_number",
-				ReferenceField:          "item",
+			// Four independent bridge effects, each a TransitionEffect in
+			// this slice (the Effects refactor - see TransitionSpec's own
+			// doc comment for why this is a slice of Kind-tagged entries
+			// rather than four separate named struct fields):
+			Effects: []TransitionEffect{
+				// The workflow-to-ledger bridge's real working example
+				// (Vision §3's financial management core): recording a sale
+				// posts DR Trade Receivables / CR Sales Revenue, for
+				// quantity * unit_price - both fields realistically present
+				// on a sale ("quantity" is the field this package's own
+				// tests already use for stock_to_sale instances, see
+				// rules_integration_test.go; "unit_price" is this batch's
+				// addition, since a sale amount needs a price, not just a
+				// quantity). Account codes 1100/4000 match the core chart of
+				// accounts internal/wizard.CreateDefaultFirm seeds via
+				// internal/accounting.SeedDefaultChartOfAccountsTx whenever a
+				// firm answers "yes" to selling products - the same
+				// precondition (Sells && TracksInventory) that seeds this
+				// workflow in the first place, so the accounts this template
+				// names are always present when this workflow exists. Absent
+				// on any transition means "post nothing" - so a caller that
+				// executes record_sale without supplying quantity/unit_price
+				// (every call site that predates this batch) keeps working
+				// exactly as before; the entry is only posted once both
+				// fields are actually present (see resolveJournalLines in
+				// engine.go).
+				JournalEffect(JournalTemplate{
+					Description: "Sale of {{item}}",
+					Lines: []LineTemplate{
+						{AccountCode: accounting.TradeReceivablesAccountCode, Side: "debit", AmountField: "quantity*unit_price"},
+						{AccountCode: accounting.SalesRevenueAccountCode, Side: "credit", AmountField: "quantity*unit_price"},
+					},
+				}),
+				// The workflow-to-inventory bridge (Inventory management
+				// batch), wired the exact same way the Journal effect just
+				// above is: when both product_id and quantity are present on
+				// this call, ExecuteTransition decreases stock_levels.quantity
+				// by quantity, in the SAME transaction as this journal entry
+				// and the state change itself (engine.go's
+				// resolveStockAdjustment/internal/inventory.AdjustStockTx) - a
+				// sale that would take stock below zero fails the whole
+				// transition (ErrInsufficientStock), not just this hook, per
+				// the design brief's "reject, don't just warn". Absent on
+				// any call that predates this batch (no product_id supplied)
+				// means "adjust nothing" - see StockAdjustmentTemplate's own
+				// doc comment.
+				StockEffect(StockAdjustmentTemplate{
+					ProductField:  "product_id",
+					QuantityField: "quantity",
+					Direction:     "decrease",
+					Reason:        "sale",
+				}),
+				// The workflow-to-logistics bridge (Logistics management
+				// batch): "selling a product can automatically create a
+				// delivery record - operational continuity without manual
+				// steps" (design brief). When destination_address is present
+				// on this call, ExecuteTransition creates a deliveries row
+				// (status "pending") in the SAME transaction as the journal
+				// entry, stock adjustment, and state change - see
+				// DeliveryTemplate's own doc comment. Absent on any call
+				// that predates this batch (no destination_address supplied)
+				// means "create nothing".
+				DeliveryEffect(DeliveryTemplate{
+					DestinationAddressField: "destination_address",
+					OriginAddressField:      "origin_address",
+					CarrierField:            "carrier",
+					TrackingNumberField:     "tracking_number",
+					ReferenceField:          "item",
+				}),
+				// The workflow-to-invoicing bridge (Invoicing/payment tracking
+				// batch): "the accounting, customer, and sales modules now have
+				// enough data to generate real invoices" (design brief). When
+				// both quantity and unit_price are present on this call,
+				// ExecuteTransition auto-creates a draft invoice (one line, from
+				// this same sale) in the SAME transaction as the journal entry,
+				// stock adjustment, delivery, and state change - see
+				// InvoiceTemplate's own doc comment. customer_id (already an
+				// existing optional field above) is reused as CustomerField, so
+				// an invoice created for a sale that names a customer carries
+				// that customer_id too - not a new field. Absent on any call
+				// that predates this batch (no quantity/unit_price supplied)
+				// means "create nothing".
+				InvoiceEffect(InvoiceTemplate{
+					Description:    "Sale of {{item}}",
+					ProductField:   "product_id",
+					QuantityField:  "quantity",
+					UnitPriceField: "unit_price",
+					CustomerField:  "customer_id",
+				}),
 			},
 		},
 	},

@@ -9,6 +9,7 @@ import { fetchRoleInFirm } from "@/lib/me";
 import { fetchDefinitions } from "@/lib/workflow";
 import { fetchFirmMetadata } from "@/lib/firm";
 import FirmMetadataEditor from "./FirmMetadataEditor";
+import PortabilityPanel from "./PortabilityPanel";
 
 type PageProps = {
   params: Promise<{ locale: string }>;
@@ -128,6 +129,12 @@ export default async function SettingsPage({ params }: PageProps) {
           </ul>
         )}
       </div>
+
+      {role?.isOwner ? (
+        <div className="w-full max-w-md rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
+          <PortabilityPanel firmId={firm.firmId} />
+        </div>
+      ) : null}
     </main>
   );
 }
