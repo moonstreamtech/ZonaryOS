@@ -18,6 +18,7 @@ import (
 
 	"github.com/moonstreamtech/ZonaryOS/internal/identity"
 	"github.com/moonstreamtech/ZonaryOS/internal/inventory"
+	"github.com/moonstreamtech/ZonaryOS/internal/invoicing"
 )
 
 // maxListInstancesLimit caps the ?limit= query param on GET
@@ -66,6 +67,36 @@ func RegisterRoutes(mux *http.ServeMux, verifier *identity.Verifier, pool *pgxpo
 	mux.Handle("GET /api/firms/{firmID}/workflow-definitions/{definitionID}/instances", auth(http.HandlerFunc(handleListInstances(pool))))
 	mux.Handle("GET /api/firms/{firmID}/workflow-instances/{instanceID}", auth(http.HandlerFunc(handleCurrentState(pool))))
 	mux.Handle("POST /api/firms/{firmID}/workflow-instances/{instanceID}/transitions/{actionKey}", auth(http.HandlerFunc(handleExecuteTransition(pool))))
+	// Part 3a of the multi-tenant isolation hardening + performance batch:
+	// the workflow-instance -> invoice cross-link's read side (the
+	// instance detail page's own new "Associated invoices" section) - a
+	// cross-module read into internal/invoicing.ListInvoicesBySourceInstance,
+	// the same "modules own their own tables, callers read through the
+	// owning module's exported function" boundary internal/portability's
+	// own export already follows.
+	mux.Handle("GET /api/firms/{firmID}/workflow-instances/{instanceID}/invoices", auth(http.HandlerFunc(handleInstanceInvoices(pool))))
+	// Part 3c: the customer detail page's own "Sales" section reads this -
+	// every workflow instance (any definition) whose payload.customer_id
+	// matches ?customerId=, see ListInstancesByCustomer's own doc
+	// comment. A required query param on the bare collection path, not a
+	// nested "/workflow-instances/by-customer/{customerID}" path segment
+	// - the same ambiguous-wildcard-vs-literal ServeMux conflict this
+	// file's own comment on GET .../workflow-definitions?key= already
+	// hit and solved the identical way ("/workflow-instances/{instanceID}"
+	// and "/workflow-instances/{instanceID}/invoices" both already exist
+	// at that same path depth, and net/http's mux can't tell
+	// "/workflow-instances/by-customer/{x}" apart from
+	// "/workflow-instances/{instanceID}/invoices" when {x} could be
+	// "invoices"). Registered here (not under internal/crm's own
+	// /customers/{customerID}/... path) because this query needs
+	// internal/workflow's own tables and internal/workflow already
+	// imports internal/crm (for FieldTypeCustomer validation) - the
+	// reverse import would be a cycle.
+	mux.Handle("GET /api/firms/{firmID}/workflow-instances", auth(http.HandlerFunc(handleInstancesByCustomer(pool))))
+	// Bulk transition (Part 4 of the multi-tenant isolation hardening +
+	// performance batch): see BulkExecuteTransition's own doc comment for
+	// the preconditions and atomicity guarantee.
+	mux.Handle("POST /api/firms/{firmID}/workflow-instances/bulk-transition", auth(http.HandlerFunc(handleBulkTransition(pool))))
 	// Read-only rule listing (Open Points item 7's HTTP surface for this
 	// batch): a rule IS visible in the UI (e.g. on the workflow definition
 	// page), even though the rule-creation form itself is deferred to a
@@ -1025,6 +1056,195 @@ func handleCurrentState(pool *pgxpool.Pool) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(toInstanceStateResponse(state))
+	}
+}
+
+// instanceInvoiceResponse is a summary shape (no lines) - enough for the
+// instance detail page's own "Associated invoices" section to render a
+// list with a link to each invoice's own detail page.
+type instanceInvoiceResponse struct {
+	ID            string `json:"id"`
+	InvoiceNumber string `json:"invoiceNumber"`
+	Status        string `json:"status"`
+	Total         string `json:"total"`
+	Currency      string `json:"currency"`
+}
+
+// handleInstanceInvoices serves GET .../workflow-instances/{instanceID}/invoices
+// - every invoice whose source_workflow_instance is instanceID (Part 3a).
+func handleInstanceInvoices(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := identity.FromContext(r.Context())
+		if !ok {
+			http.Error(w, "missing identity", http.StatusInternalServerError)
+			return
+		}
+		firmID, err := uuid.Parse(r.PathValue("firmID"))
+		if err != nil {
+			http.Error(w, "invalid firm id", http.StatusBadRequest)
+			return
+		}
+		instanceID, err := uuid.Parse(r.PathValue("instanceID"))
+		if err != nil {
+			http.Error(w, "invalid workflow instance id", http.StatusBadRequest)
+			return
+		}
+		userID, err := identity.ResolveOrCreateUser(r.Context(), pool, id)
+		if err != nil {
+			http.Error(w, "failed to resolve user", http.StatusInternalServerError)
+			return
+		}
+
+		invoices, err := invoicing.ListInvoicesBySourceInstance(r.Context(), pool, firmID, userID, instanceID)
+		if err != nil {
+			if errors.Is(err, invoicing.ErrFirmNotFound) {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+
+		resp := make([]instanceInvoiceResponse, 0, len(invoices))
+		for _, inv := range invoices {
+			resp = append(resp, instanceInvoiceResponse{
+				ID: inv.ID.String(), InvoiceNumber: inv.InvoiceNumber, Status: string(inv.Status),
+				Total: inv.Total, Currency: inv.Currency,
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}
+}
+
+// instanceSummaryResponse mirrors InstanceSummary's wire shape.
+type instanceSummaryResponse struct {
+	ID             string `json:"id"`
+	DefinitionKey  string `json:"definitionKey"`
+	DefinitionName string `json:"definitionName"`
+	StateKey       string `json:"stateKey"`
+	StateName      string `json:"stateName"`
+	CreatedAt      string `json:"createdAt"`
+}
+
+// handleInstancesByCustomer serves GET .../workflow-instances?customerId=
+// (Part 3c) - customerId is required for now (the only bare
+// GET .../workflow-instances query this collection path supports); a
+// future caller wanting some other filter shape is real future work, not
+// something this handler needs to anticipate today.
+func handleInstancesByCustomer(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := identity.FromContext(r.Context())
+		if !ok {
+			http.Error(w, "missing identity", http.StatusInternalServerError)
+			return
+		}
+		firmID, err := uuid.Parse(r.PathValue("firmID"))
+		if err != nil {
+			http.Error(w, "invalid firm id", http.StatusBadRequest)
+			return
+		}
+		rawCustomerID := r.URL.Query().Get("customerId")
+		if rawCustomerID == "" {
+			http.Error(w, "customerId query param is required", http.StatusBadRequest)
+			return
+		}
+		customerID, err := uuid.Parse(rawCustomerID)
+		if err != nil {
+			http.Error(w, "invalid customer id", http.StatusBadRequest)
+			return
+		}
+		userID, err := identity.ResolveOrCreateUser(r.Context(), pool, id)
+		if err != nil {
+			http.Error(w, "failed to resolve user", http.StatusInternalServerError)
+			return
+		}
+
+		summaries, err := ListInstancesByCustomer(r.Context(), pool, firmID, userID, customerID)
+		if err != nil {
+			writeEngineError(w, err)
+			return
+		}
+
+		resp := make([]instanceSummaryResponse, 0, len(summaries))
+		for _, s := range summaries {
+			resp = append(resp, instanceSummaryResponse{
+				ID: s.ID.String(), DefinitionKey: s.DefinitionKey, DefinitionName: s.DefinitionName,
+				StateKey: s.StateKey, StateName: s.StateName, CreatedAt: s.CreatedAt.Format(time.RFC3339),
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}
+}
+
+type bulkTransitionRequest struct {
+	InstanceIDs []string       `json:"instanceIds"`
+	ActionKey   string         `json:"actionKey"`
+	Payload     map[string]any `json:"payload"`
+}
+
+type bulkTransitionResponse struct {
+	InstanceIDs []string `json:"instanceIds"`
+	ToStateKey  string   `json:"toStateKey"`
+}
+
+// handleBulkTransition serves POST .../workflow-instances/bulk-transition
+// (Part 4) - see BulkExecuteTransition's own doc comment.
+func handleBulkTransition(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := identity.FromContext(r.Context())
+		if !ok {
+			http.Error(w, "missing identity", http.StatusInternalServerError)
+			return
+		}
+		firmID, err := uuid.Parse(r.PathValue("firmID"))
+		if err != nil {
+			http.Error(w, "invalid firm id", http.StatusBadRequest)
+			return
+		}
+		userID, err := identity.ResolveOrCreateUser(r.Context(), pool, id)
+		if err != nil {
+			http.Error(w, "failed to resolve user", http.StatusInternalServerError)
+			return
+		}
+
+		var req bulkTransitionRequest
+		if err := decodeJSONBody(r, &req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		if req.ActionKey == "" {
+			http.Error(w, "actionKey is required", http.StatusBadRequest)
+			return
+		}
+		instanceIDs := make([]uuid.UUID, 0, len(req.InstanceIDs))
+		for _, raw := range req.InstanceIDs {
+			instanceID, err := uuid.Parse(raw)
+			if err != nil {
+				http.Error(w, "invalid instance id in instanceIds", http.StatusBadRequest)
+				return
+			}
+			instanceIDs = append(instanceIDs, instanceID)
+		}
+
+		result, err := BulkExecuteTransition(r.Context(), pool, firmID, userID, instanceIDs, req.ActionKey, req.Payload)
+		if err != nil {
+			switch {
+			case errors.Is(err, ErrBulkTransitionEmpty), errors.Is(err, ErrBulkTransitionMixedDefinitions):
+				http.Error(w, err.Error(), http.StatusBadRequest)
+			default:
+				writeEngineError(w, err)
+			}
+			return
+		}
+
+		resp := bulkTransitionResponse{ToStateKey: result.ToStateKey, InstanceIDs: make([]string, 0, len(result.InstanceIDs))}
+		for _, id := range result.InstanceIDs {
+			resp.InstanceIDs = append(resp.InstanceIDs, id.String())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
 	}
 }
 

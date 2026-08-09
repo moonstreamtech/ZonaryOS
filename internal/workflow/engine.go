@@ -1040,238 +1040,17 @@ func CreateInstance(ctx context.Context, pool *pgxpool.Pool, firmID, userID, def
 // its own, but without this check first, a non-member supplying a real
 // firmID/instanceID pair could read the instance's current state and
 // which transitions structurally exist from it before being denied.
+//
+// ciaudit:ignore-firmid-check: this is now a thin pool-opening wrapper -
+// the real permission.IsMember/Has checks live in executeTransitionTx,
+// which this function calls with the transaction WithFirmContext opens.
 func ExecuteTransition(ctx context.Context, pool *pgxpool.Pool, firmID, userID, instanceID uuid.UUID, actionKey string, payload map[string]any) error {
-	if payload == nil {
-		// See CreateInstance's identical guard above for why: a nil map
-		// marshals to JSON `null`, and `payload || $2::jsonb` below treats
-		// a jsonb null operand as a scalar to append (corrupting the
-		// stored payload into an array) rather than a safe no-op merge.
-		payload = map[string]any{}
-	}
-	payloadJSON, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("marshal payload: %w", err)
-	}
-
 	var definitionKey, toStateKey string
 	var mergedPayload map[string]any
-	err = zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
-		isMember, err := permission.IsMember(ctx, tx, firmID, userID)
-		if err != nil {
-			return err
-		}
-		if !isMember {
-			return ErrInstanceNotFound
-		}
-
-		var definitionID, currentStateID uuid.UUID
-		err = tx.QueryRow(ctx, `
-			SELECT wi.workflow_definition_id, wi.current_state_id, wd.key
-			FROM workflow_instances wi
-			JOIN workflow_definitions wd ON wd.id = wi.workflow_definition_id
-			WHERE wi.id = $1
-		`, instanceID).Scan(&definitionID, &currentStateID, &definitionKey)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrInstanceNotFound
-		}
-		if err != nil {
-			return fmt.Errorf("look up workflow instance: %w", err)
-		}
-
-		var toStateID uuid.UUID
-		var permissionKey string
-		var effectsJSON []byte
-		err = tx.QueryRow(ctx, `
-			SELECT wt.to_state_id, ws.key, wt.permission_key, wt.effects
-			FROM workflow_transitions wt
-			JOIN workflow_states ws ON ws.id = wt.to_state_id
-			WHERE wt.workflow_definition_id = $1 AND wt.from_state_id = $2 AND wt.action_key = $3
-		`, definitionID, currentStateID, actionKey).Scan(&toStateID, &toStateKey, &permissionKey, &effectsJSON)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrNoSuchTransition
-		}
-		if err != nil {
-			return fmt.Errorf("look up transition: %w", err)
-		}
-		effects, err := unmarshalEffects(effectsJSON)
-		if err != nil {
-			return err
-		}
-		journalTemplate, err := extractEffect[JournalTemplate](effects, EffectKindJournal)
-		if err != nil {
-			return err
-		}
-		stockAdjustment, err := extractEffect[StockAdjustmentTemplate](effects, EffectKindStock)
-		if err != nil {
-			return err
-		}
-		deliveryTemplate, err := extractEffect[DeliveryTemplate](effects, EffectKindDelivery)
-		if err != nil {
-			return err
-		}
-		customerTemplate, err := extractEffect[CustomerTemplate](effects, EffectKindCustomer)
-		if err != nil {
-			return err
-		}
-		invoiceTemplate, err := extractEffect[InvoiceTemplate](effects, EffectKindInvoice)
-		if err != nil {
-			return err
-		}
-
-		allowed, err := permission.Has(ctx, tx, firmID, userID, permissionKey)
-		if err != nil {
-			return err
-		}
-		if !allowed {
-			return ErrPermissionDenied
-		}
-
-		var mergedPayloadJSON []byte
-		if err := tx.QueryRow(ctx, `
-			UPDATE workflow_instances
-			SET current_state_id = $1, payload = payload || $2::jsonb, updated_at = now()
-			WHERE id = $3
-			RETURNING payload
-		`, toStateID, payloadJSON, instanceID).Scan(&mergedPayloadJSON); err != nil {
-			return fmt.Errorf("update workflow instance: %w", err)
-		}
-		if err := json.Unmarshal(mergedPayloadJSON, &mergedPayload); err != nil {
-			return fmt.Errorf("unmarshal merged payload: %w", err)
-		}
-
-		changes, err := json.Marshal(map[string]any{"to_state": toStateKey, "payload": payload})
-		if err != nil {
-			return fmt.Errorf("marshal audit changes: %w", err)
-		}
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO audit_log (firm_id, user_id, entity_type, entity_id, action, changes)
-			VALUES ($1, $2, 'workflow_instance', $3, $4, $5)
-		`, firmID, userID, instanceID, actionKey, changes); err != nil {
-			return fmt.Errorf("write audit log: %w", err)
-		}
-
-		// The workflow-to-ledger bridge: when this transition carries a
-		// JournalTemplate, resolve it against the merged payload and post
-		// the resulting entry in the SAME transaction as the state change
-		// itself - either both commit together or neither does, so the
-		// ledger can never end up out of sync with the workflow instance
-		// that produced it. resolveJournalLines' ok=false (not an error)
-		// means the template's fields simply weren't supplied on this
-		// call - skipped, not failed, see its own doc comment for why
-		// that matters for Rule 6. A genuine resolution error (a present
-		// field with the wrong type) or a posting failure (unknown
-		// account code, or - structurally unreachable here since this
-		// bridge always emits a balanced set of lines, but still handled
-		// - an unbalanced entry) fails the whole transition, rolling
-		// back the state change with it: once there's enough information
-		// to post, a broken posting is a real error, not something to
-		// silently swallow the way EvaluateRules' post-commit failures
-		// are (see CreateInstance's doc comment for that different case).
-		if journalTemplate != nil {
-			lines, ok, err := resolveJournalLines(journalTemplate, mergedPayload)
-			if err != nil {
-				return err
-			}
-			if ok {
-				description, err := resolveJournalDescription(ctx, tx, firmID, journalTemplate, mergedPayload)
-				if err != nil {
-					return err
-				}
-				if _, err := accounting.PostJournalEntryTx(ctx, tx, firmID, userID, description, journalEntitySourceType, &instanceID, lines); err != nil {
-					return err
-				}
-			}
-		}
-
-		// The workflow-to-inventory bridge: same "resolve against the
-		// merged payload, apply in the SAME transaction as the state
-		// change" shape as the journal bridge just above, through
-		// internal/inventory.AdjustStockTx instead of
-		// accounting.PostJournalEntryTx - not a new mechanism (see
-		// StockAdjustmentTemplate's own doc comment, spec.go). ok=false
-		// means product_id/quantity simply weren't supplied on this call -
-		// skipped, not failed (resolveStockAdjustment's own doc comment).
-		// A resolution error, or AdjustStockTx itself returning
-		// ErrInsufficientStock, fails the whole transition - rolling back
-		// the state change with it, so a rejected sale (insufficient
-		// stock) never partially applies: no state change, no stock
-		// change, exactly the design brief's "reject the transition, not
-		// just warn".
-		if stockAdjustment != nil {
-			productID, quantityChange, ok, err := resolveStockAdjustment(stockAdjustment, mergedPayload)
-			if err != nil {
-				return err
-			}
-			if ok {
-				if err := inventory.AdjustStockTx(ctx, tx, firmID, productID, "", quantityChange, stockAdjustment.Reason, journalEntitySourceType, &instanceID); err != nil {
-					return err
-				}
-			}
-		}
-
-		// The workflow-to-logistics bridge: same "resolve against the
-		// merged payload, apply in the SAME transaction as the state
-		// change" shape as the bridges above, through
-		// internal/logistics.CreateDeliveryTx - not a new mechanism (see
-		// DeliveryTemplate's own doc comment, spec.go). ok=false means
-		// DestinationAddressField simply wasn't supplied on this call -
-		// skipped, not failed (resolveDelivery's own doc comment).
-		if deliveryTemplate != nil {
-			deliveryInput, ok, err := resolveDelivery(deliveryTemplate, mergedPayload)
-			if err != nil {
-				return err
-			}
-			if ok {
-				deliveryInput.SourceType = journalEntitySourceType
-				deliveryInput.SourceID = &instanceID
-				if _, err := logistics.CreateDeliveryTx(ctx, tx, firmID, deliveryInput); err != nil {
-					return err
-				}
-			}
-		}
-
-		// The workflow-to-CRM bridge: same shape, through
-		// internal/crm.CreateCustomerTx - customer_pipeline's own "convert"
-		// transition is this batch's real working example (see
-		// customer_pipeline.go): a lead converting to a customer state now
-		// creates an actual customers row, with SourceWorkflowInstance set
-		// to this instance, in the SAME transaction as the state change.
-		// ok=false means NameField simply wasn't supplied - skipped, not
-		// failed (resolveCustomer's own doc comment).
-		if customerTemplate != nil {
-			customerInput, ok, err := resolveCustomer(customerTemplate, mergedPayload)
-			if err != nil {
-				return err
-			}
-			if ok {
-				customerInput.SourceWorkflowInstance = instanceID
-				if _, err := crm.CreateCustomerTx(ctx, tx, firmID, customerInput); err != nil {
-					return err
-				}
-			}
-		}
-
-		// The workflow-to-invoicing bridge: same shape, through
-		// internal/invoicing.CreateInvoiceTx - stock_to_sale's own
-		// record_sale transition is this batch's real working example
-		// (see stock_to_sale.go): a sale now auto-creates a draft
-		// invoice, sourced to this instance, in the SAME transaction as
-		// the state change. ok=false means QuantityField/UnitPriceField
-		// simply weren't both supplied - skipped, not failed
-		// (resolveInvoice's own doc comment).
-		if invoiceTemplate != nil {
-			invoiceInput, ok, err := resolveInvoice(invoiceTemplate, mergedPayload)
-			if err != nil {
-				return err
-			}
-			if ok {
-				if _, err := invoicing.CreateInvoiceTx(ctx, tx, firmID, instanceID, invoiceInput); err != nil {
-					return err
-				}
-			}
-		}
-
-		return nil
+	err := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		definitionKey, toStateKey, mergedPayload, err = executeTransitionTx(ctx, tx, firmID, userID, instanceID, actionKey, payload)
+		return err
 	})
 	if err != nil {
 		return err
@@ -1287,6 +1066,247 @@ func ExecuteTransition(ctx context.Context, pool *pgxpool.Pool, firmID, userID, 
 	}
 
 	return nil
+}
+
+// executeTransitionTx is ExecuteTransition's own core logic, taking an
+// already-open tx instead of opening its own - extracted so
+// BulkExecuteTransition (bulk-transition.go) can run several instances'
+// worth of this same logic inside ONE shared transaction (true
+// atomicity: any instance's failure rolls back every instance already
+// transitioned in that same call, via zdb.WithFirmContext's own
+// defer tx.Rollback(ctx)), rather than calling the pool-opening
+// ExecuteTransition once per instance, which would each commit
+// independently. Every other caller of this logic still goes through
+// ExecuteTransition itself, unchanged.
+func executeTransitionTx(ctx context.Context, tx pgx.Tx, firmID, userID, instanceID uuid.UUID, actionKey string, payload map[string]any) (definitionKey, toStateKey string, mergedPayload map[string]any, err error) {
+	if payload == nil {
+		// See CreateInstance's identical guard above for why: a nil map
+		// marshals to JSON `null`, and `payload || $2::jsonb` below treats
+		// a jsonb null operand as a scalar to append (corrupting the
+		// stored payload into an array) rather than a safe no-op merge.
+		payload = map[string]any{}
+	}
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("marshal payload: %w", err)
+	}
+
+	isMember, err := permission.IsMember(ctx, tx, firmID, userID)
+	if err != nil {
+		return "", "", nil, err
+	}
+	if !isMember {
+		return "", "", nil, ErrInstanceNotFound
+	}
+
+	var definitionID, currentStateID uuid.UUID
+	err = tx.QueryRow(ctx, `
+		SELECT wi.workflow_definition_id, wi.current_state_id, wd.key
+		FROM workflow_instances wi
+		JOIN workflow_definitions wd ON wd.id = wi.workflow_definition_id
+		WHERE wi.id = $1
+	`, instanceID).Scan(&definitionID, &currentStateID, &definitionKey)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", nil, ErrInstanceNotFound
+	}
+	if err != nil {
+		return "", "", nil, fmt.Errorf("look up workflow instance: %w", err)
+	}
+
+	var toStateID uuid.UUID
+	var permissionKey string
+	var effectsJSON []byte
+	err = tx.QueryRow(ctx, `
+		SELECT wt.to_state_id, ws.key, wt.permission_key, wt.effects
+		FROM workflow_transitions wt
+		JOIN workflow_states ws ON ws.id = wt.to_state_id
+		WHERE wt.workflow_definition_id = $1 AND wt.from_state_id = $2 AND wt.action_key = $3
+	`, definitionID, currentStateID, actionKey).Scan(&toStateID, &toStateKey, &permissionKey, &effectsJSON)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", nil, ErrNoSuchTransition
+	}
+	if err != nil {
+		return "", "", nil, fmt.Errorf("look up transition: %w", err)
+	}
+	effects, err := unmarshalEffects(effectsJSON)
+	if err != nil {
+		return "", "", nil, err
+	}
+	journalTemplate, err := extractEffect[JournalTemplate](effects, EffectKindJournal)
+	if err != nil {
+		return "", "", nil, err
+	}
+	stockAdjustment, err := extractEffect[StockAdjustmentTemplate](effects, EffectKindStock)
+	if err != nil {
+		return "", "", nil, err
+	}
+	deliveryTemplate, err := extractEffect[DeliveryTemplate](effects, EffectKindDelivery)
+	if err != nil {
+		return "", "", nil, err
+	}
+	customerTemplate, err := extractEffect[CustomerTemplate](effects, EffectKindCustomer)
+	if err != nil {
+		return "", "", nil, err
+	}
+	invoiceTemplate, err := extractEffect[InvoiceTemplate](effects, EffectKindInvoice)
+	if err != nil {
+		return "", "", nil, err
+	}
+
+	allowed, err := permission.Has(ctx, tx, firmID, userID, permissionKey)
+	if err != nil {
+		return "", "", nil, err
+	}
+	if !allowed {
+		return "", "", nil, ErrPermissionDenied
+	}
+
+	var mergedPayloadJSON []byte
+	if err := tx.QueryRow(ctx, `
+		UPDATE workflow_instances
+		SET current_state_id = $1, payload = payload || $2::jsonb, updated_at = now()
+		WHERE id = $3
+		RETURNING payload
+	`, toStateID, payloadJSON, instanceID).Scan(&mergedPayloadJSON); err != nil {
+		return "", "", nil, fmt.Errorf("update workflow instance: %w", err)
+	}
+	if err := json.Unmarshal(mergedPayloadJSON, &mergedPayload); err != nil {
+		return "", "", nil, fmt.Errorf("unmarshal merged payload: %w", err)
+	}
+
+	changes, err := json.Marshal(map[string]any{"to_state": toStateKey, "payload": payload})
+	if err != nil {
+		return "", "", nil, fmt.Errorf("marshal audit changes: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO audit_log (firm_id, user_id, entity_type, entity_id, action, changes)
+		VALUES ($1, $2, 'workflow_instance', $3, $4, $5)
+	`, firmID, userID, instanceID, actionKey, changes); err != nil {
+		return "", "", nil, fmt.Errorf("write audit log: %w", err)
+	}
+
+	// The workflow-to-ledger bridge: when this transition carries a
+	// JournalTemplate, resolve it against the merged payload and post
+	// the resulting entry in the SAME transaction as the state change
+	// itself - either both commit together or neither does, so the
+	// ledger can never end up out of sync with the workflow instance
+	// that produced it. resolveJournalLines' ok=false (not an error)
+	// means the template's fields simply weren't supplied on this
+	// call - skipped, not failed, see its own doc comment for why
+	// that matters for Rule 6. A genuine resolution error (a present
+	// field with the wrong type) or a posting failure (unknown
+	// account code, or - structurally unreachable here since this
+	// bridge always emits a balanced set of lines, but still handled
+	// - an unbalanced entry) fails the whole transition, rolling
+	// back the state change with it: once there's enough information
+	// to post, a broken posting is a real error, not something to
+	// silently swallow the way EvaluateRules' post-commit failures
+	// are (see CreateInstance's doc comment for that different case).
+	if journalTemplate != nil {
+		lines, ok, err := resolveJournalLines(journalTemplate, mergedPayload)
+		if err != nil {
+			return "", "", nil, err
+		}
+		if ok {
+			description, err := resolveJournalDescription(ctx, tx, firmID, journalTemplate, mergedPayload)
+			if err != nil {
+				return "", "", nil, err
+			}
+			if _, err := accounting.PostJournalEntryTx(ctx, tx, firmID, userID, description, journalEntitySourceType, &instanceID, lines); err != nil {
+				return "", "", nil, err
+			}
+		}
+	}
+
+	// The workflow-to-inventory bridge: same "resolve against the
+	// merged payload, apply in the SAME transaction as the state
+	// change" shape as the journal bridge just above, through
+	// internal/inventory.AdjustStockTx instead of
+	// accounting.PostJournalEntryTx - not a new mechanism (see
+	// StockAdjustmentTemplate's own doc comment, spec.go). ok=false
+	// means product_id/quantity simply weren't supplied on this call -
+	// skipped, not failed (resolveStockAdjustment's own doc comment).
+	// A resolution error, or AdjustStockTx itself returning
+	// ErrInsufficientStock, fails the whole transition - rolling back
+	// the state change with it, so a rejected sale (insufficient
+	// stock) never partially applies: no state change, no stock
+	// change, exactly the design brief's "reject the transition, not
+	// just warn".
+	if stockAdjustment != nil {
+		productID, quantityChange, ok, err := resolveStockAdjustment(stockAdjustment, mergedPayload)
+		if err != nil {
+			return "", "", nil, err
+		}
+		if ok {
+			if err := inventory.AdjustStockTx(ctx, tx, firmID, productID, "", quantityChange, stockAdjustment.Reason, journalEntitySourceType, &instanceID); err != nil {
+				return "", "", nil, err
+			}
+		}
+	}
+
+	// The workflow-to-logistics bridge: same "resolve against the
+	// merged payload, apply in the SAME transaction as the state
+	// change" shape as the bridges above, through
+	// internal/logistics.CreateDeliveryTx - not a new mechanism (see
+	// DeliveryTemplate's own doc comment, spec.go). ok=false means
+	// DestinationAddressField simply wasn't supplied on this call -
+	// skipped, not failed (resolveDelivery's own doc comment).
+	if deliveryTemplate != nil {
+		deliveryInput, ok, err := resolveDelivery(deliveryTemplate, mergedPayload)
+		if err != nil {
+			return "", "", nil, err
+		}
+		if ok {
+			deliveryInput.SourceType = journalEntitySourceType
+			deliveryInput.SourceID = &instanceID
+			if _, err := logistics.CreateDeliveryTx(ctx, tx, firmID, deliveryInput); err != nil {
+				return "", "", nil, err
+			}
+		}
+	}
+
+	// The workflow-to-CRM bridge: same shape, through
+	// internal/crm.CreateCustomerTx - customer_pipeline's own "convert"
+	// transition is this batch's real working example (see
+	// customer_pipeline.go): a lead converting to a customer state now
+	// creates an actual customers row, with SourceWorkflowInstance set
+	// to this instance, in the SAME transaction as the state change.
+	// ok=false means NameField simply wasn't supplied - skipped, not
+	// failed (resolveCustomer's own doc comment).
+	if customerTemplate != nil {
+		customerInput, ok, err := resolveCustomer(customerTemplate, mergedPayload)
+		if err != nil {
+			return "", "", nil, err
+		}
+		if ok {
+			customerInput.SourceWorkflowInstance = instanceID
+			if _, err := crm.CreateCustomerTx(ctx, tx, firmID, customerInput); err != nil {
+				return "", "", nil, err
+			}
+		}
+	}
+
+	// The workflow-to-invoicing bridge: same shape, through
+	// internal/invoicing.CreateInvoiceTx - stock_to_sale's own
+	// record_sale transition is this batch's real working example
+	// (see stock_to_sale.go): a sale now auto-creates a draft
+	// invoice, sourced to this instance, in the SAME transaction as
+	// the state change. ok=false means QuantityField/UnitPriceField
+	// simply weren't both supplied - skipped, not failed
+	// (resolveInvoice's own doc comment).
+	if invoiceTemplate != nil {
+		invoiceInput, ok, err := resolveInvoice(invoiceTemplate, mergedPayload)
+		if err != nil {
+			return "", "", nil, err
+		}
+		if ok {
+			if _, err := invoicing.CreateInvoiceTx(ctx, tx, firmID, instanceID, invoiceInput); err != nil {
+				return "", "", nil, err
+			}
+		}
+	}
+
+	return definitionKey, toStateKey, mergedPayload, nil
 }
 
 // StateInfo names a single state node.

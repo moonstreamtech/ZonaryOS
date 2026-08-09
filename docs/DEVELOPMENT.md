@@ -583,6 +583,41 @@ go test ./internal/documents/... -v
 go test ./internal/portability/... -v
 ```
 
+## Multi-tenant isolation hardening, performance, and cross-module linking
+
+Four parts, no new modules - an audit/hardening/linking batch over what already exists.
+
+**Part 1, N+1 query audit**: scanned every `List*` function for a fetch-then-loop pattern. Two real N+1s found and fixed, both in `internal/portability.ExportFirm`: it looped `inventory.GetStock` once per product (fixed by a new `inventory.ListStockForFirm`, one query for the whole firm) and looped `invoicing.GetInvoice` once per invoice to pull lines (fixed by a new `invoicing.ListInvoicesWithLines`, which batches every invoice's lines in with one extra `WHERE invoice_id = ANY($1)` query - the same two-query shape `accounting.ListJournalEntries` already uses for `journal_lines`). One N+1 found and deliberately left: `workflow.ExportDefinitionSpecs` (used only by `ExportFirm`, so bounded by a firm's own definition count, not a hot read path) does two extra round trips per workflow definition (states, then transitions) - already documented in-code as a pgx constraint (can't interleave `Query()` calls on the same open `Rows`), and not worth the added complexity of batching for an owner-only, occasional export operation. `internal/platform/db/dbtest.ExplainAnalyze(t, pool, query, args...)` is a new test-only helper (a separate package so `testing` never becomes a production dependency) for ad hoc `EXPLAIN (ANALYZE, FORMAT TEXT)` investigation - not run by any test automatically.
+
+**Part 2, performance indexes** (`migrations/0022_performance_indexes.up.sql`, additive-only, `CREATE INDEX IF NOT EXISTS`, not `CONCURRENTLY` - no multi-instance deployment target yet, item 34): `workflow_instances(firm_id, workflow_definition_id)`, `invoices(source_workflow_instance)` (a real pre-existing gap - `customers.source_workflow_instance` already had one, `invoices`' own didn't, and Part 3a's new lookups need it), `edge_events(firm_id, agent_id, received_at)`, `stock_movements(firm_id, product_id, created_at)`. `journal_lines(entry_id)`, `invoice_lines(invoice_id)`, and `notifications`/`scheduled_rule_runs`' own partial indexes already covered the rest of the design brief's list from earlier migrations - not duplicated.
+
+**Part 3, cross-module linking** - three read-only views connecting existing data that was already stored but never surfaced:
+- 3a: `invoicing.ListInvoicesBySourceInstance` + `GET /api/firms/{firmID}/workflow-instances/{instanceID}/invoices` (registered in `internal/workflow`, which already imports `internal/invoicing` for the invoicing bridge). A new minimal workflow-instance detail page, `/workflows/instance/[instanceId]`, shows state/payload plus "Associated invoices" - the destination for the invoice detail page's own new "Source" link, and for `WorkflowInstanceList.tsx`'s new "View" link per row.
+- 3b: the `/logistics` page fetches each `workflow_instance`-sourced delivery's own associated invoice server-side (via 3a's endpoint) and links to it directly (falling back to the workflow-instance detail page if no invoice exists yet).
+- 3c: `workflow.ListInstancesByCustomer` + `GET /api/firms/{firmID}/workflow-instances?customerId=` (a required query param on the bare collection path, not a nested path segment - the same wildcard-vs-literal `ServeMux` ambiguity this file's own `?key=` comment above already describes, since `/workflow-instances/by-customer/{x}` and `/workflow-instances/{instanceID}/invoices` can't be told apart when `{x}` could be `"invoices"`). Filters `workflow_instances.payload ->> 'customer_id' = $2` across every definition (not hardcoded to `stock_to_sale`, though that's the only one populating it today). A new `/customers/[customerId]` detail page shows the source lead link (`customer.sourceWorkflowInstance`, already exposed) and the "Sales" list - "the first real CRM view that connects sales to customers".
+
+**Part 4, bulk operations** - both new endpoints reuse an existing single-entity function's core logic, refactored to take an already-open `pgx.Tx` instead of opening its own, so a bulk call can share ONE transaction across every entity (true atomicity: any failure rolls back everything already done in that same call, via `zdb.WithFirmContext`'s own `defer tx.Rollback(ctx)`) rather than each entity committing independently:
+- `workflow.ExecuteTransition`'s entire body became `executeTransitionTx` (unexported, takes `tx pgx.Tx`); `ExecuteTransition` itself is now a thin pool-opening wrapper. `workflow.BulkExecuteTransition` (`POST /api/firms/{firmID}/workflow-instances/bulk-transition`) checks every instance shares one definition (`ErrBulkTransitionMixedDefinitions`) before touching any of them, then calls `executeTransitionTx` per instance inside one transaction - each instance's own compatible-state and permission checks happen exactly as they do for a single transition. Unlike `ExecuteTransition`, it does NOT run `EvaluateRules` per instance after commit (deferred scope - see this batch's own "no async job execution" boundary).
+- `invoicing.UpdateInvoiceStatus`'s body became `updateInvoiceStatusTx`; `invoicing.BulkUpdateInvoiceStatus` (`POST /api/firms/{firmID}/invoices/bulk-status`, owner-only) loops it inside one transaction the same way.
+
+No frontend for bulk operations yet (API only, per the design brief).
+
+### Scope boundaries
+
+No query caching layer (Redis, etc.), no read replica routing, no async job execution for long-running reports, no bulk delete.
+
+### Running these tests
+
+`internal/invoicing/n1_integration_test.go` (a query-counting `pgx.QueryTracer` proves `ListInvoicesWithLines` makes a FIXED number of round trips regardless of invoice count - Part 1), `internal/invoicing/source_instance_integration_test.go` and `internal/workflow/customer_links_integration_test.go` (Part 3's cross-link correctness), `internal/workflow/bulk_transition_integration_test.go` and `internal/invoicing/bulk_status_integration_test.go` (Part 4's atomicity - a partial failure leaves every other entity in the batch untouched) all need a real Postgres:
+
+```
+export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5433/zonaryos?sslmode=disable
+export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5433/zonaryos?sslmode=disable
+make migrate
+go test ./internal/invoicing/... -v
+go test ./internal/workflow/... -run 'ByCustomer|BulkExecuteTransition' -v
+```
+
 ## Edge Agent protocol foundation
 
 `internal/edgeagent` is the server-side half of Vision §9's Edge Agent (a Go process a firm runs on its own hardware, under a firm-specific account, with auto-update and a bidirectional bridge to the central server). This batch ships the protocol only - see "Scope boundaries" below for what's deliberately deferred.

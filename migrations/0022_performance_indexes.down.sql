@@ -1,0 +1,4 @@
+DROP INDEX IF EXISTS stock_movements_firm_product_created_idx;
+DROP INDEX IF EXISTS edge_events_firm_agent_received_idx;
+DROP INDEX IF EXISTS invoices_source_workflow_instance_idx;
+DROP INDEX IF EXISTS workflow_instances_firm_definition_idx;

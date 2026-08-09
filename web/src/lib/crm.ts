@@ -39,6 +39,20 @@ export async function fetchCustomers(token: string, firmId: string): Promise<Cus
   }
 }
 
+/** Calls the Go backend's `GET /api/firms/{firmId}/customers/{customerId}`. */
+export async function fetchCustomer(token: string, firmId: string, customerId: string): Promise<Customer | null> {
+  try {
+    const res = await fetch(
+      `${apiBase()}/api/firms/${encodeURIComponent(firmId)}/customers/${encodeURIComponent(customerId)}`,
+      { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" },
+    );
+    if (!res.ok) return null;
+    return (await res.json()) as Customer;
+  } catch {
+    return null;
+  }
+}
+
 export type CreateCustomerInput = {
   name: string;
   email?: string;

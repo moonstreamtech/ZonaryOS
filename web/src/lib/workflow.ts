@@ -626,6 +626,112 @@ export async function executeTransition(
 }
 
 /**
+ * Calls the Go backend's `GET .../workflow-instances/{instanceId}` -
+ * one instance's current state/payload/available actions. Returns null
+ * on failure, same convention as fetchDefinitionByKey/fetchInstances
+ * above. Backs the minimal workflow-instance detail page
+ * (/workflows/instance/[instanceId]) Part 3a adds so an invoice's own
+ * "Source" link has somewhere to point.
+ */
+export async function fetchInstanceState(
+  token: string,
+  firmId: string,
+  instanceId: string,
+): Promise<InstanceState | null> {
+  try {
+    const res = await fetch(
+      `${apiBase()}/api/firms/${encodeURIComponent(firmId)}/workflow-instances/${encodeURIComponent(instanceId)}`,
+      {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      },
+    );
+    if (!res.ok) return null;
+    return (await res.json()) as InstanceState;
+  } catch {
+    return null;
+  }
+}
+
+// InstanceInvoice is one invoice returned by
+// GET .../workflow-instances/{instanceId}/invoices (Part 3a of the
+// multi-tenant isolation hardening + performance batch) - a summary
+// shape (no lines), enough to link to the invoice's own detail page.
+export type InstanceInvoice = {
+  id: string;
+  invoiceNumber: string;
+  status: string;
+  total: string;
+  currency: string;
+};
+
+/**
+ * Calls the Go backend's `GET .../workflow-instances/{instanceId}/invoices`
+ * - every invoice this instance's own workflow-to-invoicing bridge
+ * created (source_workflow_instance = instanceId). Returns null on
+ * failure, same convention as fetchDefinitionByKey/fetchInstances above.
+ */
+export async function fetchInstanceInvoices(
+  token: string,
+  firmId: string,
+  instanceId: string,
+): Promise<InstanceInvoice[] | null> {
+  try {
+    const res = await fetch(
+      `${apiBase()}/api/firms/${encodeURIComponent(firmId)}/workflow-instances/${encodeURIComponent(instanceId)}/invoices`,
+      {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      },
+    );
+    if (!res.ok) return null;
+    return (await res.json()) as InstanceInvoice[];
+  } catch {
+    return null;
+  }
+}
+
+// InstanceSummary is one workflow_instances row returned by
+// GET .../workflow-instances?customerId= (Part 3c) - any definition, not
+// just stock_to_sale (see internal/workflow.ListInstancesByCustomer's
+// own doc comment).
+export type InstanceSummary = {
+  id: string;
+  definitionKey: string;
+  definitionName: string;
+  stateKey: string;
+  stateName: string;
+  createdAt: string;
+};
+
+/**
+ * Calls the Go backend's `GET .../workflow-instances?customerId=` -
+ * every workflow instance whose payload.customer_id matches customerId
+ * (the customer detail page's own "Sales" section - Part 3c, "the first
+ * real CRM view that connects sales to customers"). Returns null on
+ * failure, same convention as fetchDefinitionByKey/fetchInstances above.
+ */
+export async function fetchInstancesByCustomer(
+  token: string,
+  firmId: string,
+  customerId: string,
+): Promise<InstanceSummary[] | null> {
+  try {
+    const res = await fetch(
+      `${apiBase()}/api/firms/${encodeURIComponent(firmId)}/workflow-instances?customerId=${encodeURIComponent(customerId)}`,
+      {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      },
+    );
+    if (!res.ok) return null;
+    return (await res.json()) as InstanceSummary[];
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Calls the Go backend's `GET .../workflow-definitions/{definitionKey}/rules`
  * - the read-only rule listing endpoint. Returns null on failure, same
  * convention as fetchDefinitionByKey/fetchInstances above.

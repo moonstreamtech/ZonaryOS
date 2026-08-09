@@ -149,6 +149,7 @@
     "columnPayload": "Details",
     "columnState": "Status",
     "columnActions": "Actions",
+    "viewDetail": "View",
     "actionError": "That action didn't go through. Please try again.",
     "actionPermissionDenied": "You don't have permission to do that.",
     "searchPlaceholder": "Search...",
@@ -268,6 +269,14 @@
     "builderErrorUnknownFromState": "\"{key}\" isn't one of the states defined above.",
     "builderErrorUnknownToState": "\"{key}\" isn't one of the states defined above.",
     "builderErrorDuplicateTransition": "Two transitions can't share the same from-state (\"{fromStateKey}\") and action key (\"{actionKey}\")."
+  },
+  "WorkflowInstanceDetail": {
+    "title": "Workflow Instance",
+    "loadError": "Couldn't load this data. Please try again.",
+    "state": "State",
+    "payload": "Details",
+    "associatedInvoicesTitle": "Associated invoices",
+    "noInvoices": "No invoices linked to this instance."
   },
   "Settings": {
     "title": "Settings",
@@ -775,6 +784,8 @@
     "destinationAddress": "Destination address",
     "carrier": "Carrier",
     "trackingNumber": "Tracking number",
+    "sourceInvoice": "Source invoice",
+    "sourceInstanceLink": "View source workflow instance",
     "filterStatus": "Status",
     "filterAll": "All",
     "applyButton": "Apply",
@@ -852,13 +863,25 @@
     "email": "Email",
     "phone": "Phone",
     "address": "Address",
-    "fromPipeline": "From Customer Pipeline"
+    "fromPipeline": "From Customer Pipeline",
+    "viewDetail": "View"
+  },
+  "CustomerDetail": {
+    "loadError": "Couldn't load this data. Please try again.",
+    "email": "Email",
+    "phone": "Phone",
+    "sourceLead": "Source lead",
+    "sourceLeadLink": "View source workflow instance",
+    "salesTitle": "Sales",
+    "noSales": "No sales linked to this customer yet."
   },
   "Invoices": {
     "title": "Invoices",
     "loadError": "Couldn't load this data. Please try again.",
     "empty": "No invoices yet.",
     "preview": "Preview",
+    "source": "Source",
+    "sourceLink": "View source workflow instance",
     "invoicesTitle": "Invoices",
     "newInvoice": "+ New invoice",
     "cancel": "Cancel",

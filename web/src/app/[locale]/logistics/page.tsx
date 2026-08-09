@@ -7,6 +7,7 @@ import { setRequestLocale, getTranslations } from "next-intl/server";
 import { requireFirmContext } from "@/lib/firmContext";
 import { fetchRoleInFirm } from "@/lib/me";
 import { fetchDeliveries, type DeliveryStatus } from "@/lib/logistics";
+import { fetchInstanceInvoices, type InstanceInvoice } from "@/lib/workflow";
 import DeliveriesManager from "@/components/Logistics/DeliveriesManager";
 
 type PageProps = {
@@ -36,6 +37,26 @@ export default async function LogisticsPage({ params, searchParams }: PageProps)
   const deliveries = await fetchDeliveries(sessionToken, firm.firmId, {
     status: STATUS_OPTIONS.includes(statusFilter as DeliveryStatus) ? (statusFilter as DeliveryStatus) : undefined,
   });
+
+  // Part 3b of the multi-tenant isolation hardening + performance batch:
+  // a delivery's source_type/source_id can point at a workflow instance
+  // that has its own associated invoice (e.g. stock_to_sale's
+  // record_sale transition drives both a delivery AND an invoice off the
+  // same instance) - fetched here, once per delivery whose source is a
+  // workflow instance (bounded by this page's own delivery count, not
+  // separately paginated), rather than inside DeliveriesManager, so the
+  // client component stays a plain presentational list.
+  const sourceInvoiceByDeliveryId: Record<string, InstanceInvoice | undefined> = {};
+  if (deliveries !== null) {
+    await Promise.all(
+      deliveries
+        .filter((d) => d.sourceType === "workflow_instance" && d.sourceId)
+        .map(async (d) => {
+          const invoices = await fetchInstanceInvoices(sessionToken, firm.firmId, d.sourceId!);
+          sourceInvoiceByDeliveryId[d.id] = invoices?.[0];
+        }),
+    );
+  }
 
   return (
     <main className="flex flex-1 flex-col items-center gap-8 bg-zinc-50 px-6 py-16 dark:bg-black">
@@ -71,7 +92,12 @@ export default async function LogisticsPage({ params, searchParams }: PageProps)
       {deliveries === null ? (
         <p className="text-red-600 dark:text-red-400">{t("loadError")}</p>
       ) : (
-        <DeliveriesManager firmId={firm.firmId} deliveries={deliveries} isOwner={isOwner} />
+        <DeliveriesManager
+          firmId={firm.firmId}
+          deliveries={deliveries}
+          isOwner={isOwner}
+          sourceInvoiceByDeliveryId={sourceInvoiceByDeliveryId}
+        />
       )}
     </main>
   );

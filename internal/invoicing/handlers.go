@@ -41,6 +41,10 @@ func RegisterRoutes(mux *http.ServeMux, verifier *identity.Verifier, pool *pgxpo
 	mux.Handle("POST /api/firms/{firmID}/invoices", auth(http.HandlerFunc(handleCreateInvoice(pool))))
 	mux.Handle("GET /api/firms/{firmID}/invoices/{invoiceID}", auth(http.HandlerFunc(handleGetInvoice(pool))))
 	mux.Handle("PATCH /api/firms/{firmID}/invoices/{invoiceID}", auth(http.HandlerFunc(handleUpdateInvoiceStatus(pool))))
+	// Bulk status update (Part 4 of the multi-tenant isolation hardening +
+	// performance batch): see BulkUpdateInvoiceStatus's own doc comment
+	// for the atomicity guarantee.
+	mux.Handle("POST /api/firms/{firmID}/invoices/bulk-status", auth(http.HandlerFunc(handleBulkUpdateInvoiceStatus(pool))))
 
 	mux.Handle("POST /api/firms/{firmID}/invoices/{invoiceID}/lines", auth(http.HandlerFunc(handleAddInvoiceLine(pool))))
 	mux.Handle("PATCH /api/firms/{firmID}/invoices/{invoiceID}/lines/{lineID}", auth(http.HandlerFunc(handleUpdateInvoiceLine(pool))))
@@ -346,6 +350,50 @@ func handleUpdateInvoiceStatus(pool *pgxpool.Pool) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(toInvoiceResponse(inv))
+	}
+}
+
+type bulkUpdateInvoiceStatusRequest struct {
+	InvoiceIDs []string `json:"invoiceIds"`
+	Status     string   `json:"status"`
+}
+
+// handleBulkUpdateInvoiceStatus serves POST .../invoices/bulk-status
+// (Part 4) - see BulkUpdateInvoiceStatus's own doc comment.
+func handleBulkUpdateInvoiceStatus(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		firmID, userID, ok, status, msg := resolveIdentity(r, pool)
+		if !ok {
+			http.Error(w, msg, status)
+			return
+		}
+		var req bulkUpdateInvoiceStatusRequest
+		if err := decodeJSONBody(r, &req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		invoiceIDs := make([]uuid.UUID, 0, len(req.InvoiceIDs))
+		for _, raw := range req.InvoiceIDs {
+			invoiceID, err := uuid.Parse(raw)
+			if err != nil {
+				http.Error(w, "invalid invoice id in invoiceIds", http.StatusBadRequest)
+				return
+			}
+			invoiceIDs = append(invoiceIDs, invoiceID)
+		}
+
+		invoices, err := BulkUpdateInvoiceStatus(r.Context(), pool, firmID, userID, invoiceIDs, InvoiceStatus(req.Status))
+		if err != nil {
+			writeInvoicingError(w, err)
+			return
+		}
+
+		resp := make([]invoiceResponse, 0, len(invoices))
+		for _, inv := range invoices {
+			resp = append(resp, toInvoiceResponse(inv))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
 	}
 }
 

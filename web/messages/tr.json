@@ -149,6 +149,7 @@
     "columnPayload": "Detaylar",
     "columnState": "Durum",
     "columnActions": "İşlemler",
+    "viewDetail": "Görüntüle",
     "actionError": "Bu işlem gerçekleşmedi. Lütfen tekrar deneyin.",
     "actionPermissionDenied": "Bunu yapma izniniz yok.",
     "searchPlaceholder": "Ara...",
@@ -268,6 +269,14 @@
     "builderErrorUnknownFromState": "\"{key}\" yukarıda tanımlanan durumlardan biri değil.",
     "builderErrorUnknownToState": "\"{key}\" yukarıda tanımlanan durumlardan biri değil.",
     "builderErrorDuplicateTransition": "İki geçiş aynı başlangıç durumunu (\"{fromStateKey}\") ve işlem anahtarını (\"{actionKey}\") paylaşamaz."
+  },
+  "WorkflowInstanceDetail": {
+    "title": "İş Akışı Örneği",
+    "loadError": "Bu veri yüklenemedi. Lütfen tekrar deneyin.",
+    "state": "Durum",
+    "payload": "Detaylar",
+    "associatedInvoicesTitle": "İlişkili faturalar",
+    "noInvoices": "Bu örneğe bağlı fatura yok."
   },
   "Settings": {
     "title": "Ayarlar",
@@ -775,6 +784,8 @@
     "destinationAddress": "Teslimat adresi",
     "carrier": "Kargo firması",
     "trackingNumber": "Takip numarası",
+    "sourceInvoice": "Kaynak fatura",
+    "sourceInstanceLink": "Kaynak iş akışı örneğini görüntüle",
     "filterStatus": "Durum",
     "filterAll": "Tümü",
     "applyButton": "Uygula",
@@ -852,13 +863,25 @@
     "email": "E-posta",
     "phone": "Telefon",
     "address": "Adres",
-    "fromPipeline": "Müşteri Hattından"
+    "fromPipeline": "Müşteri Hattından",
+    "viewDetail": "Görüntüle"
+  },
+  "CustomerDetail": {
+    "loadError": "Bu veri yüklenemedi. Lütfen tekrar deneyin.",
+    "email": "E-posta",
+    "phone": "Telefon",
+    "sourceLead": "Kaynak potansiyel müşteri",
+    "sourceLeadLink": "Kaynak iş akışı örneğini görüntüle",
+    "salesTitle": "Satışlar",
+    "noSales": "Bu müşteriye bağlı satış yok."
   },
   "Invoices": {
     "title": "Faturalar",
     "loadError": "Bu veri yüklenemedi. Lütfen tekrar deneyin.",
     "empty": "Henüz fatura yok.",
     "preview": "Önizleme",
+    "source": "Kaynak",
+    "sourceLink": "Kaynak iş akışı örneğini görüntüle",
     "invoicesTitle": "Faturalar",
     "newInvoice": "+ Yeni fatura",
     "cancel": "Vazgeç",
