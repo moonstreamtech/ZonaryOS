@@ -52,6 +52,19 @@ FROM (
 ) agg
 WHERE wt.id = agg.id;
 
+-- migration-safety:acknowledge: this system has no decided deployment
+-- target/rolling-deploy infrastructure yet (docs/OPEN_POINTS.md item 34 -
+-- Canary/Rollback Trigger is explicitly "Not Set Up"), so there is no
+-- live primary/replica window today where an old binary could run
+-- against this new schema mid-rollout. The application code reading/
+-- writing these five columns is removed in this same batch (see
+-- internal/workflow/engine.go's marshalEffects/unmarshalEffects and
+-- spec.go's TransitionEffect), so once this migration and its
+-- corresponding code both ship together - the only way this repository
+-- is deployed today - there is no code path left that expects these
+-- columns to exist. When a real rolling-deploy target is decided, this
+-- kind of same-batch column drop will need to become a deprecate-then-
+-- drop migration pair instead.
 ALTER TABLE workflow_transitions DROP COLUMN journal_template;
 ALTER TABLE workflow_transitions DROP COLUMN stock_adjustment;
 ALTER TABLE workflow_transitions DROP COLUMN delivery_template;
