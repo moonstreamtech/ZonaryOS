@@ -18,6 +18,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/crm"
 	"github.com/moonstreamtech/ZonaryOS/internal/currency"
 	"github.com/moonstreamtech/ZonaryOS/internal/discovery"
+	"github.com/moonstreamtech/ZonaryOS/internal/documents"
 	"github.com/moonstreamtech/ZonaryOS/internal/edgeagent"
 	"github.com/moonstreamtech/ZonaryOS/internal/firm"
 	"github.com/moonstreamtech/ZonaryOS/internal/health"
@@ -181,6 +182,7 @@ func main() {
 	invoicing.RegisterRoutes(mux, verifier, pool)
 	portability.RegisterRoutes(mux, verifier, pool)
 	reports.RegisterRoutes(mux, verifier, pool)
+	documents.RegisterRoutes(mux, verifier, pool)
 	// platformAdminAllowlist is shared between internal/platformadmin's
 	// own routes and internal/currency's platform-admin-only
 	// POST /api/exchange-rates - one allowlist, the same "which real

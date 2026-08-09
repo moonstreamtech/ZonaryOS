@@ -8,7 +8,9 @@ package reports
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -16,12 +18,166 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/identity"
 )
 
-// RegisterRoutes wires the reporting foundation's one HTTP endpoint into
+func decodeJSONBody(r *http.Request, v any) error {
+	if r.Body == nil {
+		return nil
+	}
+	if err := json.NewDecoder(r.Body).Decode(v); err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	return nil
+}
+
+// RegisterRoutes wires the reporting foundation's HTTP endpoints into
 // mux, same bearer-token auth middleware and /api/firms/{firmID}/...
 // convention as every other firm-scoped route group.
 func RegisterRoutes(mux *http.ServeMux, verifier *identity.Verifier, pool *pgxpool.Pool) {
 	auth := identity.Middleware(verifier)
 	mux.Handle("GET /api/firms/{firmID}/reports/kpis", auth(http.HandlerFunc(handleDashboardKPIs(pool))))
+
+	mux.Handle("GET /api/firms/{firmID}/report-definitions", auth(http.HandlerFunc(handleListReportDefinitions(pool))))
+	mux.Handle("POST /api/firms/{firmID}/report-definitions", auth(http.HandlerFunc(handleCreateReportDefinition(pool))))
+	mux.Handle("GET /api/firms/{firmID}/report-definitions/{id}", auth(http.HandlerFunc(handleGetReportDefinition(pool))))
+	mux.Handle("POST /api/firms/{firmID}/report-definitions/{id}/run", auth(http.HandlerFunc(handleRunReport(pool))))
+}
+
+func writeReportsError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrFirmNotFound), errors.Is(err, ErrReportDefinitionNotFound):
+		http.Error(w, err.Error(), http.StatusNotFound)
+	case errors.Is(err, ErrInvalidQuerySpec):
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	default:
+		http.Error(w, "internal error", http.StatusInternalServerError)
+	}
+}
+
+func resolveIdentity(r *http.Request, pool *pgxpool.Pool) (firmID, userID uuid.UUID, ok bool, status int, msg string) {
+	id, present := identity.FromContext(r.Context())
+	if !present {
+		return uuid.UUID{}, uuid.UUID{}, false, http.StatusInternalServerError, "missing identity"
+	}
+	firmID, err := uuid.Parse(r.PathValue("firmID"))
+	if err != nil {
+		return uuid.UUID{}, uuid.UUID{}, false, http.StatusBadRequest, "invalid firm id"
+	}
+	userID, err = identity.ResolveOrCreateUser(r.Context(), pool, id)
+	if err != nil {
+		return uuid.UUID{}, uuid.UUID{}, false, http.StatusInternalServerError, "failed to resolve user"
+	}
+	return firmID, userID, true, 0, ""
+}
+
+type reportDefinitionResponse struct {
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Description *string   `json:"description,omitempty"`
+	QuerySpec   QuerySpec `json:"querySpec"`
+	CreatedBy   string    `json:"createdBy"`
+	CreatedAt   string    `json:"createdAt"`
+}
+
+func toReportDefinitionResponse(d ReportDefinition) reportDefinitionResponse {
+	return reportDefinitionResponse{
+		ID: d.ID.String(), Name: d.Name, Description: d.Description, QuerySpec: d.QuerySpec,
+		CreatedBy: d.CreatedBy.String(), CreatedAt: d.CreatedAt.Format(time.RFC3339),
+	}
+}
+
+type reportDefinitionRequest struct {
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	QuerySpec   QuerySpec `json:"querySpec"`
+}
+
+func handleListReportDefinitions(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		firmID, userID, ok, status, msg := resolveIdentity(r, pool)
+		if !ok {
+			http.Error(w, msg, status)
+			return
+		}
+		defs, err := ListReportDefinitions(r.Context(), pool, firmID, userID)
+		if err != nil {
+			writeReportsError(w, err)
+			return
+		}
+		resp := make([]reportDefinitionResponse, 0, len(defs))
+		for _, d := range defs {
+			resp = append(resp, toReportDefinitionResponse(d))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}
+}
+
+func handleCreateReportDefinition(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		firmID, userID, ok, status, msg := resolveIdentity(r, pool)
+		if !ok {
+			http.Error(w, msg, status)
+			return
+		}
+		var req reportDefinitionRequest
+		if err := decodeJSONBody(r, &req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		def, err := CreateReportDefinition(r.Context(), pool, firmID, userID, ReportDefinitionInput{
+			Name: req.Name, Description: req.Description, QuerySpec: req.QuerySpec,
+		})
+		if err != nil {
+			writeReportsError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(toReportDefinitionResponse(def))
+	}
+}
+
+func handleGetReportDefinition(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		firmID, userID, ok, status, msg := resolveIdentity(r, pool)
+		if !ok {
+			http.Error(w, msg, status)
+			return
+		}
+		definitionID, err := uuid.Parse(r.PathValue("id"))
+		if err != nil {
+			http.Error(w, "invalid report definition id", http.StatusBadRequest)
+			return
+		}
+		def, err := GetReportDefinition(r.Context(), pool, firmID, userID, definitionID)
+		if err != nil {
+			writeReportsError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(toReportDefinitionResponse(def))
+	}
+}
+
+func handleRunReport(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		firmID, userID, ok, status, msg := resolveIdentity(r, pool)
+		if !ok {
+			http.Error(w, msg, status)
+			return
+		}
+		definitionID, err := uuid.Parse(r.PathValue("id"))
+		if err != nil {
+			http.Error(w, "invalid report definition id", http.StatusBadRequest)
+			return
+		}
+		rows, err := RunReport(r.Context(), pool, firmID, userID, definitionID)
+		if err != nil {
+			writeReportsError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(rows)
+	}
 }
 
 type kpiResponse struct {
