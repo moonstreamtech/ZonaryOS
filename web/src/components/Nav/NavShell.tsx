@@ -137,6 +137,13 @@ export default async function NavShell({ me, activeFirmId, isOwner }: Props) {
               >
                 {t("invoices")}
               </Link>
+              <Link
+                href="/edge-agents"
+                data-permission-public="true"
+                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
+              >
+                {t("edgeAgents")}
+              </Link>
               {isOwner && (
                 <Link
                   href="/settings/accounts"

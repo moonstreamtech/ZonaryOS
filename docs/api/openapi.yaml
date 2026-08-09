@@ -29,6 +29,41 @@ paths:
                     type: string
                     example: ok
 
+  /health:
+    get:
+      summary: Dependency health check (Postgres + Keycloak)
+      description: >
+        internal/health. Unauthenticated, same posture as /healthz. Checks
+        Postgres (pool.Ping) and Keycloak (its own OIDC discovery
+        document) in parallel; distinct from /healthz, which only reports
+        the process itself is up and answering HTTP, not its dependencies.
+      security: []
+      responses:
+        "200":
+          description: All checks passed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+        "503":
+          description: One or more checks failed (status "degraded" or "error")
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  /metrics:
+    get:
+      summary: Metrics endpoint (stub - always unauthorized)
+      description: >
+        A stub only, same default-closed posture internal/license's own
+        surfaces establish - no metrics backend is wired up yet, and this
+        deliberately never returns anything but 401.
+      security: []
+      responses:
+        "401":
+          description: Always returned - this endpoint is not implemented yet
+
   /.well-known/zonaryos-central:
     get:
       summary: Resolve this installation's currently-known central-server address
@@ -1381,6 +1416,25 @@ components:
       bearerFormat: JWT
       description: A Keycloak-issued access token for the `zonaryos` realm.
   schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded, error]
+        checks:
+          type: object
+          properties:
+            database:
+              type: string
+              enum: [ok, error]
+            keycloak:
+              type: string
+              enum: [ok, error]
+          required: [database, keycloak]
+        version:
+          type: string
+      required: [status, checks, version]
     MeFirm:
       type: object
       properties:

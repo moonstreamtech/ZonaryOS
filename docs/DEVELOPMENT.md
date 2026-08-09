@@ -480,6 +480,60 @@ go test ./internal/workflow/... -run 'RecordSaleCreatesInvoice|RecordSaleWithout
 go test ./internal/reports/... -run ReceivablesMetrics -v
 ```
 
+## Edge Agent protocol foundation
+
+`internal/edgeagent` is the server-side half of Vision §9's Edge Agent (a Go process a firm runs on its own hardware, under a firm-specific account, with auto-update and a bidirectional bridge to the central server). This batch ships the protocol only - see "Scope boundaries" below for what's deliberately deferred.
+
+Three firm-scoped tables (`migrations/0018_edge_agent_protocol.up.sql`), mandatory RLS like every other table in this codebase: `edge_agents` (one row per registered agent, `status` a closed `offline`/`online`/`error` vocabulary), `edge_agent_tokens` (bearer-token credentials, storing only a SHA-256 `token_hash` - the plaintext is returned once, at issuance, and never persisted), `edge_events` (an append-only log of whatever the agent chooses to push, `event_type` + a `jsonb` `payload`).
+
+**Two entirely separate authentication paths.** Registering an agent, issuing/listing tokens, and listing events go through the ordinary Keycloak bearer-token path (`internal/identity.Middleware`) exactly like every other module - `IsMember` gates reads, `IsMember` then `IsOwner` gates writes, same tier as `internal/logistics`'s own deliveries. The agent itself has no Keycloak account: `POST /api/edge/heartbeat` and `POST /api/edge/events` authenticate purely via the bearer token `IssueToken` handed it once.
+
+**Token authentication design**: `IssueToken` (`tokens.go`) generates 32 random bytes, base64url-encodes them (with a cosmetic `eat_` prefix), and persists only the SHA-256 hex digest as `token_hash` - the plaintext is returned to the caller exactly once, in `IssueToken`'s own return value, and this codebase never has it again. On the request path, `withTokenTx` hashes the presented token and looks it up by indexed hash equality against `edge_agent_tokens.token_hash` (safe: equality timing on a digest of a 32-byte random secret leaks nothing about the plaintext, the same "compare hashes, not secrets" reasoning production API-key schemes rely on), then applies `crypto/subtle.ConstantTimeCompare` between the fetched and recomputed hash bytes as an explicit, literal constant-time comparison before trusting the row. **`firm_id` binding**: this lookup happens through a new RLS carve-out, `app_current_edge_token_hash()` (mirroring `app_current_invite_token()` from `migrations/0007_firm_invites.up.sql` exactly) - the token authenticates itself first, and only once its real `firm_id` is known does `withTokenTx` set `app.current_firm_id` for the rest of the transaction, the same two-step sequencing `db.WithFirmContext`'s own doc comment attributes to `internal/wizard.CreateDefaultFirm`/`internal/invite.Accept`. Crucially, `Heartbeat`/`RecordEvent` take no client-supplied `firmID`/`agentID` at all - the agent's identity comes entirely from the validated token (`AuthenticatedAgent{FirmID, AgentID}`), so there is no field for a caller to guess or spoof to reach another firm's data; `TestCrossFirmToken_CannotAccessAnotherFirmsAgent` (`edgeagent_integration_test.go`) is the regression proof.
+
+- HTTP surface: `POST`/`GET /api/firms/{firmID}/edge-agents`, `GET /api/firms/{firmID}/edge-agents/{agentID}`, `POST`/`GET /api/firms/{firmID}/edge-agents/{agentID}/tokens`, `GET /api/firms/{firmID}/edge-agents/{agentID}/events` (all Keycloak-authenticated); `POST /api/edge/heartbeat`, `POST /api/edge/events` (token-authenticated, no firm/agent path segment at all).
+- Frontend: `/edge-agents` (`components/EdgeAgents/EdgeAgentsManager.tsx`) - agent list with a status dot, last-seen, and an owner-gated registration form; `/edge-agents/{agentID}` (`components/EdgeAgents/EdgeAgentDetail.tsx`) - status/capabilities, the event log, and owner-only token management (issuing a token shows the plaintext exactly once with an explicit "copy it now" warning; the token list below it only ever shows name/expiry/last-used, never the secret again).
+
+### Scope boundaries
+
+No Edge Agent binary (the actual Go process that runs on a firm's own hardware) - that's a separate deployable, out of this repository. No WebSocket/long-poll server-initiated push - the agent polls; push is a future concern. No NATS JetStream offline-resilience layer (`docs/OPEN_POINTS.md` item 29 - a separate design). No OTA update mechanism.
+
+### Running these tests
+
+`internal/edgeagent/edgeagent_integration_test.go` (owner-gated agent creation, token issuance hashing/one-time-plaintext, heartbeat status/`last_seen_at` updates, and the cross-firm token rejection regression) needs a real Postgres:
+
+```
+export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5433/zonaryos?sslmode=disable
+export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5433/zonaryos?sslmode=disable
+make migrate
+go test ./internal/edgeagent/... -v
+```
+
+## Observability: structured logging and health checks
+
+**Structured logging**: every operational log line this repository's binaries emit (`cmd/server`, `cmd/auditpurge`, `cmd/migrate`, `cmd/licensegen`, plus `internal/workflow`'s rule-evaluation warning and `internal/telemetry`'s flush logging) goes through `log/slog` (stdlib, no new dependency) rather than the plain-text `log` package, each binary's `main` wiring `slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))` (`cmd/licensegen` uses `os.Stderr` instead, since its plaintext token output on stdout must stay uninterleaved with log lines) so every line is directly machine-parseable JSON. This is deliberately separate from `internal/auditlog`, which keeps recording business events (who did what, in which firm) to Postgres exactly as before - `slog` is for operational events (startup, request errors, unexpected states), never a replacement for the audit trail.
+
+**`GET /health`** (`internal/health`, unauthenticated by design - same posture as `GET /healthz` and `GET /.well-known/zonaryos-central`, since an operator or uptime monitor needs to check this before any credential exists to present): checks Postgres (a lightweight `pool.Ping`) and Keycloak (a GET against its own OIDC discovery document, the same one `internal/identity.NewVerifier` fetches at startup) **in parallel** via `sync.WaitGroup`, each capped at a 5s timeout - run sequentially instead, a wedged dependency checked first would cost up to 2x that ceiling instead of the ~1x this endpoint actually promises. Responds:
+
+```json
+{
+  "status": "ok" | "degraded" | "error",
+  "checks": { "database": "ok" | "error", "keycloak": "ok" | "error" },
+  "version": "..."
+}
+```
+
+`status` is `"ok"` only if every check passed, `"error"` only if every check failed, `"degraded"` otherwise (a non-2xx HTTP status, `503`, is used for anything but `"ok"`). This is distinct from the pre-existing `GET /healthz` (`internal/platform/httpapi`), which only ever reports the process itself is up and answering HTTP - a liveness probe, not a dependency check. `version` comes from `internal/platform/version.Version`, a package-level `var` defaulting to `"dev"`, overridable at build time via `-ldflags "-X .../internal/platform/version.Version=<value>"` once a real build/release pipeline exists (`docs/OPEN_POINTS.md` item 34 - none does yet).
+
+**`GET /metrics`**: a stub only, same default-closed posture `internal/license`'s own surfaces establish - it unconditionally returns `401 Unauthorized`, deliberately never exposing real metrics (request latencies, counts, etc. - no metrics backend is wired up yet) to an unauthenticated caller. Documented here rather than implemented further so a future batch that does wire up real metrics has an explicit "this was always meant to require auth" marker to work from, not a silent surprise.
+
+### Running the health package tests
+
+`internal/health/health_test.go` is dependency-free (a nil pool, plus a `httptest.Server` standing in for Keycloak's discovery endpoint) and runs as an ordinary unit test, no Postgres required:
+
+```
+go test ./internal/health/... -v
+```
+
 ## Firm-creation wizard
 
 `internal/wizard` implements Vision §3's "Self-Configuring Infrastructure": a newly-authenticated Keycloak user with zero firm memberships (detected via `internal/identity.Memberships`, PR 3's firm-discovery mechanism) is routed into this wizard instead of the normal app.

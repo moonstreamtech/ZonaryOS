@@ -10,7 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"math"
 	"regexp"
 	"strconv"
@@ -1384,13 +1384,12 @@ func CreateInstance(ctx context.Context, pool *pgxpool.Pool, firmID, userID, def
 	// not propagated: the instance already exists by this point, so there
 	// is nothing left to roll back.
 	if err := EvaluateRules(ctx, pool, firmID, userID, instanceID, definitionKey, TriggerOnCreate, initialStateKey, payload); err != nil {
-		// #nosec G706 -- err can carry firm-authored content (a rule name,
-		// an action key) that reaches this log line, but %q (not %v) Go-
-		// quotes it first, escaping any newline/control character before
-		// it's written - the actual log-forging vector this rule flags is
-		// already closed; this is an operator-facing server log, not
-		// content returned to any caller.
-		log.Printf("workflow rule evaluation failed for instance %s (definition %q, trigger %q): %q", instanceID, definitionKey, TriggerOnCreate, err.Error())
+		// slog's structured fields (as opposed to the old log.Printf's
+		// interpolated format string) JSON-encode err/definitionKey below,
+		// escaping any control character firm-authored rule content could
+		// carry - this is an operator-facing server log, not content
+		// returned to any caller.
+		slog.Warn("workflow rule evaluation failed", "instanceID", instanceID, "definitionKey", definitionKey, "trigger", TriggerOnCreate, "err", err)
 	}
 
 	return instanceID, nil
@@ -1648,10 +1647,9 @@ func ExecuteTransition(ctx context.Context, pool *pgxpool.Pool, firmID, userID, 
 	// this runs after the transition has already committed, and why an
 	// error here is logged rather than propagated.
 	if err := EvaluateRules(ctx, pool, firmID, userID, instanceID, definitionKey, TriggerOnTransition, toStateKey, mergedPayload); err != nil {
-		// #nosec G706 -- see CreateInstance's identical logging call above:
-		// %q Go-quotes err.Error() before it's written, escaping any
-		// newline/control character firm-authored rule content could carry.
-		log.Printf("workflow rule evaluation failed for instance %s (definition %q, trigger %q): %q", instanceID, definitionKey, TriggerOnTransition, err.Error())
+		// See CreateInstance's identical logging call above for why this
+		// is logged (structured, via slog) rather than propagated.
+		slog.Warn("workflow rule evaluation failed", "instanceID", instanceID, "definitionKey", definitionKey, "trigger", TriggerOnTransition, "err", err)
 	}
 
 	return nil
