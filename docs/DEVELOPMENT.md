@@ -550,6 +550,39 @@ go test ./internal/workflow/... -run 'RecordSaleCreatesInvoice|RecordSaleWithout
 go test ./internal/reports/... -run ReceivablesMetrics -v
 ```
 
+## Parametric reporting engine, document templates, and CSV export
+
+Extends "HR core... and the reporting foundation" above: `/reports` no longer serves only the five fixed `kpiDescriptors` - firms can now define their own reports as structured query descriptors, never raw SQL.
+
+**`internal/reports`'s parametric engine**: two new firm-scoped tables, `report_definitions` (`query_spec` jsonb) and `saved_report_runs` (one row per execution, `status`/`result`/`error_text`). `QuerySpec` (`queryspec.go`) is `{entity, filters, group_by, metrics, date_range}` - `entity`/every field name/every aggregation is validated against `entityRegistry`, a closed, hardcoded per-entity allow-list (table + column + type per field, covering `workflow_instances`/`journal_entries`/`invoices`/`deliveries`/`people`/`products`). `BuildQuery` is the ONLY place a `QuerySpec` becomes SQL: every identifier in the generated query comes from `entityRegistry` (never from the request), every value is bound via Postgres `$N` parameters (never interpolated) - an entity/field/aggregation not on the allow-list is rejected with `ErrInvalidQuerySpec` (HTTP 400) before any SQL is built, which is what rules out both SQL injection and information disclosure through a made-up field name. `filter.op` reuses `internal/workflow`'s own `eq/neq/lt/gt/lte/gte/contains` vocabulary. `RunReport` executes the built query synchronously and records the run in `saved_report_runs`.
+
+- HTTP surface: `GET`/`POST /api/firms/{firmID}/report-definitions`, `GET /api/firms/{firmID}/report-definitions/{id}`, `POST /api/firms/{firmID}/report-definitions/{id}/run`.
+- Frontend: `/reports/builder` (`components/Reports/ReportBuilder.tsx` - pick entity/filters/grouping/metrics/date range, "Save & Run" shows results inline) and a "My Reports" tab on `/reports` (`components/Reports/MyReportsPanel.tsx` - list saved definitions, run one, see results).
+
+**`internal/documents`** (new package): firm-scoped `document_templates` (`type` one of `invoice`/`delivery_note`/`report`, `template` a Handlebars/Mustache-*looking* `{{field}}` body) rendered to HTML via Go's stdlib `html/template` (no new dependency) - PDF generation stays future work, same "structured first, formatted later" philosophy `internal/invoicing`'s own doc comment already establishes. `RenderInvoice` builds the template's data context as a nested `map[string]any` (invoice + lines + customer + firm info) with `template.Option("missingkey=zero")` set, so a template referencing a field that doesn't exist on the entity renders an empty string rather than failing the whole render. A minimal default invoice template is seeded per firm lazily, the first time `ListDocumentTemplates`/`RenderInvoice` runs for a firm with none yet (`EnsureDefaultInvoiceTemplate`) - there's no Go `init()` hook with a firm ID to seed against, so this is done on first use instead of at firm-creation time.
+
+- HTTP surface: `GET`/`POST /api/firms/{firmID}/document-templates`, `GET`/`PUT /api/firms/{firmID}/document-templates/{id}`, `GET /api/firms/{firmID}/invoices/{invoiceID}/render?templateID=` (returns `Content-Type: text/html`, no `templateID` falls back to the firm's default invoice template).
+- Frontend: `/settings/document-templates` (`components/Settings/DocumentTemplatesManager.tsx` - a textarea editor, not a visual builder) and a "Preview" link on the invoice detail page that opens the rendered HTML in a new tab via a same-origin, cookie-authenticated proxy route (`app/api/documents/invoices/[firmId]/[invoiceId]/render`).
+
+**CSV export**: `GET /api/firms/{firmID}/export` now supports format negotiation via `?format=csv` or `Accept: text/csv` (default stays `json`, unchanged) - `internal/portability.BuildCSV` renders each `ExportDocument` entity as its own CSV section (blank line + entity-name header, via stdlib `encoding/csv`, no new dependency), field names/values drawn entirely from `ExportDocument`'s own Go struct definitions via reflection, not request input. CSV export is read-only - import remains JSON-only (see `internal/portability`'s own doc comment on why import only ever reads configuration, not history).
+
+### Scope boundaries
+
+No visual report builder with drag-and-drop, no real-time/streaming report execution, no scheduled report delivery. No PDF generation (HTML only). No CSV import (export only).
+
+### Running these tests
+
+`internal/reports/queryspec_test.go` (unit: `BuildQuery` correctness, unknown entity/field/op rejection, including the explicit malicious-field-name SQL-injection-surface cases), `internal/reports/definitions_integration_test.go` (definition CRUD + `RunReport` correctness against real seeded invoices), `internal/documents/render_test.go` (unit: template rendering, the unknown-field-renders-empty contract), `internal/documents/documents_integration_test.go` (template CRUD, default-template seeding, `RenderInvoice` end to end), and `internal/portability/csv_test.go` (unit: CSV section structure) - only the `_integration_test.go` files need a real Postgres:
+
+```
+export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5433/zonaryos?sslmode=disable
+export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5433/zonaryos?sslmode=disable
+make migrate
+go test ./internal/reports/... -v
+go test ./internal/documents/... -v
+go test ./internal/portability/... -v
+```
+
 ## Edge Agent protocol foundation
 
 `internal/edgeagent` is the server-side half of Vision §9's Edge Agent (a Go process a firm runs on its own hardware, under a firm-specific account, with auto-update and a bidirectional bridge to the central server). This batch ships the protocol only - see "Scope boundaries" below for what's deliberately deferred.
