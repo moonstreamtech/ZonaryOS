@@ -52,13 +52,17 @@ import (
 	"encoding/base64"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/moonstreamtech/ZonaryOS/internal/license"
 )
+
+func init() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
+}
 
 func main() {
 	genKey := flag.Bool("genkey", false, "generate a new Ed25519 keypair for local/test use and exit (does not issue a token)")
@@ -74,24 +78,28 @@ func main() {
 	}
 
 	if *issuedTo == "" {
-		log.Fatal("licensegen: -issued-to is required (unless -genkey is set)")
+		slog.Error("licensegen: -issued-to is required (unless -genkey is set)")
+		os.Exit(1)
 	}
 
 	privRaw := os.Getenv("ZONARYOS_LICENSE_PRIVATE_KEY")
 	if *privateKeyPath != "" {
 		b, err := os.ReadFile(*privateKeyPath)
 		if err != nil {
-			log.Fatalf("licensegen: read -private-key file: %v", err)
+			slog.Error("licensegen: read -private-key file", "err", err)
+			os.Exit(1)
 		}
 		privRaw = strings.TrimSpace(string(b))
 	}
 	if privRaw == "" {
-		log.Fatal("licensegen: a private key is required - pass -private-key <file> or set ZONARYOS_LICENSE_PRIVATE_KEY (generate one with `go run ./cmd/licensegen -genkey`). This tool NEVER reads a private key from this repository - there is none committed here.")
+		slog.Error("licensegen: a private key is required - pass -private-key <file> or set ZONARYOS_LICENSE_PRIVATE_KEY (generate one with `go run ./cmd/licensegen -genkey`). This tool NEVER reads a private key from this repository - there is none committed here.")
+		os.Exit(1)
 	}
 
 	priv, err := license.ParsePrivateKey(privRaw)
 	if err != nil {
-		log.Fatalf("licensegen: %v", err)
+		slog.Error("licensegen", "err", err)
+		os.Exit(1)
 	}
 
 	var moduleList []string
@@ -112,7 +120,8 @@ func main() {
 
 	tokenStr, err := license.Sign(priv, tok)
 	if err != nil {
-		log.Fatalf("licensegen: sign token: %v", err)
+		slog.Error("licensegen: sign token", "err", err)
+		os.Exit(1)
 	}
 
 	fmt.Println(tokenStr)
@@ -121,7 +130,8 @@ func main() {
 func runGenKey() {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		log.Fatalf("licensegen: generate keypair: %v", err)
+		slog.Error("licensegen: generate keypair", "err", err)
+		os.Exit(1)
 	}
 	fmt.Fprintln(os.Stderr, "Test/dev Ed25519 keypair - NEVER commit the private key to this repository.")
 	fmt.Printf("ZONARYOS_LICENSE_PUBLIC_KEY=%s\n", base64.RawURLEncoding.EncodeToString(pub))

@@ -8,15 +8,18 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/moonstreamtech/ZonaryOS/internal/accounting"
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
 	"github.com/moonstreamtech/ZonaryOS/internal/crm"
 	"github.com/moonstreamtech/ZonaryOS/internal/discovery"
+	"github.com/moonstreamtech/ZonaryOS/internal/edgeagent"
 	"github.com/moonstreamtech/ZonaryOS/internal/firm"
+	"github.com/moonstreamtech/ZonaryOS/internal/health"
 	"github.com/moonstreamtech/ZonaryOS/internal/hr"
 	"github.com/moonstreamtech/ZonaryOS/internal/identity"
 	"github.com/moonstreamtech/ZonaryOS/internal/inventory"
@@ -24,10 +27,12 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/invoicing"
 	"github.com/moonstreamtech/ZonaryOS/internal/license"
 	"github.com/moonstreamtech/ZonaryOS/internal/logistics"
+	"github.com/moonstreamtech/ZonaryOS/internal/notification"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/config"
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/db"
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/httpapi"
+	"github.com/moonstreamtech/ZonaryOS/internal/platform/version"
 	"github.com/moonstreamtech/ZonaryOS/internal/platformadmin"
 	"github.com/moonstreamtech/ZonaryOS/internal/portability"
 	"github.com/moonstreamtech/ZonaryOS/internal/reports"
@@ -36,23 +41,40 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/workflow"
 )
 
+// Structured JSON logging (this batch's observability foundation, see
+// docs/DEVELOPMENT.md): every operational log line this binary and its
+// sibling cmd/* tools emit goes through log/slog (stdlib, no new
+// dependency) rather than the plain-text "log" package, so it's directly
+// machine-parseable by whatever log aggregation an operator points at
+// stdout. This is deliberately separate from internal/auditlog, which
+// keeps recording business events (who did what, in which firm) to
+// Postgres exactly as before - slog is for operational events (startup,
+// request errors, unexpected states), not a replacement for the audit
+// trail.
+func init() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+}
+
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("config: %v", err)
+		slog.Error("load config", "err", err)
+		os.Exit(1)
 	}
 
 	ctx := context.Background()
 
 	pool, err := db.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
-		log.Fatalf("open database: %v", err)
+		slog.Error("open database", "err", err)
+		os.Exit(1)
 	}
 	defer pool.Close()
 
 	verifier, err := identity.NewVerifier(ctx, cfg.OIDCIssuerURL, cfg.OIDCClientID)
 	if err != nil {
-		log.Fatalf("init oidc verifier: %v", err)
+		slog.Error("init oidc verifier", "err", err)
+		os.Exit(1)
 	}
 
 	broadcaster := permission.NewBroadcaster()
@@ -67,7 +89,8 @@ func main() {
 	// default-disabled guarantee this rests on.
 	licenseVerifier, err := license.NewVerifier(cfg.LicenseEnforced, cfg.LicensePublicKey, cfg.LicenseToken, cfg.LicenseGracePeriod)
 	if err != nil {
-		log.Fatalf("license: %v", err)
+		slog.Error("init license verifier", "err", err)
+		os.Exit(1)
 	}
 	// The periodic re-check goroutine only exists at all when enforcement
 	// is actually enabled - not merely a no-op tick when disabled, an
@@ -119,6 +142,22 @@ func main() {
 		go telemetryReporter.Start(reporterCtx)
 	}
 
+	// workflow.RunScheduler (this batch, Open Points item 7's partial
+	// schedule-trigger support, scheduler.go): a lightweight goroutine
+	// inside this same process - not a separate process, not a cron
+	// daemon (per this batch's own brief) - polling every
+	// workflow.SchedulerPollInterval for due scheduled_rule_runs across
+	// every firm. Unconditional (no feature flag): unlike telemetry/
+	// license, an installation with zero schedule-triggered rules simply
+	// has nothing for each poll to find, so there is no meaningful
+	// "disabled" state to gate here the way TelemetryEnabled/
+	// LicenseEnforced gate their own goroutines. schedulerCtx is
+	// cancelled on shutdown so this goroutine doesn't leak past the
+	// server's own lifetime, same convention as reporterCtx above.
+	schedulerCtx, cancelScheduler := context.WithCancel(ctx)
+	defer cancelScheduler()
+	go workflow.RunScheduler(schedulerCtx, pool, workflow.SchedulerPollInterval)
+
 	mux := httpapi.NewMux()
 	// The well-known discovery endpoint (Open Points item 34) is
 	// unconditional - see internal/discovery.RegisterRoutes's own
@@ -141,12 +180,40 @@ func main() {
 	portability.RegisterRoutes(mux, verifier, pool)
 	reports.RegisterRoutes(mux, verifier, pool)
 	platformadmin.RegisterRoutes(mux, verifier, pool, platformadmin.NewAllowlist(cfg.PlatformAdminEmails), licenseVerifier)
+	// internal/edgeagent (this batch, Vision §9's Edge Agent protocol
+	// foundation): registers both the ordinary Keycloak-authenticated
+	// firm-scoped routes (register/list agents, issue/list tokens, list
+	// events) and the token-authenticated /api/edge/* routes the agent
+	// itself calls - see that package's own doc comment for why these
+	// are two entirely separate auth chains.
+	edgeagent.RegisterRoutes(mux, verifier, pool)
+	// internal/notification (this batch): the in-app notification inbox
+	// - GET .../notifications, GET .../notifications/unread-count,
+	// PATCH .../notifications/{id}/read. Unconditional, same as every
+	// other member-gated route group - see that package's own doc
+	// comment for its scope boundaries (no email/push, no WebSocket
+	// push).
+	notification.RegisterRoutes(mux, verifier, pool)
 	// Only actually registers the two /telemetry/* endpoints when
 	// telemetryReporter is non-nil (enabled) - see
 	// telemetry.RegisterRoutes's own comment: a disabled installation
 	// has no listening surface for this package at all, not just
 	// no-op handlers.
 	telemetry.RegisterRoutes(mux, telemetryReporter)
+	// GET /health (this batch's observability foundation): unauthenticated,
+	// checks Postgres and Keycloak in parallel - see internal/health's own
+	// doc comment for why this is distinct from httpapi's existing plain
+	// liveness-only GET /healthz.
+	mux.HandleFunc("GET /health", health.Handler(pool, health.OIDCDiscoveryURL(cfg.OIDCIssuerURL), nil))
+	// GET /metrics: a stub only, same posture as internal/license's own
+	// default-disabled surfaces - real metrics (request latencies,
+	// counts, etc.) are not exposed at all yet (no metrics backend is
+	// wired up), and this deliberately never returns anything but 401 so
+	// no future accidental change here starts leaking operational data
+	// to an unauthenticated caller by surprise. See docs/DEVELOPMENT.md.
+	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	})
 
 	// An explicit http.Server (not the bare http.ListenAndServe function)
 	// so ReadHeaderTimeout can be set - a slowloris mitigation (CI
@@ -168,8 +235,9 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	log.Printf("ZonaryOS server listening on %s", cfg.HTTPAddr)
+	slog.Info("ZonaryOS server listening", "addr", cfg.HTTPAddr, "version", version.Version)
 	if err := srv.ListenAndServe(); err != nil {
-		log.Fatalf("server: %v", err)
+		slog.Error("server stopped", "err", err)
+		os.Exit(1)
 	}
 }

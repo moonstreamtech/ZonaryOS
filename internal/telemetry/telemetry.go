@@ -39,7 +39,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -292,7 +292,7 @@ func (r *Reporter) flushOnce(ctx context.Context) {
 
 	body, err := json.Marshal(rep)
 	if err != nil {
-		log.Printf("telemetry: marshal report: %v (dropped)", err)
+		slog.Warn("telemetry: marshal report dropped", "err", err)
 		return
 	}
 
@@ -302,19 +302,19 @@ func (r *Reporter) flushOnce(ctx context.Context) {
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, central+"/telemetry/report", bytes.NewReader(body))
 	if err != nil {
-		log.Printf("telemetry: build report request: %v (dropped)", err)
+		slog.Warn("telemetry: build report request dropped", "err", err)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := r.httpDo(req)
 	if err != nil {
-		log.Printf("telemetry: flush to %s failed: %v (dropped, will retry next cycle with fresh counts)", central, err)
+		slog.Warn("telemetry: flush failed, will retry next cycle with fresh counts", "central", central, "err", err)
 		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		log.Printf("telemetry: flush to %s returned status %d (dropped)", central, resp.StatusCode)
+		slog.Warn("telemetry: flush rejected, dropped", "central", central, "status", resp.StatusCode)
 	}
 }
 

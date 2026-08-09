@@ -29,6 +29,8 @@
     "logistics": "Logistics",
     "customers": "Customers",
     "invoices": "Invoices",
+    "edgeAgents": "Edge Agents",
+    "approvals": "Approvals",
     "logout": "Log out",
     "firmSwitcherLabel": "Active firm"
   },
@@ -671,6 +673,57 @@
       "returned": "Returned",
       "cancelled": "Cancelled"
     }
+  },
+  "EdgeAgents": {
+    "title": "Edge Agents",
+    "loadError": "Couldn't load this data. Please try again.",
+    "empty": "No edge agents registered yet.",
+    "agentsTitle": "Agents",
+    "newAgent": "+ New agent",
+    "cancel": "Cancel",
+    "create": "Create",
+    "createNameRequired": "Please enter a name.",
+    "createError": "Couldn't register this agent. Please try again.",
+    "name": "Name",
+    "description": "Description",
+    "neverSeen": "Never seen",
+    "lastSeen": "Last seen",
+    "version": "Version",
+    "capabilities": "Capabilities",
+    "tokensTitle": "Tokens",
+    "issueToken": "+ Issue token",
+    "issueTokenNameRequired": "Please enter a name for this token.",
+    "issueTokenError": "Couldn't issue a token. Please try again.",
+    "issuedTokenWarning": "Copy this token now - it will not be shown again.",
+    "tokenName": "Token name",
+    "noTokens": "No tokens issued yet.",
+    "lastUsed": "Last used",
+    "expires": "Expires",
+    "eventsTitle": "Events",
+    "noEvents": "No events reported yet.",
+    "status": {
+      "label": "Status",
+      "offline": "Offline",
+      "online": "Online",
+      "error": "Error"
+    }
+  },
+  "Notifications": {
+    "bellLabel": "Notifications",
+    "title": "Notifications",
+    "loading": "Loading…",
+    "empty": "No notifications yet."
+  },
+  "Approvals": {
+    "title": "Approvals",
+    "loadError": "Couldn't load this data. Please try again.",
+    "empty": "No pending approvals.",
+    "requestedBy": "Requested by",
+    "proposedAction": "Proposed action",
+    "expires": "Expires",
+    "approve": "Approve",
+    "reject": "Reject",
+    "actionError": "Couldn't complete this action. Please try again."
   },
   "Customers": {
     "title": "Customers",

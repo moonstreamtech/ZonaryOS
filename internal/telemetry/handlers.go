@@ -8,7 +8,7 @@ package telemetry
 import (
 	"encoding/json"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 )
 
@@ -71,9 +71,9 @@ func handleReport() http.HandlerFunc {
 			http.Error(w, "malformed report body", http.StatusBadRequest)
 			return
 		}
-		log.Printf("telemetry: received report period=[%s,%s] requestEndpoints=%d sourceIPs=%d featureEvents=%d",
-			rep.PeriodStart.Format("15:04:05"), rep.PeriodEnd.Format("15:04:05"),
-			len(rep.RequestCounts), len(rep.SourceIPCounts), len(rep.FeatureEventCounts))
+		slog.Info("telemetry: received report",
+			"periodStart", rep.PeriodStart.Format("15:04:05"), "periodEnd", rep.PeriodEnd.Format("15:04:05"),
+			"requestEndpoints", len(rep.RequestCounts), "sourceIPs", len(rep.SourceIPCounts), "featureEvents", len(rep.FeatureEventCounts))
 		w.WriteHeader(http.StatusAccepted)
 	}
 }

@@ -31,16 +31,21 @@ import (
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
 )
 
-// Trigger identifies when a rule is evaluated. Schedule-triggered rules
-// (Vision §3's "if sensor temperature exceeds Y" style, but on a timer
-// rather than an event) are deliberately not modeled here - see
-// docs/OPEN_POINTS.md - only the two event-driven triggers this batch's
-// CreateInstance/ExecuteTransition wiring can actually fire.
+// Trigger identifies when a rule is evaluated. TriggerSchedule (this
+// batch, Open Points item 7's remaining "(2) Schedule-triggered rules"
+// gap) is a deliberately PARTIAL implementation of Vision §3's "if sensor
+// temperature exceeds Y" style timer-driven rule, not the full thing -
+// see scheduler.go's own doc comment for the exact scope boundary
+// (no condition tree, notify-only actions).
 type Trigger string
 
 const (
 	TriggerOnCreate     Trigger = "on_create"
 	TriggerOnTransition Trigger = "on_transition"
+	// TriggerSchedule fires on a timer (Rule.ScheduleInterval), driven by
+	// scheduler.go's background goroutine rather than CreateInstance/
+	// ExecuteTransition - see that file's own doc comment.
+	TriggerSchedule Trigger = "schedule"
 )
 
 // LogicOp is a logic node's boolean operator.
@@ -188,7 +193,13 @@ type Rule struct {
 	// to actually run a pending rule yet, flagged in docs/OPEN_POINTS.md.
 	Autonomous bool
 	Enabled    bool
-	CreatedAt  time.Time
+	// ScheduleInterval is a Go time.Duration string (e.g. "1h", "24h") -
+	// required, and required to parse as a positive duration, when
+	// Trigger is TriggerSchedule; ignored (may be nil) for every other
+	// trigger. See scheduler.go for how this drives re-scheduling after
+	// each run.
+	ScheduleInterval *string
+	CreatedAt        time.Time
 }
 
 // ErrInvalidRule means a Rule's ConditionTree or Actions is structurally
@@ -594,13 +605,51 @@ func validateRuleShape(rule Rule) error {
 	if rule.DefinitionKey == "" {
 		return fmt.Errorf("%w: rule definitionKey must not be empty", ErrInvalidRule)
 	}
-	if rule.Trigger != TriggerOnCreate && rule.Trigger != TriggerOnTransition {
-		return fmt.Errorf("%w: rule trigger must be %q or %q", ErrInvalidRule, TriggerOnCreate, TriggerOnTransition)
+	if rule.Trigger != TriggerOnCreate && rule.Trigger != TriggerOnTransition && rule.Trigger != TriggerSchedule {
+		return fmt.Errorf("%w: rule trigger must be %q, %q, or %q", ErrInvalidRule, TriggerOnCreate, TriggerOnTransition, TriggerSchedule)
 	}
-	if err := ValidateExpressionTree(rule.ConditionTree); err != nil {
-		return err
+
+	if rule.Trigger == TriggerSchedule {
+		// Partial implementation (scheduler.go's own doc comment): no
+		// condition tree, notify-only actions - both enforced here, at
+		// definition time, rather than left to fail confusingly at
+		// runtime with no instance/payload context to evaluate against.
+		if !isEmptyExpressionTree(rule.ConditionTree) {
+			return fmt.Errorf("%w: schedule-triggered rules do not support condition trees yet", ErrInvalidRule)
+		}
+		for i, a := range rule.Actions {
+			if a.Type != ActionNotify {
+				return fmt.Errorf("%w: action %d: schedule-triggered rules only support %q actions", ErrInvalidRule, i, ActionNotify)
+			}
+		}
+		if rule.ScheduleInterval == nil || strings.TrimSpace(*rule.ScheduleInterval) == "" {
+			return fmt.Errorf("%w: schedule-triggered rules require scheduleInterval", ErrInvalidRule)
+		}
+		if d, err := time.ParseDuration(*rule.ScheduleInterval); err != nil || d <= 0 {
+			return fmt.Errorf("%w: scheduleInterval must be a positive Go duration string (e.g. \"1h\", \"24h\")", ErrInvalidRule)
+		}
+	}
+
+	// Schedule-triggered rules' condition tree is required to be the empty
+	// placeholder above (isEmptyExpressionTree) - ValidateExpressionTree
+	// itself would reject that same empty value for every other trigger
+	// (an empty logic-node Op is not a recognized operator), so it's
+	// skipped entirely here rather than taught a schedule-specific carve-out.
+	if rule.Trigger != TriggerSchedule {
+		if err := ValidateExpressionTree(rule.ConditionTree); err != nil {
+			return err
+		}
 	}
 	return ValidateActions(rule.Actions)
+}
+
+// isEmptyExpressionTree reports whether tree is the zero value - "no
+// condition tree was set" - as opposed to a structurally trivial but
+// non-zero one. Schedule-triggered rules require this today (see
+// validateRuleShape); every other trigger runs ValidateExpressionTree's
+// own full structural check regardless.
+func isEmptyExpressionTree(tree ExpressionNode) bool {
+	return tree.Op == "" && tree.Type == "" && len(tree.Children) == 0
 }
 
 // createRuleTx inserts rule as a new workflow_rules row within an
@@ -623,11 +672,29 @@ func createRuleTx(ctx context.Context, tx pgx.Tx, rule Rule) (uuid.UUID, time.Ti
 	var id uuid.UUID
 	var createdAt time.Time
 	if err := tx.QueryRow(ctx, `
-		INSERT INTO workflow_rules (firm_id, definition_key, name, trigger, condition_tree, actions, autonomous, enabled)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO workflow_rules (firm_id, definition_key, name, trigger, condition_tree, actions, autonomous, enabled, schedule_interval)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING id, created_at
-	`, rule.FirmID, rule.DefinitionKey, rule.Name, string(rule.Trigger), conditionTreeJSON, actionsJSON, rule.Autonomous, rule.Enabled).Scan(&id, &createdAt); err != nil {
+	`, rule.FirmID, rule.DefinitionKey, rule.Name, string(rule.Trigger), conditionTreeJSON, actionsJSON, rule.Autonomous, rule.Enabled, rule.ScheduleInterval).Scan(&id, &createdAt); err != nil {
 		return uuid.UUID{}, time.Time{}, fmt.Errorf("insert workflow rule: %w", err)
+	}
+
+	// A schedule-triggered rule needs an initial scheduled_rule_runs row
+	// to ever run at all - nothing else seeds one (validateRuleShape has
+	// already guaranteed ScheduleInterval parses as a positive duration
+	// at this point). Scheduled one interval out, not immediately: a rule
+	// shouldn't fire the instant it's saved.
+	if rule.Trigger == TriggerSchedule {
+		interval, err := time.ParseDuration(*rule.ScheduleInterval)
+		if err != nil {
+			return uuid.UUID{}, time.Time{}, fmt.Errorf("parse schedule interval: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO scheduled_rule_runs (firm_id, rule_id, scheduled_for)
+			VALUES ($1, $2, now() + $3::interval)
+		`, rule.FirmID, id, interval.String()); err != nil {
+			return uuid.UUID{}, time.Time{}, fmt.Errorf("schedule initial run: %w", err)
+		}
 	}
 	return id, createdAt, nil
 }
@@ -869,7 +936,7 @@ func CreateRuleForFirm(ctx context.Context, pool *pgxpool.Pool, firmID, userID u
 // scopes a read query, not a fresh authorization decision.
 func getRuleTx(ctx context.Context, tx pgx.Tx, firmID, ruleID uuid.UUID, definitionKey string) (Rule, error) {
 	row := tx.QueryRow(ctx, `
-		SELECT id, firm_id, definition_key, name, trigger, condition_tree, actions, autonomous, enabled, created_at
+		SELECT `+ruleColumns+`
 		FROM workflow_rules
 		WHERE id = $1 AND firm_id = $2 AND definition_key = $3
 	`, ruleID, firmID, definitionKey)
@@ -893,6 +960,11 @@ type RuleUpdate struct {
 	Autonomous    *bool
 	ConditionTree *ExpressionNode
 	Actions       *[]Action
+	// ScheduleInterval, when non-nil, replaces the rule's own field - same
+	// "can set, can't explicitly clear back to unset" convention Name's
+	// own *string already has in this struct (there is no way to PATCH a
+	// rule's name back to empty either).
+	ScheduleInterval *string
 }
 
 // UpdateRuleForFirm applies patch to ruleID (scoped to firmID/definitionKey
@@ -940,6 +1012,9 @@ func UpdateRuleForFirm(ctx context.Context, pool *pgxpool.Pool, firmID, userID, 
 		if patch.Actions != nil {
 			updated.Actions = *patch.Actions
 		}
+		if patch.ScheduleInterval != nil {
+			updated.ScheduleInterval = patch.ScheduleInterval
+		}
 
 		if err := validateRuleShape(updated); err != nil {
 			return err
@@ -958,9 +1033,9 @@ func UpdateRuleForFirm(ctx context.Context, pool *pgxpool.Pool, firmID, userID, 
 		}
 		if _, err := tx.Exec(ctx, `
 			UPDATE workflow_rules
-			SET name = $1, condition_tree = $2, actions = $3, autonomous = $4, enabled = $5
-			WHERE id = $6
-		`, updated.Name, conditionTreeJSON, actionsJSON, updated.Autonomous, updated.Enabled, ruleID); err != nil {
+			SET name = $1, condition_tree = $2, actions = $3, autonomous = $4, enabled = $5, schedule_interval = $6
+			WHERE id = $7
+		`, updated.Name, conditionTreeJSON, actionsJSON, updated.Autonomous, updated.Enabled, updated.ScheduleInterval, ruleID); err != nil {
 			return fmt.Errorf("update workflow rule: %w", err)
 		}
 
@@ -1006,12 +1081,17 @@ func DeleteRuleForFirm(ctx context.Context, pool *pgxpool.Pool, firmID, userID, 
 	})
 }
 
-// scanRule reads one workflow_rules row into a Rule.
+// ruleColumns is the column list every workflow_rules SELECT in this file
+// shares - one definition instead of five independently-drifting copies,
+// now that schedule_interval (this batch) is a column too.
+const ruleColumns = "id, firm_id, definition_key, name, trigger, condition_tree, actions, autonomous, enabled, schedule_interval, created_at"
+
+// scanRule reads one workflow_rules row (ruleColumns' shape) into a Rule.
 func scanRule(row pgx.Row) (Rule, error) {
 	var r Rule
 	var trigger string
 	var rr ruleRow
-	if err := row.Scan(&r.ID, &r.FirmID, &r.DefinitionKey, &r.Name, &trigger, &rr.ConditionTree, &rr.Actions, &r.Autonomous, &r.Enabled, &r.CreatedAt); err != nil {
+	if err := row.Scan(&r.ID, &r.FirmID, &r.DefinitionKey, &r.Name, &trigger, &rr.ConditionTree, &rr.Actions, &r.Autonomous, &r.Enabled, &r.ScheduleInterval, &r.CreatedAt); err != nil {
 		return Rule{}, err
 	}
 	r.Trigger = Trigger(trigger)
@@ -1045,7 +1125,7 @@ func ListRulesForDefinition(ctx context.Context, pool *pgxpool.Pool, firmID, use
 		}
 
 		rows, err := tx.Query(ctx, `
-			SELECT id, firm_id, definition_key, name, trigger, condition_tree, actions, autonomous, enabled, created_at
+			SELECT `+ruleColumns+`
 			FROM workflow_rules
 			WHERE definition_key = $1
 			ORDER BY created_at DESC
@@ -1082,7 +1162,7 @@ func ListRulesForDefinition(ctx context.Context, pool *pgxpool.Pool, firmID, use
 // not a fresh authorization decision of its own.
 func listEnabledRulesTx(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, definitionKey string, trigger Trigger) ([]Rule, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT id, firm_id, definition_key, name, trigger, condition_tree, actions, autonomous, enabled, created_at
+		SELECT `+ruleColumns+`
 		FROM workflow_rules
 		WHERE firm_id = $1 AND definition_key = $2 AND trigger = $3 AND enabled
 		ORDER BY created_at
@@ -1190,6 +1270,24 @@ func EvaluateRules(ctx context.Context, pool *pgxpool.Pool, firmID, userID, inst
 		}
 
 		if !rule.Autonomous {
+			// Open Points item 41: a non-autonomous match now creates a
+			// real pending_approvals row plus notifications (approvals.go)
+			// when the rule proposes a transition - not just this audit_log
+			// entry, which stays as the permanent record that the match
+			// happened, unconditionally, the same as before this batch.
+			// See firstTransitionAction's own doc comment for why only the
+			// first transition action, if any, becomes an approval - a
+			// "notify"/"set_field"-only rule has no permission-gated action
+			// to seek approval for, so it keeps the old audit-only behavior.
+			if action, ok := firstTransitionAction(rule.Actions); ok {
+				if _, approvalErr := createPendingApprovalAndNotify(ctx, pool, firmID, userID, instanceID, definitionKey, state, rule, action.ActionKey); approvalErr != nil {
+					writeRuleAuditEntry(ctx, pool, firmID, userID, instanceID, rule, ruleEvaluationErrorAction, map[string]any{
+						"ruleName": rule.Name,
+						"error":    approvalErr.Error(),
+					})
+					continue
+				}
+			}
 			writeRuleAuditEntry(ctx, pool, firmID, userID, instanceID, rule, rulePendingApprovalAction, map[string]any{
 				"ruleName": rule.Name,
 			})

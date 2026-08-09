@@ -8,6 +8,7 @@ import { Link } from "@/i18n/navigation";
 import type { MeResponse } from "@/lib/me";
 import FirmSwitcher from "./FirmSwitcher";
 import GlobalSearchBox from "./GlobalSearchBox";
+import NotificationBell from "./NotificationBell";
 import AuditModeClient from "@/components/AuditMode/AuditModeClient";
 
 type Props = {
@@ -137,6 +138,20 @@ export default async function NavShell({ me, activeFirmId, isOwner }: Props) {
               >
                 {t("invoices")}
               </Link>
+              <Link
+                href="/edge-agents"
+                data-permission-public="true"
+                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
+              >
+                {t("edgeAgents")}
+              </Link>
+              <Link
+                href="/approvals"
+                data-permission-public="true"
+                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
+              >
+                {t("approvals")}
+              </Link>
               {isOwner && (
                 <Link
                   href="/settings/accounts"
@@ -179,6 +194,12 @@ export default async function NavShell({ me, activeFirmId, isOwner }: Props) {
             reachable from every authenticated page, not just /search
             itself (see components/Nav/GlobalSearchBox.tsx). */}
         {activeFirmId && <GlobalSearchBox />}
+
+        {/* Notification inbox bell (this batch, Open Points item 41's
+            notification/approval system) - mounted here so the unread
+            badge is visible from every authenticated page, not just
+            /approvals itself. */}
+        {activeFirmId && <NotificationBell firmId={activeFirmId} />}
 
         {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- /api/auth/logout is a route handler, not a page: it must be a real navigation, not client-side routing */}
         <a

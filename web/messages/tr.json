@@ -27,6 +27,8 @@
     "logistics": "Lojistik",
     "customers": "Müşteriler",
     "invoices": "Faturalar",
+    "edgeAgents": "Uç Aracıları",
+    "approvals": "Onaylar",
     "tasks": "Görevler",
     "reports": "Raporlar",
     "logout": "Çıkış yap",
@@ -671,6 +673,57 @@
       "returned": "İade edildi",
       "cancelled": "İptal edildi"
     }
+  },
+  "EdgeAgents": {
+    "title": "Uç Aracıları",
+    "loadError": "Bu veri yüklenemedi. Lütfen tekrar deneyin.",
+    "empty": "Henüz kayıtlı uç aracısı yok.",
+    "agentsTitle": "Aracılar",
+    "newAgent": "+ Yeni aracı",
+    "cancel": "Vazgeç",
+    "create": "Oluştur",
+    "createNameRequired": "Lütfen bir ad girin.",
+    "createError": "Bu aracı kaydedilemedi. Lütfen tekrar deneyin.",
+    "name": "Ad",
+    "description": "Açıklama",
+    "neverSeen": "Hiç görülmedi",
+    "lastSeen": "Son görülme",
+    "version": "Sürüm",
+    "capabilities": "Yetenekler",
+    "tokensTitle": "Belirteçler",
+    "issueToken": "+ Belirteç oluştur",
+    "issueTokenNameRequired": "Lütfen bu belirteç için bir ad girin.",
+    "issueTokenError": "Belirteç oluşturulamadı. Lütfen tekrar deneyin.",
+    "issuedTokenWarning": "Bu belirteci şimdi kopyalayın - bir daha gösterilmeyecek.",
+    "tokenName": "Belirteç adı",
+    "noTokens": "Henüz belirteç oluşturulmadı.",
+    "lastUsed": "Son kullanım",
+    "expires": "Son kullanma",
+    "eventsTitle": "Olaylar",
+    "noEvents": "Henüz olay bildirilmedi.",
+    "status": {
+      "label": "Durum",
+      "offline": "Çevrimdışı",
+      "online": "Çevrimiçi",
+      "error": "Hata"
+    }
+  },
+  "Notifications": {
+    "bellLabel": "Bildirimler",
+    "title": "Bildirimler",
+    "loading": "Yükleniyor…",
+    "empty": "Henüz bildirim yok."
+  },
+  "Approvals": {
+    "title": "Onaylar",
+    "loadError": "Bu veri yüklenemedi. Lütfen tekrar deneyin.",
+    "empty": "Bekleyen onay yok.",
+    "requestedBy": "Talep eden",
+    "proposedAction": "Önerilen işlem",
+    "expires": "Son kullanma",
+    "approve": "Onayla",
+    "reject": "Reddet",
+    "actionError": "Bu işlem tamamlanamadı. Lütfen tekrar deneyin."
   },
   "Customers": {
     "title": "Müşteriler",

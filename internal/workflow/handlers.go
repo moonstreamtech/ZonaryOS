@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -76,6 +77,13 @@ func RegisterRoutes(mux *http.ServeMux, verifier *identity.Verifier, pool *pgxpo
 	mux.Handle("POST /api/firms/{firmID}/workflow-definitions/{definitionKey}/rules", auth(http.HandlerFunc(handleCreateRule(pool))))
 	mux.Handle("PATCH /api/firms/{firmID}/workflow-definitions/{definitionKey}/rules/{ruleID}", auth(http.HandlerFunc(handleUpdateRule(pool))))
 	mux.Handle("DELETE /api/firms/{firmID}/workflow-definitions/{definitionKey}/rules/{ruleID}", auth(http.HandlerFunc(handleDeleteRule(pool))))
+	// Approval workflow (Open Points item 41, approvals.go): member-gated
+	// list, filtered to approvals the caller can actually resolve;
+	// approve/reject each require holding the approval's own permission
+	// key, checked inside Approve/Reject themselves.
+	mux.Handle("GET /api/firms/{firmID}/pending-approvals", auth(http.HandlerFunc(handleListPendingApprovals(pool))))
+	mux.Handle("POST /api/firms/{firmID}/pending-approvals/{id}/approve", auth(http.HandlerFunc(handleApproveApproval(pool))))
+	mux.Handle("POST /api/firms/{firmID}/pending-approvals/{id}/reject", auth(http.HandlerFunc(handleRejectApproval(pool))))
 }
 
 type stateInfoResponse struct {
@@ -133,14 +141,14 @@ func toInstanceStateResponse(s InstanceState) instanceStateResponse {
 // request gets, not a generic 500.
 func writeEngineError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, ErrDefinitionNotFound), errors.Is(err, ErrInstanceNotFound), errors.Is(err, ErrRuleNotFound):
+	case errors.Is(err, ErrDefinitionNotFound), errors.Is(err, ErrInstanceNotFound), errors.Is(err, ErrRuleNotFound), errors.Is(err, ErrApprovalNotFound):
 		http.Error(w, err.Error(), http.StatusNotFound)
 	case errors.Is(err, ErrPermissionDenied):
 		http.Error(w, err.Error(), http.StatusForbidden)
 	case errors.Is(err, ErrNoSuchTransition), errors.Is(err, ErrInvalidSpec), errors.Is(err, ErrPayloadValidation), errors.Is(err, ErrInvalidRule),
 		errors.Is(err, inventory.ErrInsufficientStock), errors.Is(err, inventory.ErrInvalidStockAdjustment):
 		http.Error(w, err.Error(), http.StatusBadRequest)
-	case errors.Is(err, ErrDefinitionKeyExists):
+	case errors.Is(err, ErrDefinitionKeyExists), errors.Is(err, ErrApprovalNotPending), errors.Is(err, ErrApprovalExpired):
 		http.Error(w, err.Error(), http.StatusConflict)
 	default:
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -1079,25 +1087,27 @@ func toActionResponse(a Action) actionResponse {
 }
 
 type ruleResponse struct {
-	ID            string                 `json:"id"`
-	DefinitionKey string                 `json:"definitionKey"`
-	Name          string                 `json:"name"`
-	Trigger       string                 `json:"trigger"`
-	ConditionTree expressionNodeResponse `json:"conditionTree"`
-	Actions       []actionResponse       `json:"actions"`
-	Autonomous    bool                   `json:"autonomous"`
-	Enabled       bool                   `json:"enabled"`
+	ID               string                 `json:"id"`
+	DefinitionKey    string                 `json:"definitionKey"`
+	Name             string                 `json:"name"`
+	Trigger          string                 `json:"trigger"`
+	ConditionTree    expressionNodeResponse `json:"conditionTree"`
+	Actions          []actionResponse       `json:"actions"`
+	Autonomous       bool                   `json:"autonomous"`
+	Enabled          bool                   `json:"enabled"`
+	ScheduleInterval *string                `json:"scheduleInterval,omitempty"`
 }
 
 func toRuleResponse(r Rule) ruleResponse {
 	resp := ruleResponse{
-		ID:            r.ID.String(),
-		DefinitionKey: r.DefinitionKey,
-		Name:          r.Name,
-		Trigger:       string(r.Trigger),
-		ConditionTree: toExpressionNodeResponse(r.ConditionTree),
-		Autonomous:    r.Autonomous,
-		Enabled:       r.Enabled,
+		ID:               r.ID.String(),
+		DefinitionKey:    r.DefinitionKey,
+		Name:             r.Name,
+		Trigger:          string(r.Trigger),
+		ScheduleInterval: r.ScheduleInterval,
+		ConditionTree:    toExpressionNodeResponse(r.ConditionTree),
+		Autonomous:       r.Autonomous,
+		Enabled:          r.Enabled,
 	}
 	for _, a := range r.Actions {
 		resp.Actions = append(resp.Actions, toActionResponse(a))
@@ -1209,12 +1219,13 @@ func (a actionRequest) toAction() Action {
 // of Rule's caller-supplied fields (ID/FirmID/DefinitionKey/CreatedAt are
 // all server-assigned or path-derived, not part of the request body).
 type createRuleRequest struct {
-	Name          string                `json:"name"`
-	Trigger       string                `json:"trigger"`
-	ConditionTree expressionNodeRequest `json:"conditionTree"`
-	Actions       []actionRequest       `json:"actions"`
-	Autonomous    bool                  `json:"autonomous"`
-	Enabled       bool                  `json:"enabled"`
+	Name             string                `json:"name"`
+	Trigger          string                `json:"trigger"`
+	ConditionTree    expressionNodeRequest `json:"conditionTree"`
+	Actions          []actionRequest       `json:"actions"`
+	Autonomous       bool                  `json:"autonomous"`
+	Enabled          bool                  `json:"enabled"`
+	ScheduleInterval *string               `json:"scheduleInterval,omitempty"`
 }
 
 // handleCreateRule serves POST .../workflow-definitions/{definitionKey}/rules
@@ -1254,12 +1265,13 @@ func handleCreateRule(pool *pgxpool.Pool) http.HandlerFunc {
 			actions = append(actions, a.toAction())
 		}
 		rule := Rule{
-			Name:          req.Name,
-			Trigger:       Trigger(req.Trigger),
-			ConditionTree: req.ConditionTree.toExpressionNode(),
-			Actions:       actions,
-			Autonomous:    req.Autonomous,
-			Enabled:       req.Enabled,
+			Name:             req.Name,
+			Trigger:          Trigger(req.Trigger),
+			ConditionTree:    req.ConditionTree.toExpressionNode(),
+			Actions:          actions,
+			Autonomous:       req.Autonomous,
+			Enabled:          req.Enabled,
+			ScheduleInterval: req.ScheduleInterval,
 		}
 
 		created, err := CreateRuleForFirm(r.Context(), pool, firmID, userID, definitionKey, rule)
@@ -1281,11 +1293,12 @@ func handleCreateRule(pool *pgxpool.Pool) http.HandlerFunc {
 // out by name; kept as *bool like the rest for the same optional-field
 // convention.
 type updateRuleRequest struct {
-	Name          *string                `json:"name,omitempty"`
-	Enabled       *bool                  `json:"enabled,omitempty"`
-	Autonomous    *bool                  `json:"autonomous,omitempty"`
-	ConditionTree *expressionNodeRequest `json:"conditionTree,omitempty"`
-	Actions       *[]actionRequest       `json:"actions,omitempty"`
+	Name             *string                `json:"name,omitempty"`
+	Enabled          *bool                  `json:"enabled,omitempty"`
+	Autonomous       *bool                  `json:"autonomous,omitempty"`
+	ConditionTree    *expressionNodeRequest `json:"conditionTree,omitempty"`
+	Actions          *[]actionRequest       `json:"actions,omitempty"`
+	ScheduleInterval *string                `json:"scheduleInterval,omitempty"`
 }
 
 // handleUpdateRule serves PATCH .../workflow-definitions/{definitionKey}/rules/{ruleID}
@@ -1323,7 +1336,7 @@ func handleUpdateRule(pool *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 
-		patch := RuleUpdate{Name: req.Name, Enabled: req.Enabled, Autonomous: req.Autonomous}
+		patch := RuleUpdate{Name: req.Name, Enabled: req.Enabled, Autonomous: req.Autonomous, ScheduleInterval: req.ScheduleInterval}
 		if req.ConditionTree != nil {
 			tree := req.ConditionTree.toExpressionNode()
 			patch.ConditionTree = &tree
@@ -1433,5 +1446,155 @@ func handleExecuteTransition(pool *pgxpool.Pool) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(toInstanceStateResponse(state))
+	}
+}
+
+// pendingApprovalResponse is PendingApproval's JSON wire shape.
+type pendingApprovalResponse struct {
+	ID                string  `json:"id"`
+	InstanceID        string  `json:"instanceId"`
+	ProposedActionKey string  `json:"proposedActionKey"`
+	PermissionKey     string  `json:"permissionKey"`
+	RequestedBy       string  `json:"requestedBy"`
+	RuleID            *string `json:"ruleId,omitempty"`
+	Status            string  `json:"status"`
+	ResolvedBy        *string `json:"resolvedBy,omitempty"`
+	ResolvedAt        *string `json:"resolvedAt,omitempty"`
+	ExpiresAt         *string `json:"expiresAt,omitempty"`
+	CreatedAt         string  `json:"createdAt"`
+}
+
+func toPendingApprovalResponse(a PendingApproval) pendingApprovalResponse {
+	resp := pendingApprovalResponse{
+		ID: a.ID.String(), InstanceID: a.InstanceID.String(), ProposedActionKey: a.ProposedActionKey,
+		PermissionKey: a.PermissionKey, RequestedBy: a.RequestedBy.String(), Status: string(a.Status),
+		ExpiresAt: formatTimePtr(a.ExpiresAt), ResolvedAt: formatTimePtr(a.ResolvedAt), CreatedAt: a.CreatedAt.Format(time.RFC3339),
+	}
+	if a.RuleID != nil {
+		s := a.RuleID.String()
+		resp.RuleID = &s
+	}
+	if a.ResolvedBy != nil {
+		s := a.ResolvedBy.String()
+		resp.ResolvedBy = &s
+	}
+	return resp
+}
+
+func formatTimePtr(t *time.Time) *string {
+	if t == nil {
+		return nil
+	}
+	s := t.Format(time.RFC3339)
+	return &s
+}
+
+// handleListPendingApprovals serves GET .../pending-approvals -
+// member-gated, filtered to approvals the caller could actually resolve
+// (holds the proposed action's permission key) - see
+// ListPendingApprovals' own doc comment.
+func handleListPendingApprovals(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := identity.FromContext(r.Context())
+		if !ok {
+			http.Error(w, "missing identity", http.StatusInternalServerError)
+			return
+		}
+		firmID, err := uuid.Parse(r.PathValue("firmID"))
+		if err != nil {
+			http.Error(w, "invalid firm id", http.StatusBadRequest)
+			return
+		}
+		userID, err := identity.ResolveOrCreateUser(r.Context(), pool, id)
+		if err != nil {
+			http.Error(w, "failed to resolve user", http.StatusInternalServerError)
+			return
+		}
+
+		approvals, err := ListPendingApprovals(r.Context(), pool, firmID, userID)
+		if err != nil {
+			writeEngineError(w, err)
+			return
+		}
+
+		resp := make([]pendingApprovalResponse, 0, len(approvals))
+		for _, a := range approvals {
+			resp = append(resp, toPendingApprovalResponse(a))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}
+}
+
+// handleApproveApproval serves POST .../pending-approvals/{id}/approve -
+// executes the proposed transition for real (Approve's own doc comment).
+func handleApproveApproval(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := identity.FromContext(r.Context())
+		if !ok {
+			http.Error(w, "missing identity", http.StatusInternalServerError)
+			return
+		}
+		firmID, err := uuid.Parse(r.PathValue("firmID"))
+		if err != nil {
+			http.Error(w, "invalid firm id", http.StatusBadRequest)
+			return
+		}
+		approvalID, err := uuid.Parse(r.PathValue("id"))
+		if err != nil {
+			http.Error(w, "invalid approval id", http.StatusBadRequest)
+			return
+		}
+		userID, err := identity.ResolveOrCreateUser(r.Context(), pool, id)
+		if err != nil {
+			http.Error(w, "failed to resolve user", http.StatusInternalServerError)
+			return
+		}
+
+		approved, err := Approve(r.Context(), pool, firmID, userID, approvalID)
+		if err != nil {
+			writeEngineError(w, err)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(toPendingApprovalResponse(approved))
+	}
+}
+
+// handleRejectApproval serves POST .../pending-approvals/{id}/reject -
+// marks the approval rejected and notifies whoever requested it (Reject's
+// own doc comment).
+func handleRejectApproval(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := identity.FromContext(r.Context())
+		if !ok {
+			http.Error(w, "missing identity", http.StatusInternalServerError)
+			return
+		}
+		firmID, err := uuid.Parse(r.PathValue("firmID"))
+		if err != nil {
+			http.Error(w, "invalid firm id", http.StatusBadRequest)
+			return
+		}
+		approvalID, err := uuid.Parse(r.PathValue("id"))
+		if err != nil {
+			http.Error(w, "invalid approval id", http.StatusBadRequest)
+			return
+		}
+		userID, err := identity.ResolveOrCreateUser(r.Context(), pool, id)
+		if err != nil {
+			http.Error(w, "failed to resolve user", http.StatusInternalServerError)
+			return
+		}
+
+		rejected, err := Reject(r.Context(), pool, firmID, userID, approvalID)
+		if err != nil {
+			writeEngineError(w, err)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(toPendingApprovalResponse(rejected))
 	}
 }

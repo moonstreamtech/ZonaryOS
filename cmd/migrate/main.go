@@ -8,21 +8,27 @@
 package main
 
 import (
-	"log"
+	"log/slog"
 	"os"
 
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/db"
 )
 
+func init() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+}
+
 func main() {
 	dsn := os.Getenv("ZONARYOS_MIGRATE_DATABASE_URL")
 	if dsn == "" {
-		log.Fatal("ZONARYOS_MIGRATE_DATABASE_URL must be set")
+		slog.Error("ZONARYOS_MIGRATE_DATABASE_URL must be set")
+		os.Exit(1)
 	}
 
 	if err := db.Migrate(dsn); err != nil {
-		log.Fatalf("migrate: %v", err)
+		slog.Error("migrate", "err", err)
+		os.Exit(1)
 	}
 
-	log.Println("migrations applied")
+	slog.Info("migrations applied")
 }

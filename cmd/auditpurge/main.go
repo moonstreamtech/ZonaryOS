@@ -17,7 +17,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"os"
 	"strconv"
 	"time"
@@ -26,30 +26,38 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/db"
 )
 
+func init() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+}
+
 func main() {
 	dsn := os.Getenv("ZONARYOS_DATABASE_URL")
 	if dsn == "" {
-		log.Fatal("ZONARYOS_DATABASE_URL must be set")
+		slog.Error("ZONARYOS_DATABASE_URL must be set")
+		os.Exit(1)
 	}
 
 	retentionDays, err := strconv.Atoi(os.Getenv("ZONARYOS_AUDIT_RETENTION_DAYS"))
 	if err != nil || retentionDays <= 0 {
-		log.Fatal("ZONARYOS_AUDIT_RETENTION_DAYS must be set to a positive integer - " +
+		slog.Error("ZONARYOS_AUDIT_RETENTION_DAYS must be set to a positive integer - " +
 			"the audit log retention period is not yet finalized (docs/OPEN_POINTS.md item 33); " +
 			"refusing to guess a duration and delete data")
+		os.Exit(1)
 	}
 
 	ctx := context.Background()
 	pool, err := db.Open(ctx, dsn)
 	if err != nil {
-		log.Fatalf("open database: %v", err)
+		slog.Error("open database", "err", err)
+		os.Exit(1)
 	}
 	defer pool.Close()
 
 	cutoff := time.Now().AddDate(0, 0, -retentionDays)
 	deleted, err := auditlog.PurgeOlderThan(ctx, pool, cutoff)
 	if err != nil {
-		log.Fatalf("purge audit log: %v", err)
+		slog.Error("purge audit log", "err", err)
+		os.Exit(1)
 	}
-	log.Printf("deleted %d audit_log rows older than %s", deleted, cutoff.Format(time.RFC3339)) // #nosec G706 -- deleted/cutoff are a DB row count and a computed timestamp, not attacker-controlled input; this is an operator-invoked CLI, not a network-facing log sink
+	slog.Info("purged audit log rows", "deleted", deleted, "cutoff", cutoff.Format(time.RFC3339)) // #nosec G706 -- deleted/cutoff are a DB row count and a computed timestamp, not attacker-controlled input; this is an operator-invoked CLI, not a network-facing log sink
 }
