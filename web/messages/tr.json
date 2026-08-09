@@ -28,6 +28,7 @@
     "customers": "Müşteriler",
     "invoices": "Faturalar",
     "edgeAgents": "Uç Aracıları",
+    "approvals": "Onaylar",
     "tasks": "Görevler",
     "reports": "Raporlar",
     "logout": "Çıkış yap",
@@ -706,6 +707,23 @@
       "online": "Çevrimiçi",
       "error": "Hata"
     }
+  },
+  "Notifications": {
+    "bellLabel": "Bildirimler",
+    "title": "Bildirimler",
+    "loading": "Yükleniyor…",
+    "empty": "Henüz bildirim yok."
+  },
+  "Approvals": {
+    "title": "Onaylar",
+    "loadError": "Bu veri yüklenemedi. Lütfen tekrar deneyin.",
+    "empty": "Bekleyen onay yok.",
+    "requestedBy": "Talep eden",
+    "proposedAction": "Önerilen işlem",
+    "expires": "Son kullanma",
+    "approve": "Onayla",
+    "reject": "Reddet",
+    "actionError": "Bu işlem tamamlanamadı. Lütfen tekrar deneyin."
   },
   "Customers": {
     "title": "Müşteriler",

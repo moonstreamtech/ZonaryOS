@@ -48,4 +48,19 @@ var (
 	// CustomerPipelineSpec today) never produces this error - see
 	// CreateInstance's own doc comment.
 	ErrPayloadValidation = errors.New("workflow instance payload failed schema validation")
+
+	// ErrApprovalNotFound means no pending_approvals row with the given ID
+	// is visible in the caller's firm context - same "member of firm but
+	// this row doesn't exist" 404 convention as ErrInstanceNotFound.
+	ErrApprovalNotFound = errors.New("pending approval not found")
+
+	// ErrApprovalNotPending means Approve/Reject was called on an approval
+	// that has already been resolved (approved or rejected) - a 409, not a
+	// 404: the row exists and is visible, it just isn't actionable anymore.
+	ErrApprovalNotPending = errors.New("pending approval has already been resolved")
+
+	// ErrApprovalExpired means Approve/Reject was called on an approval
+	// past its own expires_at - lazily transitioned to 'expired' status at
+	// that point (see resolveApprovalTx), never resolvable after.
+	ErrApprovalExpired = errors.New("pending approval has expired")
 )

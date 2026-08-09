@@ -27,6 +27,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/invoicing"
 	"github.com/moonstreamtech/ZonaryOS/internal/license"
 	"github.com/moonstreamtech/ZonaryOS/internal/logistics"
+	"github.com/moonstreamtech/ZonaryOS/internal/notification"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/config"
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/db"
@@ -141,6 +142,22 @@ func main() {
 		go telemetryReporter.Start(reporterCtx)
 	}
 
+	// workflow.RunScheduler (this batch, Open Points item 7's partial
+	// schedule-trigger support, scheduler.go): a lightweight goroutine
+	// inside this same process - not a separate process, not a cron
+	// daemon (per this batch's own brief) - polling every
+	// workflow.SchedulerPollInterval for due scheduled_rule_runs across
+	// every firm. Unconditional (no feature flag): unlike telemetry/
+	// license, an installation with zero schedule-triggered rules simply
+	// has nothing for each poll to find, so there is no meaningful
+	// "disabled" state to gate here the way TelemetryEnabled/
+	// LicenseEnforced gate their own goroutines. schedulerCtx is
+	// cancelled on shutdown so this goroutine doesn't leak past the
+	// server's own lifetime, same convention as reporterCtx above.
+	schedulerCtx, cancelScheduler := context.WithCancel(ctx)
+	defer cancelScheduler()
+	go workflow.RunScheduler(schedulerCtx, pool, workflow.SchedulerPollInterval)
+
 	mux := httpapi.NewMux()
 	// The well-known discovery endpoint (Open Points item 34) is
 	// unconditional - see internal/discovery.RegisterRoutes's own
@@ -170,6 +187,13 @@ func main() {
 	// itself calls - see that package's own doc comment for why these
 	// are two entirely separate auth chains.
 	edgeagent.RegisterRoutes(mux, verifier, pool)
+	// internal/notification (this batch): the in-app notification inbox
+	// - GET .../notifications, GET .../notifications/unread-count,
+	// PATCH .../notifications/{id}/read. Unconditional, same as every
+	// other member-gated route group - see that package's own doc
+	// comment for its scope boundaries (no email/push, no WebSocket
+	// push).
+	notification.RegisterRoutes(mux, verifier, pool)
 	// Only actually registers the two /telemetry/* endpoints when
 	// telemetryReporter is non-nil (enabled) - see
 	// telemetry.RegisterRoutes's own comment: a disabled installation

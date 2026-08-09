@@ -30,6 +30,7 @@
     "customers": "Customers",
     "invoices": "Invoices",
     "edgeAgents": "Edge Agents",
+    "approvals": "Approvals",
     "logout": "Log out",
     "firmSwitcherLabel": "Active firm"
   },
@@ -706,6 +707,23 @@
       "online": "Online",
       "error": "Error"
     }
+  },
+  "Notifications": {
+    "bellLabel": "Notifications",
+    "title": "Notifications",
+    "loading": "Loading…",
+    "empty": "No notifications yet."
+  },
+  "Approvals": {
+    "title": "Approvals",
+    "loadError": "Couldn't load this data. Please try again.",
+    "empty": "No pending approvals.",
+    "requestedBy": "Requested by",
+    "proposedAction": "Proposed action",
+    "expires": "Expires",
+    "approve": "Approve",
+    "reject": "Reject",
+    "actionError": "Couldn't complete this action. Please try again."
   },
   "Customers": {
     "title": "Customers",
