@@ -46,6 +46,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/localization"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
+	"github.com/moonstreamtech/ZonaryOS/internal/webhook"
 )
 
 const invoiceAuditEntityType = "invoice"
@@ -380,6 +381,14 @@ func CreateInvoice(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.
 	if err != nil {
 		return Invoice{}, err
 	}
+
+	webhook.Dispatch(pool, firmID, webhook.EventInvoiceCreated, map[string]any{
+		"invoiceId":     inv.ID.String(),
+		"invoiceNumber": inv.InvoiceNumber,
+		"total":         inv.Total,
+		"currency":      inv.Currency,
+	})
+
 	return inv, nil
 }
 
@@ -410,6 +419,15 @@ type CreateInvoiceTxInput struct {
 // ciaudit:ignore-firmid-check: shared invoice-creation primitive; every
 // caller (internal/workflow's invoice-template hook) has already run its
 // own authorization check before calling this.
+//
+// Deliberately does NOT dispatch webhook.EventInvoiceCreated: this runs
+// inside the caller's still-open transaction (executeTransitionTx), and
+// webhook.Dispatch must only ever fire after the operation it describes
+// has actually committed - dispatching here could notify an external
+// system about an invoice that the outer transition still rolls back.
+// The transition's own webhook.EventWorkflowTransitionExecuted dispatch
+// (fired post-commit) is what external integrations observe for this
+// path instead; see this batch's own report for the full reasoning.
 func CreateInvoiceTx(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, instanceID uuid.UUID, input CreateInvoiceTxInput) (uuid.UUID, error) {
 	line := InvoiceLineInput{
 		Description: input.Description, Quantity: input.Quantity, UnitPrice: input.UnitPrice, ProductID: input.ProductID,

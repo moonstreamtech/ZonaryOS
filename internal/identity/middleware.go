@@ -14,6 +14,12 @@ import (
 // success, attaches the resulting Identity to the request context (see
 // FromContext) before calling next. A missing or invalid token is rejected
 // with 401 - it never falls through as "unauthenticated but allowed".
+//
+// A token that fails Keycloak verification is tried against verifier's
+// own Fallback (if set) before giving up - see Verifier.Fallback's own
+// doc comment for why this is the extension point non-interactive/
+// programmatic auth (internal/apikey) plugs into, rather than a second
+// parameter here that every RegisterRoutes call site would need to pass.
 func Middleware(verifier *Verifier) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -25,6 +31,16 @@ func Middleware(verifier *Verifier) func(http.Handler) http.Handler {
 
 			id, err := verifier.Verify(r.Context(), token)
 			if err != nil {
+				if verifier.Fallback != nil {
+					if fbID, scopes, ok := verifier.Fallback.Authenticate(r); ok {
+						ctx := WithIdentity(r.Context(), fbID)
+						if scopes != nil {
+							ctx = WithScopeRestriction(ctx, scopes)
+						}
+						next.ServeHTTP(w, r.WithContext(ctx))
+						return
+					}
+				}
 				http.Error(w, "invalid token", http.StatusUnauthorized)
 				return
 			}

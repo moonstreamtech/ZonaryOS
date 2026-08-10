@@ -30,6 +30,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/logistics"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
+	"github.com/moonstreamtech/ZonaryOS/internal/webhook"
 )
 
 // postgresUniqueViolation is the SQLSTATE code Postgres raises for a
@@ -1011,6 +1012,17 @@ func CreateInstance(ctx context.Context, pool *pgxpool.Pool, firmID, userID, def
 		return uuid.UUID{}, err
 	}
 
+	// webhook.Dispatch runs AFTER commit, same "nothing left to roll
+	// back, so a failure here must never fail the request" reasoning
+	// EvaluateRules' own doc comment gives just below - see
+	// internal/webhook's own package doc comment for the full design.
+	webhook.Dispatch(pool, firmID, webhook.EventWorkflowInstanceCreated, map[string]any{
+		"instanceId":    instanceID.String(),
+		"definitionKey": definitionKey,
+		"stateKey":      initialStateKey,
+		"payload":       payload,
+	})
+
 	// Rule evaluation runs AFTER the instance's own creation has committed
 	// - see EvaluateRules' doc comment (rules.go) for why this is the seam
 	// "immediately after commit where transaction boundaries prevent [inline]"
@@ -1055,6 +1067,14 @@ func ExecuteTransition(ctx context.Context, pool *pgxpool.Pool, firmID, userID, 
 	if err != nil {
 		return err
 	}
+
+	webhook.Dispatch(pool, firmID, webhook.EventWorkflowTransitionExecuted, map[string]any{
+		"instanceId":    instanceID.String(),
+		"definitionKey": definitionKey,
+		"actionKey":     actionKey,
+		"toState":       toStateKey,
+		"payload":       mergedPayload,
+	})
 
 	// See CreateInstance's identical post-commit EvaluateRules call for why
 	// this runs after the transition has already committed, and why an

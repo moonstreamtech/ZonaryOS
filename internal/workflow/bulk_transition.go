@@ -16,6 +16,7 @@ import (
 
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
+	"github.com/moonstreamtech/ZonaryOS/internal/webhook"
 )
 
 // ErrBulkTransitionEmpty means BulkExecuteTransition was called with no
@@ -142,6 +143,18 @@ func BulkExecuteTransition(ctx context.Context, pool *pgxpool.Pool, firmID, user
 	})
 	if err != nil {
 		return BulkTransitionResult{}, err
+	}
+
+	// One dispatch per instance, after the whole batch has committed -
+	// same "webhook.Dispatch only ever runs after the operation it
+	// describes has actually happened" reasoning ExecuteTransition's own
+	// call site follows.
+	for _, instanceID := range result.InstanceIDs {
+		webhook.Dispatch(pool, firmID, webhook.EventWorkflowTransitionExecuted, map[string]any{
+			"instanceId": instanceID.String(),
+			"actionKey":  actionKey,
+			"toState":    result.ToStateKey,
+		})
 	}
 	return result, nil
 }

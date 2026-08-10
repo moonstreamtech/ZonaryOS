@@ -8,6 +8,7 @@ package identity
 import (
 	"context"
 	"fmt"
+	"net/http"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 )
@@ -17,6 +18,34 @@ import (
 type Verifier struct {
 	oidcVerifier *oidc.IDTokenVerifier
 	clientID     string
+
+	// Fallback, when set, is tried by Middleware whenever a bearer token
+	// fails Keycloak verification - internal/apikey.Fallback plugs in
+	// here (wired once in cmd/server/main.go) so every existing
+	// `identity.Middleware(verifier)` call site across every module's own
+	// RegisterRoutes gains API-key auth for free, with zero changes to
+	// any of them: the extension point lives on Verifier itself (already
+	// threaded through every one of those call sites), not in
+	// Middleware's own signature. Deliberately an interface defined here,
+	// not a direct import of internal/apikey - internal/apikey needs
+	// Identity (and this interface) from this package, so the reverse
+	// import would be a cycle.
+	Fallback Fallback
+}
+
+// Fallback resolves a bearer token that Keycloak verification rejected
+// into an Identity - the non-interactive/programmatic-access extension
+// point (internal/apikey.Fallback is the only implementation today).
+// Authenticate returns ok=false (not an error) for a token it doesn't
+// recognize at all (e.g. a plain garbage string, or one meant for a
+// different auth scheme entirely), so Middleware can fall through to its
+// ordinary 401 rather than needing to distinguish "malformed API key"
+// from "not an API key at all". scopes is nil for an unrestricted
+// identity (mirrors a real Keycloak login 1:1) or a non-empty allow-list
+// of permission_keys internal/permission.Has additionally requires (see
+// WithScopeRestriction).
+type Fallback interface {
+	Authenticate(r *http.Request) (id Identity, scopes []string, ok bool)
 }
 
 // NewVerifier discovers the issuer's OIDC configuration (including its

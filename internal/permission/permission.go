@@ -15,11 +15,13 @@ package permission
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/moonstreamtech/ZonaryOS/internal/identity"
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
 )
 
@@ -73,9 +75,23 @@ func CheckMembership(ctx context.Context, pool *pgxpool.Pool, firmID, userID uui
 // firmID is passed explicitly here only so the query is unambiguous even
 // though RLS also confines it.
 //
+// If ctx carries a scope restriction (identity.ScopeRestriction - set by
+// identity.Middleware only for an API-key-authenticated request, see
+// internal/apikey's own doc comment), permissionKey must ALSO appear in
+// that allow-list, on top of the ordinary role-based grant checked below
+// - an API key narrows what its own bearer can do, it never widens it.
+// An ordinary Keycloak-authenticated request carries no scope
+// restriction at all, so this check is a no-op for every request that
+// isn't API-key-authenticated - Has behaves exactly as it did before
+// scopes existed.
+//
 // ciaudit:ignore-firmid-check: this *is* one of the permission-check
 // primitives cmd/ciaudit looks for; it cannot call itself.
 func Has(ctx context.Context, tx pgx.Tx, firmID, userID uuid.UUID, permissionKey string) (bool, error) {
+	if scopes, ok := identity.ScopeRestriction(ctx); ok && !slices.Contains(scopes, permissionKey) {
+		return false, nil
+	}
+
 	var has bool
 	err := tx.QueryRow(ctx, `
 		SELECT EXISTS (
@@ -89,4 +105,40 @@ func Has(ctx context.Context, tx pgx.Tx, firmID, userID uuid.UUID, permissionKey
 		return false, fmt.Errorf("check permission %q: %w", permissionKey, err)
 	}
 	return has, nil
+}
+
+// ListGrantedPermissionKeys returns every distinct permission_key userID
+// holds in firmID, through any role - the same query
+// GetFirmPermissionAudit's own MyPermissionKeys computes inline, factored
+// out here so internal/apikey.CreateAPIKey can validate that a new key's
+// requested scopes never exceed the creating user's own actual
+// permissions (see that function's own doc comment) without duplicating
+// this query a second time.
+//
+// ciaudit:ignore-firmid-check: internal helper - every caller
+// (GetFirmPermissionAudit, internal/apikey.CreateAPIKey) has already run
+// IsMember/IsOwner before reaching this call; firmID here scopes the
+// query (defense in depth alongside RLS), it is not itself an
+// authorization decision.
+func ListGrantedPermissionKeys(ctx context.Context, tx pgx.Tx, firmID, userID uuid.UUID) ([]string, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT DISTINCT rp.permission_key
+		FROM user_firm_roles ufr
+		JOIN role_permissions rp ON rp.role_id = ufr.role_id
+		WHERE ufr.user_id = $1 AND ufr.firm_id = $2
+		ORDER BY rp.permission_key
+	`, userID, firmID)
+	if err != nil {
+		return nil, fmt.Errorf("list granted permission keys: %w", err)
+	}
+	defer rows.Close()
+	keys := []string{}
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+	}
+	return keys, rows.Err()
 }

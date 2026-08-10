@@ -27,6 +27,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/notification"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
+	"github.com/moonstreamtech/ZonaryOS/internal/webhook"
 )
 
 // DefaultApprovalTTL is how long a pending approval stays resolvable
@@ -219,6 +220,14 @@ func createPendingApprovalAndNotify(ctx context.Context, pool *pgxpool.Pool, fir
 	if err != nil {
 		return PendingApproval{}, err
 	}
+
+	webhook.Dispatch(pool, firmID, webhook.EventApprovalPending, map[string]any{
+		"pendingApprovalId": approval.ID.String(),
+		"instanceId":        instanceID.String(),
+		"proposedActionKey": actionKey,
+		"ruleName":          rule.Name,
+	})
+
 	return approval, nil
 }
 
