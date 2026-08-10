@@ -133,7 +133,8 @@ func TestBulkExecuteTransition_MixedDefinitionsRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SeedStockToSaleWorkflow: %v", err)
 	}
-	userID, _ := seedUserInFirm(ctx, t, adminPool, appPool, firmID, "bulk-user", workflow.CreateTaskPermission, workflow.StartTaskPermission)
+	userID, _ := seedUserInFirm(ctx, t, adminPool, appPool, firmID, "bulk-user",
+		workflow.CreateTaskPermission, workflow.StartTaskPermission, workflow.AddStockPermission)
 
 	taskInstance, err := workflow.CreateInstance(ctx, appPool, firmID, userID, taskDefID, map[string]any{})
 	if err != nil {
