@@ -543,6 +543,126 @@ func ListInvoices(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.U
 	return invoices, nil
 }
 
+// ListInvoicesWithLines returns firmID's invoices WITH their lines
+// batched in via one extra `WHERE invoice_id = ANY($1)` query (the same
+// two-query batching shape internal/accounting.ListJournalEntries already
+// uses for journal_lines), not one GetInvoice call per invoice - the
+// N+1 that internal/portability.ExportFirm used to have. Member-gated,
+// same tier as ListInvoices; unlike ListInvoices this is the "I need the
+// full lines-included shape for every invoice at once" call, so it skips
+// ListInvoices' own status filter (every caller so far wants the whole
+// firm).
+func ListInvoicesWithLines(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.UUID) ([]Invoice, error) {
+	var invoices []Invoice
+	err := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		isMember, err := permission.IsMember(ctx, tx, firmID, userID)
+		if err != nil {
+			return err
+		}
+		if !isMember {
+			return ErrFirmNotFound
+		}
+
+		rows, err := tx.Query(ctx, `SELECT `+invoiceColumns+` FROM invoices ORDER BY created_at DESC`)
+		if err != nil {
+			return fmt.Errorf("list invoices: %w", err)
+		}
+		invoiceIndex := make(map[uuid.UUID]int)
+		for rows.Next() {
+			inv, err := scanInvoiceRow(rows)
+			if err != nil {
+				rows.Close()
+				return err
+			}
+			invoiceIndex[inv.ID] = len(invoices)
+			invoices = append(invoices, inv)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		rows.Close()
+
+		if len(invoices) == 0 {
+			return nil
+		}
+
+		invoiceIDs := make([]uuid.UUID, 0, len(invoices))
+		for _, inv := range invoices {
+			invoiceIDs = append(invoiceIDs, inv.ID)
+		}
+
+		lineRows, err := tx.Query(ctx, `
+			SELECT id, invoice_id, description, quantity::text, unit_price::text, tax_rate::text, tax_rate_id, line_total::text, product_id
+			FROM invoice_lines WHERE invoice_id = ANY($1) ORDER BY invoice_id, id
+		`, invoiceIDs)
+		if err != nil {
+			return fmt.Errorf("list invoice lines: %w", err)
+		}
+		defer lineRows.Close()
+		for lineRows.Next() {
+			var l InvoiceLine
+			if err := lineRows.Scan(&l.ID, &l.InvoiceID, &l.Description, &l.Quantity, &l.UnitPrice, &l.TaxRate, &l.TaxRateID, &l.LineTotal, &l.ProductID); err != nil {
+				return err
+			}
+			idx, ok := invoiceIndex[l.InvoiceID]
+			if !ok {
+				continue
+			}
+			invoices[idx].Lines = append(invoices[idx].Lines, l)
+		}
+		return lineRows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return invoices, nil
+}
+
+// ListInvoicesBySourceInstance returns every invoice (without lines,
+// same "summary shape" ListInvoices itself returns) whose
+// source_workflow_instance is instanceID - the read side of the
+// workflow-instance <-> invoice cross-link (Part 3a of the multi-tenant
+// isolation hardening + performance batch): a sale/purchase workflow
+// instance can drive automatic invoice creation
+// (internal/workflow.CreateInvoiceTx, via a transition's InvoiceTemplate),
+// and this is how the workflow-instance detail page's own "Associated
+// invoices" section, and internal/workflow's own new
+// GET .../workflow-instances/{id}/invoices endpoint, look that back up.
+// Member-gated, same tier as ListInvoices; an instance with no invoices
+// yet returns an empty slice, not an error.
+func ListInvoicesBySourceInstance(ctx context.Context, pool *pgxpool.Pool, firmID, userID, instanceID uuid.UUID) ([]Invoice, error) {
+	var invoices []Invoice
+	err := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		isMember, err := permission.IsMember(ctx, tx, firmID, userID)
+		if err != nil {
+			return err
+		}
+		if !isMember {
+			return ErrFirmNotFound
+		}
+
+		rows, err := tx.Query(ctx, `
+			SELECT `+invoiceColumns+` FROM invoices WHERE firm_id = $1 AND source_workflow_instance = $2 ORDER BY created_at DESC
+		`, firmID, instanceID)
+		if err != nil {
+			return fmt.Errorf("list invoices by source instance: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			inv, err := scanInvoiceRow(rows)
+			if err != nil {
+				return err
+			}
+			invoices = append(invoices, inv)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return invoices, nil
+}
+
 // GetInvoice resolves one invoice (with its lines) by id within firmID.
 // Member-gated, same tier as ListInvoices.
 func GetInvoice(ctx context.Context, pool *pgxpool.Pool, firmID, userID, invoiceID uuid.UUID) (Invoice, error) {
@@ -580,7 +700,34 @@ func GetInvoice(ctx context.Context, pool *pgxpool.Pool, firmID, userID, invoice
 // internal/workflow's generic engine). Owner-gated, same tier as
 // CreateInvoice. Rejects a transition to/from 'paid' - that status is
 // exclusively RecordPayment's (payments.go) to set, never a manual PATCH.
+//
+// ciaudit:ignore-firmid-check: this is now a thin pool-opening wrapper -
+// the real permission.IsMember/IsOwner checks live in
+// updateInvoiceStatusTx, called first thing (before any query) with the
+// transaction WithFirmContext opens.
 func UpdateInvoiceStatus(ctx context.Context, pool *pgxpool.Pool, firmID, userID, invoiceID uuid.UUID, newStatus InvoiceStatus) (Invoice, error) {
+	var inv Invoice
+	err := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		inv, err = updateInvoiceStatusTx(ctx, tx, firmID, userID, invoiceID, newStatus)
+		return err
+	})
+	if err != nil {
+		return Invoice{}, err
+	}
+	return inv, nil
+}
+
+// updateInvoiceStatusTx is UpdateInvoiceStatus's own core logic, taking
+// an already-open tx instead of opening its own - extracted so
+// BulkUpdateInvoiceStatus can update several invoices' status inside ONE
+// shared transaction (true atomicity, the same "extract a Tx-scoped
+// core, share it across a shared transaction" shape
+// internal/workflow.executeTransitionTx/BulkExecuteTransition already
+// establish for bulk-transition), rather than calling the pool-opening
+// UpdateInvoiceStatus once per invoice, which would each commit
+// independently.
+func updateInvoiceStatusTx(ctx context.Context, tx pgx.Tx, firmID, userID, invoiceID uuid.UUID, newStatus InvoiceStatus) (Invoice, error) {
 	if !validInvoiceStatus(newStatus) {
 		return Invoice{}, fmt.Errorf("%w: unrecognized status %q", ErrInvalidInvoice, newStatus)
 	}
@@ -588,52 +735,84 @@ func UpdateInvoiceStatus(ctx context.Context, pool *pgxpool.Pool, firmID, userID
 		return Invoice{}, fmt.Errorf("%w: an invoice can only become paid by recording a payment, not by a direct status update", ErrInvalidInvoice)
 	}
 
-	var inv Invoice
-	err := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
-		isMember, err := permission.IsMember(ctx, tx, firmID, userID)
-		if err != nil {
-			return err
-		}
-		if !isMember {
-			return ErrFirmNotFound
-		}
-		isOwner, err := permission.IsOwner(ctx, tx, firmID, userID)
-		if err != nil {
-			return err
-		}
-		if !isOwner {
-			return ErrNotOwner
-		}
-
-		var currentStatus string
-		if err := tx.QueryRow(ctx, `SELECT status FROM invoices WHERE id = $1 AND firm_id = $2`, invoiceID, firmID).Scan(&currentStatus); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return ErrInvoiceNotFound
-			}
-			return fmt.Errorf("look up invoice status: %w", err)
-		}
-		if !statusTransitionAllowed(InvoiceStatus(currentStatus), newStatus) {
-			return fmt.Errorf("%w: cannot move an invoice from %q to %q", ErrInvalidInvoice, currentStatus, newStatus)
-		}
-
-		row := tx.QueryRow(ctx, `
-			UPDATE invoices SET status = $1 WHERE id = $2 AND firm_id = $3
-			RETURNING `+invoiceColumns, string(newStatus), invoiceID, firmID)
-		inv, err = scanInvoiceRow(row)
-		if err != nil {
-			return fmt.Errorf("update invoice status: %w", err)
-		}
-		inv.Lines, err = fetchInvoiceLinesTx(ctx, tx, invoiceID)
-		if err != nil {
-			return err
-		}
-
-		return auditlog.Write(ctx, tx, firmID, userID, invoiceID, invoiceAuditEntityType, updateInvoiceAuditAction, map[string]any{
-			"fromStatus": currentStatus, "toStatus": string(newStatus),
-		})
-	})
+	isMember, err := permission.IsMember(ctx, tx, firmID, userID)
 	if err != nil {
 		return Invoice{}, err
 	}
+	if !isMember {
+		return Invoice{}, ErrFirmNotFound
+	}
+	isOwner, err := permission.IsOwner(ctx, tx, firmID, userID)
+	if err != nil {
+		return Invoice{}, err
+	}
+	if !isOwner {
+		return Invoice{}, ErrNotOwner
+	}
+
+	var currentStatus string
+	if err := tx.QueryRow(ctx, `SELECT status FROM invoices WHERE id = $1 AND firm_id = $2`, invoiceID, firmID).Scan(&currentStatus); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Invoice{}, ErrInvoiceNotFound
+		}
+		return Invoice{}, fmt.Errorf("look up invoice status: %w", err)
+	}
+	if !statusTransitionAllowed(InvoiceStatus(currentStatus), newStatus) {
+		return Invoice{}, fmt.Errorf("%w: cannot move an invoice from %q to %q", ErrInvalidInvoice, currentStatus, newStatus)
+	}
+
+	row := tx.QueryRow(ctx, `
+		UPDATE invoices SET status = $1 WHERE id = $2 AND firm_id = $3
+		RETURNING `+invoiceColumns, string(newStatus), invoiceID, firmID)
+	inv, err := scanInvoiceRow(row)
+	if err != nil {
+		return Invoice{}, fmt.Errorf("update invoice status: %w", err)
+	}
+	inv.Lines, err = fetchInvoiceLinesTx(ctx, tx, invoiceID)
+	if err != nil {
+		return Invoice{}, err
+	}
+
+	if err := auditlog.Write(ctx, tx, firmID, userID, invoiceID, invoiceAuditEntityType, updateInvoiceAuditAction, map[string]any{
+		"fromStatus": currentStatus, "toStatus": string(newStatus),
+	}); err != nil {
+		return Invoice{}, err
+	}
 	return inv, nil
+}
+
+// BulkUpdateInvoiceStatus moves every invoice in invoiceIDs to newStatus
+// at once (Part 4 of the multi-tenant isolation hardening + performance
+// batch) - owner-only, same tier as UpdateInvoiceStatus itself.
+// Atomicity: every invoice's status update (and its own audit_log entry)
+// runs inside ONE shared transaction, not one per invoice - a status
+// transition that isn't allowed for ANY invoice in the batch (e.g. one
+// already 'cancelled') rolls back every invoice already updated in this
+// same call, so there is no partial-success outcome: either every
+// invoice in invoiceIDs ends up on newStatus, or none of them do.
+//
+// ciaudit:ignore-firmid-check: every invoice's actual
+// permission.IsMember/IsOwner check happens inside updateInvoiceStatusTx,
+// called first thing per invoice (before any query on that invoice) -
+// this function itself never touches invoices data before that check.
+func BulkUpdateInvoiceStatus(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.UUID, invoiceIDs []uuid.UUID, newStatus InvoiceStatus) ([]Invoice, error) {
+	if len(invoiceIDs) == 0 {
+		return nil, fmt.Errorf("%w: bulk status update requires at least one invoice id", ErrInvalidInvoice)
+	}
+
+	var invoices []Invoice
+	err := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		for _, invoiceID := range invoiceIDs {
+			inv, err := updateInvoiceStatusTx(ctx, tx, firmID, userID, invoiceID, newStatus)
+			if err != nil {
+				return fmt.Errorf("invoice %s: %w", invoiceID, err)
+			}
+			invoices = append(invoices, inv)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return invoices, nil
 }

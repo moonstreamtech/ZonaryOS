@@ -7,12 +7,19 @@
 import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
+import { Link } from "@/i18n/navigation";
 import type { Delivery, DeliveryStatus } from "@/lib/logistics";
+import type { InstanceInvoice } from "@/lib/workflow";
 
 type Props = {
   firmId: string;
   deliveries: Delivery[];
   isOwner: boolean;
+  // Part 3b: for a delivery whose source is a workflow instance, the
+  // first invoice that instance's own workflow-to-invoicing bridge
+  // created (if any) - keyed by delivery id, fetched server-side (see
+  // app/[locale]/logistics/page.tsx).
+  sourceInvoiceByDeliveryId: Record<string, InstanceInvoice | undefined>;
 };
 
 const STATUS_OPTIONS: DeliveryStatus[] = ["pending", "in_transit", "delivered", "returned", "cancelled"];
@@ -25,7 +32,7 @@ const STATUS_OPTIONS: DeliveryStatus[] = ["pending", "in_transit", "delivered", 
 // only controls what renders), mirroring
 // components/Inventory/InventoryManager.tsx's own create-form/row-action
 // shape.
-export default function DeliveriesManager({ firmId, deliveries, isOwner }: Props) {
+export default function DeliveriesManager({ firmId, deliveries, isOwner, sourceInvoiceByDeliveryId }: Props) {
   const t = useTranslations("Logistics");
   const router = useRouter();
 
@@ -181,7 +188,8 @@ export default function DeliveriesManager({ firmId, deliveries, isOwner }: Props
                 <th className="py-2 pr-4 font-medium">{t("destinationAddress")}</th>
                 <th className="py-2 pr-4 font-medium">{t("carrier")}</th>
                 <th className="py-2 pr-4 font-medium">{t("trackingNumber")}</th>
-                <th className="py-2 font-medium">{t("status.label")}</th>
+                <th className="py-2 pr-4 font-medium">{t("status.label")}</th>
+                <th className="py-2 font-medium">{t("sourceInvoice")}</th>
               </tr>
             </thead>
             <tbody>
@@ -191,7 +199,7 @@ export default function DeliveriesManager({ firmId, deliveries, isOwner }: Props
                   <td className="py-2 pr-4">{d.destinationAddress ?? "—"}</td>
                   <td className="py-2 pr-4">{d.carrier ?? "—"}</td>
                   <td className="py-2 pr-4 font-mono text-xs">{d.trackingNumber ?? "—"}</td>
-                  <td className="py-2">
+                  <td className="py-2 pr-4">
                     {isOwner ? (
                       <select
                         value={d.status}
@@ -207,6 +215,29 @@ export default function DeliveriesManager({ firmId, deliveries, isOwner }: Props
                       </select>
                     ) : (
                       t(`status.${d.status}`)
+                    )}
+                  </td>
+                  <td className="py-2">
+                    {d.sourceType === "workflow_instance" && d.sourceId ? (
+                      sourceInvoiceByDeliveryId[d.id] ? (
+                        <Link
+                          href={`/invoices/${sourceInvoiceByDeliveryId[d.id]!.id}`}
+                          data-permission-public="true"
+                          className="text-xs text-black underline-offset-4 hover:underline dark:text-zinc-50"
+                        >
+                          {sourceInvoiceByDeliveryId[d.id]!.invoiceNumber}
+                        </Link>
+                      ) : (
+                        <Link
+                          href={`/workflows/instance/${d.sourceId}`}
+                          data-permission-public="true"
+                          className="text-xs text-zinc-600 underline-offset-4 hover:underline dark:text-zinc-400"
+                        >
+                          {t("sourceInstanceLink")}
+                        </Link>
+                      )
+                    ) : (
+                      <span className="text-xs text-zinc-400 dark:text-zinc-600">—</span>
                     )}
                   </td>
                 </tr>

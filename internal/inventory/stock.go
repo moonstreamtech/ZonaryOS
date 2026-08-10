@@ -180,6 +180,47 @@ func GetStock(ctx context.Context, pool *pgxpool.Pool, firmID, userID, productID
 	return levels, nil
 }
 
+// ListStockForFirm returns every stock_levels row for firmID in one
+// query - the batch counterpart to GetStock (single product), added so
+// callers that need every product's stock at once (internal/portability.
+// ExportFirm) don't loop GetStock per product (an N+1: one query per
+// product instead of one query for the whole firm). Member-gated, same
+// tier as GetStock/ListProducts.
+func ListStockForFirm(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.UUID) ([]StockLevel, error) {
+	var levels []StockLevel
+	err := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		isMember, err := permission.IsMember(ctx, tx, firmID, userID)
+		if err != nil {
+			return err
+		}
+		if !isMember {
+			return ErrFirmNotFound
+		}
+
+		rows, err := tx.Query(ctx, `
+			SELECT product_id, location, quantity::text, reserved_quantity::text, updated_at
+			FROM stock_levels WHERE firm_id = $1
+			ORDER BY product_id, location
+		`, firmID)
+		if err != nil {
+			return fmt.Errorf("list stock for firm: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var l StockLevel
+			if err := rows.Scan(&l.ProductID, &l.Location, &l.Quantity, &l.ReservedQuantity, &l.UpdatedAt); err != nil {
+				return err
+			}
+			levels = append(levels, l)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return levels, nil
+}
+
 // StockMovement is one immutable stock_movements row.
 type StockMovement struct {
 	ID             uuid.UUID

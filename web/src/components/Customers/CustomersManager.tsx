@@ -160,15 +160,18 @@ export default function CustomersManager({ firmId, customers, isOwner }: Props) 
                   {c.email ?? "—"} · {c.phone ?? "—"}
                 </span>
               </div>
-              {c.sourceWorkflowInstance && (
+              <div className="flex items-center gap-3">
+                {c.sourceWorkflowInstance && (
+                  <span className="text-xs text-zinc-700 dark:text-zinc-300">{t("fromPipeline")}</span>
+                )}
                 <Link
-                  href="/workflows/customer_pipeline"
+                  href={`/customers/${c.id}`}
                   data-permission-public="true"
                   className="text-xs text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
                 >
-                  {t("fromPipeline")}
+                  {t("viewDetail")}
                 </Link>
-              )}
+              </div>
             </div>
           ))}
         </div>

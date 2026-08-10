@@ -7,6 +7,7 @@
 import { useState, type FormEvent } from "react";
 import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
+import { Link } from "@/i18n/navigation";
 import type { InstanceState } from "@/lib/workflow";
 import { formatPayload } from "./format";
 
@@ -140,7 +141,8 @@ export default function WorkflowInstanceList({
               <tr className="border-b border-zinc-300 text-zinc-600 dark:border-zinc-700 dark:text-zinc-400">
                 <th className="py-2 pr-4 font-medium">{t("columnPayload")}</th>
                 <th className="py-2 pr-4 font-medium">{t("columnState")}</th>
-                <th className="py-2 font-medium">{t("columnActions")}</th>
+                <th className="py-2 pr-4 font-medium">{t("columnActions")}</th>
+                <th className="py-2 font-medium" />
               </tr>
             </thead>
             <tbody>
@@ -187,6 +189,15 @@ export default function WorkflowInstanceList({
                         })}
                       </div>
                     )}
+                  </td>
+                  <td className="py-2 text-right">
+                    <Link
+                      href={`/workflows/instance/${instance.instanceId}`}
+                      data-permission-public="true"
+                      className="text-xs text-zinc-600 underline-offset-4 hover:underline dark:text-zinc-400"
+                    >
+                      {t("viewDetail")}
+                    </Link>
                   </td>
                 </tr>
               ))}

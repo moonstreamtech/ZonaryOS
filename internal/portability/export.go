@@ -158,16 +158,21 @@ func ExportFirm(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.UUI
 	if doc.Suppliers, err = inventory.ListSuppliers(ctx, pool, firmID, userID, inventory.ListSuppliersOptions{}); err != nil {
 		return ExportDocument{}, err
 	}
+	// One query for every product's stock (inventory.ListStockForFirm),
+	// not one inventory.GetStock call per product - fixed N+1 (see
+	// docs/DEVELOPMENT.md's "Performance: N+1 query audit" section).
+	skuByProductID := make(map[uuid.UUID]string, len(doc.Products))
 	for _, p := range doc.Products {
-		levels, err := inventory.GetStock(ctx, pool, firmID, userID, p.ID)
-		if err != nil {
-			return ExportDocument{}, err
-		}
-		for _, l := range levels {
-			doc.StockLevels = append(doc.StockLevels, ExportStockLevel{
-				ProductSKU: p.SKU, Location: l.Location, Quantity: l.Quantity, ReservedQuantity: l.ReservedQuantity,
-			})
-		}
+		skuByProductID[p.ID] = p.SKU
+	}
+	allLevels, err := inventory.ListStockForFirm(ctx, pool, firmID, userID)
+	if err != nil {
+		return ExportDocument{}, err
+	}
+	for _, l := range allLevels {
+		doc.StockLevels = append(doc.StockLevels, ExportStockLevel{
+			ProductSKU: skuByProductID[l.ProductID], Location: l.Location, Quantity: l.Quantity, ReservedQuantity: l.ReservedQuantity,
+		})
 	}
 
 	if doc.Customers, err = crm.ListCustomers(ctx, pool, firmID, userID); err != nil {
@@ -196,16 +201,12 @@ func ExportFirm(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.UUI
 	}
 	doc.JournalEntries = entriesResult.Entries
 
-	invoiceSummaries, err := invoicing.ListInvoices(ctx, pool, firmID, userID, invoicing.ListOptions{})
-	if err != nil {
+	// invoicing.ListInvoicesWithLines batches every invoice's lines in with
+	// one extra ANY($1) query, not one invoicing.GetInvoice call per
+	// invoice - fixed N+1 (see docs/DEVELOPMENT.md's "Performance: N+1
+	// query audit" section).
+	if doc.Invoices, err = invoicing.ListInvoicesWithLines(ctx, pool, firmID, userID); err != nil {
 		return ExportDocument{}, err
-	}
-	for _, summary := range invoiceSummaries {
-		full, err := invoicing.GetInvoice(ctx, pool, firmID, userID, summary.ID)
-		if err != nil {
-			return ExportDocument{}, err
-		}
-		doc.Invoices = append(doc.Invoices, full)
 	}
 
 	if doc.Deliveries, err = logistics.ListDeliveries(ctx, pool, firmID, userID, logistics.ListDeliveriesOptions{}); err != nil {

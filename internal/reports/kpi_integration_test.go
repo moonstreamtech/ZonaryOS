@@ -49,7 +49,8 @@ func setupTest(t *testing.T) (adminPool, appPool *pgxpool.Pool) {
 			accounts, journal_entries, journal_lines,
 			workflow_definitions, workflow_states, workflow_transitions, workflow_instances,
 			people, contracts, products, stock_levels, stock_movements, suppliers,
-			deliveries, customers, invoices, invoice_lines, payments, invoice_sequences, audit_log, permissions CASCADE
+			deliveries, customers, invoices, invoice_lines, payments, invoice_sequences, audit_log, permissions,
+			report_definitions, saved_report_runs CASCADE
 	`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}

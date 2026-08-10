@@ -67,10 +67,29 @@ func resolveIdentity(r *http.Request, pool *pgxpool.Pool) (firmID, userID uuid.U
 	return firmID, userID, true, 0, ""
 }
 
+// exportFormat is handleExport's own format-negotiation result - "json"
+// (the existing, default behavior) or "csv" (this batch's addition).
+// Future formats (xlsx, pdf - see docs/DEVELOPMENT.md's own note on this)
+// are NOT handled here yet; requesting one falls back to "json" today,
+// same as any other unrecognized format value.
+func exportFormat(r *http.Request) string {
+	if q := r.URL.Query().Get("format"); q != "" {
+		return q
+	}
+	accept := r.Header.Get("Accept")
+	if accept == "text/csv" {
+		return "csv"
+	}
+	return "json"
+}
+
 // handleExport serves GET /api/firms/{firmID}/export - the full-firm
-// snapshot, owner-only. The response is sent with Content-Disposition:
-// attachment so a direct browser navigation (the /settings "Export"
-// button) downloads a file rather than rendering raw JSON inline.
+// snapshot, owner-only. Defaults to JSON (Content-Disposition: attachment
+// so a direct browser navigation, the /settings "Export" button,
+// downloads a file rather than rendering raw JSON inline); ?format=csv
+// (or an `Accept: text/csv` request) instead returns a multi-section CSV
+// (internal/portability.BuildCSV) - read-only, no CSV import path (see
+// this package's doc comment on scope).
 func handleExport(pool *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		firmID, userID, ok, status, msg := resolveIdentity(r, pool)
@@ -82,6 +101,18 @@ func handleExport(pool *pgxpool.Pool) http.HandlerFunc {
 		doc, err := ExportFirm(r.Context(), pool, firmID, userID)
 		if err != nil {
 			writePortabilityError(w, err)
+			return
+		}
+
+		if exportFormat(r) == "csv" {
+			body, err := BuildCSV(doc)
+			if err != nil {
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "text/csv")
+			w.Header().Set("Content-Disposition", `attachment; filename="zonaryos-export.csv"`)
+			_, _ = w.Write(body)
 			return
 		}
 

@@ -550,6 +550,74 @@ go test ./internal/workflow/... -run 'RecordSaleCreatesInvoice|RecordSaleWithout
 go test ./internal/reports/... -run ReceivablesMetrics -v
 ```
 
+## Parametric reporting engine, document templates, and CSV export
+
+Extends "HR core... and the reporting foundation" above: `/reports` no longer serves only the five fixed `kpiDescriptors` - firms can now define their own reports as structured query descriptors, never raw SQL.
+
+**`internal/reports`'s parametric engine**: two new firm-scoped tables, `report_definitions` (`query_spec` jsonb) and `saved_report_runs` (one row per execution, `status`/`result`/`error_text`). `QuerySpec` (`queryspec.go`) is `{entity, filters, group_by, metrics, date_range}` - `entity`/every field name/every aggregation is validated against `entityRegistry`, a closed, hardcoded per-entity allow-list (table + column + type per field, covering `workflow_instances`/`journal_entries`/`invoices`/`deliveries`/`people`/`products`). `BuildQuery` is the ONLY place a `QuerySpec` becomes SQL: every identifier in the generated query comes from `entityRegistry` (never from the request), every value is bound via Postgres `$N` parameters (never interpolated) - an entity/field/aggregation not on the allow-list is rejected with `ErrInvalidQuerySpec` (HTTP 400) before any SQL is built, which is what rules out both SQL injection and information disclosure through a made-up field name. `filter.op` reuses `internal/workflow`'s own `eq/neq/lt/gt/lte/gte/contains` vocabulary. `RunReport` executes the built query synchronously and records the run in `saved_report_runs`.
+
+- HTTP surface: `GET`/`POST /api/firms/{firmID}/report-definitions`, `GET /api/firms/{firmID}/report-definitions/{id}`, `POST /api/firms/{firmID}/report-definitions/{id}/run`.
+- Frontend: `/reports/builder` (`components/Reports/ReportBuilder.tsx` - pick entity/filters/grouping/metrics/date range, "Save & Run" shows results inline) and a "My Reports" tab on `/reports` (`components/Reports/MyReportsPanel.tsx` - list saved definitions, run one, see results).
+
+**`internal/documents`** (new package): firm-scoped `document_templates` (`type` one of `invoice`/`delivery_note`/`report`, `template` a Handlebars/Mustache-*looking* `{{field}}` body) rendered to HTML via Go's stdlib `html/template` (no new dependency) - PDF generation stays future work, same "structured first, formatted later" philosophy `internal/invoicing`'s own doc comment already establishes. `RenderInvoice` builds the template's data context as a nested `map[string]any` (invoice + lines + customer + firm info) with `template.Option("missingkey=zero")` set, so a template referencing a field that doesn't exist on the entity renders an empty string rather than failing the whole render. A minimal default invoice template is seeded per firm lazily, the first time `ListDocumentTemplates`/`RenderInvoice` runs for a firm with none yet (`EnsureDefaultInvoiceTemplate`) - there's no Go `init()` hook with a firm ID to seed against, so this is done on first use instead of at firm-creation time.
+
+- HTTP surface: `GET`/`POST /api/firms/{firmID}/document-templates`, `GET`/`PUT /api/firms/{firmID}/document-templates/{id}`, `GET /api/firms/{firmID}/invoices/{invoiceID}/render?templateID=` (returns `Content-Type: text/html`, no `templateID` falls back to the firm's default invoice template).
+- Frontend: `/settings/document-templates` (`components/Settings/DocumentTemplatesManager.tsx` - a textarea editor, not a visual builder) and a "Preview" link on the invoice detail page that opens the rendered HTML in a new tab via a same-origin, cookie-authenticated proxy route (`app/api/documents/invoices/[firmId]/[invoiceId]/render`).
+
+**CSV export**: `GET /api/firms/{firmID}/export` now supports format negotiation via `?format=csv` or `Accept: text/csv` (default stays `json`, unchanged) - `internal/portability.BuildCSV` renders each `ExportDocument` entity as its own CSV section (blank line + entity-name header, via stdlib `encoding/csv`, no new dependency), field names/values drawn entirely from `ExportDocument`'s own Go struct definitions via reflection, not request input. CSV export is read-only - import remains JSON-only (see `internal/portability`'s own doc comment on why import only ever reads configuration, not history).
+
+### Scope boundaries
+
+No visual report builder with drag-and-drop, no real-time/streaming report execution, no scheduled report delivery. No PDF generation (HTML only). No CSV import (export only).
+
+### Running these tests
+
+`internal/reports/queryspec_test.go` (unit: `BuildQuery` correctness, unknown entity/field/op rejection, including the explicit malicious-field-name SQL-injection-surface cases), `internal/reports/definitions_integration_test.go` (definition CRUD + `RunReport` correctness against real seeded invoices), `internal/documents/render_test.go` (unit: template rendering, the unknown-field-renders-empty contract), `internal/documents/documents_integration_test.go` (template CRUD, default-template seeding, `RenderInvoice` end to end), and `internal/portability/csv_test.go` (unit: CSV section structure) - only the `_integration_test.go` files need a real Postgres:
+
+```
+export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5433/zonaryos?sslmode=disable
+export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5433/zonaryos?sslmode=disable
+make migrate
+go test ./internal/reports/... -v
+go test ./internal/documents/... -v
+go test ./internal/portability/... -v
+```
+
+## Multi-tenant isolation hardening, performance, and cross-module linking
+
+Four parts, no new modules - an audit/hardening/linking batch over what already exists.
+
+**Part 1, N+1 query audit**: scanned every `List*` function for a fetch-then-loop pattern. Two real N+1s found and fixed, both in `internal/portability.ExportFirm`: it looped `inventory.GetStock` once per product (fixed by a new `inventory.ListStockForFirm`, one query for the whole firm) and looped `invoicing.GetInvoice` once per invoice to pull lines (fixed by a new `invoicing.ListInvoicesWithLines`, which batches every invoice's lines in with one extra `WHERE invoice_id = ANY($1)` query - the same two-query shape `accounting.ListJournalEntries` already uses for `journal_lines`). One N+1 found and deliberately left: `workflow.ExportDefinitionSpecs` (used only by `ExportFirm`, so bounded by a firm's own definition count, not a hot read path) does two extra round trips per workflow definition (states, then transitions) - already documented in-code as a pgx constraint (can't interleave `Query()` calls on the same open `Rows`), and not worth the added complexity of batching for an owner-only, occasional export operation. `internal/platform/db/dbtest.ExplainAnalyze(t, pool, query, args...)` is a new test-only helper (a separate package so `testing` never becomes a production dependency) for ad hoc `EXPLAIN (ANALYZE, FORMAT TEXT)` investigation - not run by any test automatically.
+
+**Part 2, performance indexes** (`migrations/0022_performance_indexes.up.sql`, additive-only, `CREATE INDEX IF NOT EXISTS`, not `CONCURRENTLY` - no multi-instance deployment target yet, item 34): `workflow_instances(firm_id, workflow_definition_id)`, `invoices(source_workflow_instance)` (a real pre-existing gap - `customers.source_workflow_instance` already had one, `invoices`' own didn't, and Part 3a's new lookups need it), `edge_events(firm_id, agent_id, received_at)`, `stock_movements(firm_id, product_id, created_at)`. `journal_lines(entry_id)`, `invoice_lines(invoice_id)`, and `notifications`/`scheduled_rule_runs`' own partial indexes already covered the rest of the design brief's list from earlier migrations - not duplicated.
+
+**Part 3, cross-module linking** - three read-only views connecting existing data that was already stored but never surfaced:
+- 3a: `invoicing.ListInvoicesBySourceInstance` + `GET /api/firms/{firmID}/workflow-instances/{instanceID}/invoices` (registered in `internal/workflow`, which already imports `internal/invoicing` for the invoicing bridge). A new minimal workflow-instance detail page, `/workflows/instance/[instanceId]`, shows state/payload plus "Associated invoices" - the destination for the invoice detail page's own new "Source" link, and for `WorkflowInstanceList.tsx`'s new "View" link per row.
+- 3b: the `/logistics` page fetches each `workflow_instance`-sourced delivery's own associated invoice server-side (via 3a's endpoint) and links to it directly (falling back to the workflow-instance detail page if no invoice exists yet).
+- 3c: `workflow.ListInstancesByCustomer` + `GET /api/firms/{firmID}/workflow-instances?customerId=` (a required query param on the bare collection path, not a nested path segment - the same wildcard-vs-literal `ServeMux` ambiguity this file's own `?key=` comment above already describes, since `/workflow-instances/by-customer/{x}` and `/workflow-instances/{instanceID}/invoices` can't be told apart when `{x}` could be `"invoices"`). Filters `workflow_instances.payload ->> 'customer_id' = $2` across every definition (not hardcoded to `stock_to_sale`, though that's the only one populating it today). A new `/customers/[customerId]` detail page shows the source lead link (`customer.sourceWorkflowInstance`, already exposed) and the "Sales" list - "the first real CRM view that connects sales to customers".
+
+**Part 4, bulk operations** - both new endpoints reuse an existing single-entity function's core logic, refactored to take an already-open `pgx.Tx` instead of opening its own, so a bulk call can share ONE transaction across every entity (true atomicity: any failure rolls back everything already done in that same call, via `zdb.WithFirmContext`'s own `defer tx.Rollback(ctx)`) rather than each entity committing independently:
+- `workflow.ExecuteTransition`'s entire body became `executeTransitionTx` (unexported, takes `tx pgx.Tx`); `ExecuteTransition` itself is now a thin pool-opening wrapper. `workflow.BulkExecuteTransition` (`POST /api/firms/{firmID}/workflow-instances/bulk-transition`) checks every instance shares one definition (`ErrBulkTransitionMixedDefinitions`) before touching any of them, then calls `executeTransitionTx` per instance inside one transaction - each instance's own compatible-state and permission checks happen exactly as they do for a single transition. Unlike `ExecuteTransition`, it does NOT run `EvaluateRules` per instance after commit (deferred scope - see this batch's own "no async job execution" boundary).
+- `invoicing.UpdateInvoiceStatus`'s body became `updateInvoiceStatusTx`; `invoicing.BulkUpdateInvoiceStatus` (`POST /api/firms/{firmID}/invoices/bulk-status`, owner-only) loops it inside one transaction the same way.
+
+No frontend for bulk operations yet (API only, per the design brief).
+
+### Scope boundaries
+
+No query caching layer (Redis, etc.), no read replica routing, no async job execution for long-running reports, no bulk delete.
+
+### Running these tests
+
+`internal/invoicing/n1_integration_test.go` (a query-counting `pgx.QueryTracer` proves `ListInvoicesWithLines` makes a FIXED number of round trips regardless of invoice count - Part 1), `internal/invoicing/source_instance_integration_test.go` and `internal/workflow/customer_links_integration_test.go` (Part 3's cross-link correctness), `internal/workflow/bulk_transition_integration_test.go` and `internal/invoicing/bulk_status_integration_test.go` (Part 4's atomicity - a partial failure leaves every other entity in the batch untouched) all need a real Postgres:
+
+```
+export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5433/zonaryos?sslmode=disable
+export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5433/zonaryos?sslmode=disable
+make migrate
+go test ./internal/invoicing/... -v
+go test ./internal/workflow/... -run 'ByCustomer|BulkExecuteTransition' -v
+```
+
 ## Edge Agent protocol foundation
 
 `internal/edgeagent` is the server-side half of Vision §9's Edge Agent (a Go process a firm runs on its own hardware, under a firm-specific account, with auto-update and a bidirectional bridge to the central server). This batch ships the protocol only - see "Scope boundaries" below for what's deliberately deferred.

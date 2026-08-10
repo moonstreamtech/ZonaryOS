@@ -7,6 +7,7 @@
 import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
+import { Link } from "@/i18n/navigation";
 import type { Invoice, InvoiceStatus, Payment } from "@/lib/invoicing";
 
 type Props = {
@@ -118,7 +119,18 @@ export default function InvoiceDetail({ firmId, invoice, payments, isOwner }: Pr
           <h2 className="text-xl font-semibold tracking-tight text-black dark:text-zinc-50">
             {invoice.invoiceNumber}
           </h2>
-          <span className="text-sm text-zinc-600 dark:text-zinc-400">{t(`status.${invoice.status}`)}</span>
+          <div className="flex items-center gap-3">
+            <span className="text-sm text-zinc-600 dark:text-zinc-400">{t(`status.${invoice.status}`)}</span>
+            <a
+              href={`/api/documents/invoices/${firmId}/${invoice.id}/render`}
+              target="_blank"
+              rel="noopener noreferrer"
+              data-permission-public="true"
+              className="rounded-md border border-zinc-300 px-2 py-1 text-xs font-medium text-black hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-50 dark:hover:bg-zinc-900"
+            >
+              {t("preview")}
+            </a>
+          </div>
         </div>
         <dl className="grid grid-cols-1 gap-2 text-sm sm:grid-cols-2">
           <div>
@@ -141,6 +153,20 @@ export default function InvoiceDetail({ firmId, invoice, payments, isOwner }: Pr
               {invoice.subtotal} + {invoice.taxAmount}
             </dd>
           </div>
+          {invoice.sourceWorkflowInstance && (
+            <div>
+              <dt className="text-zinc-500 dark:text-zinc-400">{t("source")}</dt>
+              <dd>
+                <Link
+                  href={`/workflows/instance/${invoice.sourceWorkflowInstance}`}
+                  data-permission-public="true"
+                  className="text-black underline-offset-4 hover:underline dark:text-zinc-50"
+                >
+                  {t("sourceLink")}
+                </Link>
+              </dd>
+            </div>
+          )}
         </dl>
 
         {isOwner && manualOptions.length > 0 && (

@@ -37,3 +37,107 @@ export async function fetchDashboardKPIs(token: string, firmId: string): Promise
     return null;
   }
 }
+
+// Parametric reporting engine (this batch) - report_definitions/
+// saved_report_runs, internal/reports.QuerySpec's own frontend mirror.
+// Filters/metrics/date_range shapes match internal/reports.QuerySpec's
+// own JSON tags exactly (snake_case group_by/date_range - the one
+// deliberate exception to this codebase's usual camelCase wire format,
+// since this is a structured *query* descriptor, not a REST resource
+// shape).
+
+export type CompareOp = "eq" | "neq" | "lt" | "gt" | "lte" | "gte" | "contains";
+
+export type QueryFilter = {
+  field: string;
+  op: CompareOp;
+  value: string | number | boolean;
+};
+
+export type QueryMetric = {
+  name: string;
+  aggregation: string; // "count" | "sum(field)" | "avg(field)" | "min(field)" | "max(field)"
+};
+
+export type QueryDateRange = {
+  from?: string;
+  to?: string;
+  field: string;
+};
+
+export type QuerySpec = {
+  entity: string;
+  filters?: QueryFilter[];
+  group_by?: string;
+  metrics: QueryMetric[];
+  date_range?: QueryDateRange;
+};
+
+export type ReportDefinition = {
+  id: string;
+  name: string;
+  description?: string;
+  querySpec: QuerySpec;
+  createdBy: string;
+  createdAt: string;
+};
+
+export type ReportRow = {
+  groupKey?: string;
+  metrics: Record<string, unknown>;
+};
+
+export async function fetchReportDefinitions(token: string, firmId: string): Promise<ReportDefinition[] | null> {
+  try {
+    const res = await fetch(`${apiBase()}/api/firms/${encodeURIComponent(firmId)}/report-definitions`, {
+      headers: { Authorization: `Bearer ${token}` },
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as ReportDefinition[];
+  } catch {
+    return null;
+  }
+}
+
+export type ReportDefinitionInput = {
+  name: string;
+  description?: string;
+  querySpec: QuerySpec;
+};
+
+export async function createReportDefinition(
+  token: string,
+  firmId: string,
+  input: ReportDefinitionInput,
+): Promise<{ ok: true; definition: ReportDefinition } | { ok: false; status: number }> {
+  try {
+    const res = await fetch(`${apiBase()}/api/firms/${encodeURIComponent(firmId)}/report-definitions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+      cache: "no-store",
+    });
+    if (!res.ok) return { ok: false, status: res.status };
+    return { ok: true, definition: (await res.json()) as ReportDefinition };
+  } catch {
+    return { ok: false, status: 0 };
+  }
+}
+
+export async function runReport(
+  token: string,
+  firmId: string,
+  definitionId: string,
+): Promise<{ ok: true; rows: ReportRow[] } | { ok: false; status: number }> {
+  try {
+    const res = await fetch(
+      `${apiBase()}/api/firms/${encodeURIComponent(firmId)}/report-definitions/${encodeURIComponent(definitionId)}/run`,
+      { method: "POST", headers: { Authorization: `Bearer ${token}` }, cache: "no-store" },
+    );
+    if (!res.ok) return { ok: false, status: res.status };
+    return { ok: true, rows: (await res.json()) as ReportRow[] };
+  } catch {
+    return { ok: false, status: 0 };
+  }
+}
