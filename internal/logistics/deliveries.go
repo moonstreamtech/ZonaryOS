@@ -39,6 +39,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
+	"github.com/moonstreamtech/ZonaryOS/internal/queryfilter"
 )
 
 const deliveryAuditEntityType = "delivery"
@@ -331,6 +332,28 @@ func UpdateDelivery(ctx context.Context, pool *pgxpool.Pool, firmID, userID, del
 type ListDeliveriesOptions struct {
 	// Status, when non-empty, keeps only deliveries in that status.
 	Status DeliveryStatus
+	// Filters (Part 2 of the search/filtering/enrichment batch) reuses
+	// internal/reports' own `{field, op, value}` filter vocabulary
+	// (internal/queryfilter.Filter) against deliveryFilterFields, this
+	// package's own closed allow-list.
+	Filters []queryfilter.Filter
+}
+
+// deliveryFilterFields is ListDeliveries' own closed field allow-list
+// for opts.Filters - the same columns
+// internal/reports.entityRegistry["deliveries"] already lists,
+// redeclared here rather than imported (see internal/queryfilter's own
+// doc comment for why).
+var deliveryFilterFields = map[string]queryfilter.FieldDef{
+	"id":             {Column: "id", Kind: queryfilter.KindUUID},
+	"reference":      {Column: "reference", Kind: queryfilter.KindString},
+	"carrier":        {Column: "carrier", Kind: queryfilter.KindString},
+	"status":         {Column: "status", Kind: queryfilter.KindString},
+	"source_type":    {Column: "source_type", Kind: queryfilter.KindString},
+	"source_id":      {Column: "source_id", Kind: queryfilter.KindUUID},
+	"estimated_date": {Column: "estimated_date", Kind: queryfilter.KindTimestamp},
+	"actual_date":    {Column: "actual_date", Kind: queryfilter.KindTimestamp},
+	"created_at":     {Column: "created_at", Kind: queryfilter.KindTimestamp},
 }
 
 // ListDeliveries returns firmID's deliveries, most recent first.
@@ -347,12 +370,24 @@ func ListDeliveries(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid
 			return ErrFirmNotFound
 		}
 
-		rows, err := tx.Query(ctx, `
+		// opts.Filters reuses internal/queryfilter.BuildClause against
+		// deliveryFilterFields - see ListDeliveriesOptions' own doc
+		// comment.
+		args := []any{string(opts.Status)}
+		filterClauses, args, err := queryfilter.BuildClause(deliveryFilterFields, opts.Filters, args)
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrInvalidFilter, err)
+		}
+		query := `
 			SELECT id, firm_id, reference, origin_address, destination_address, carrier, tracking_number, status, estimated_date, actual_date, COALESCE(source_type, ''), source_id, custom_fields, created_at
 			FROM deliveries
-			WHERE ($1 = '' OR status = $1)
-			ORDER BY created_at DESC
-		`, string(opts.Status))
+			WHERE ($1 = '' OR status = $1)`
+		for _, c := range filterClauses {
+			query += " AND " + c
+		}
+		query += " ORDER BY created_at DESC"
+
+		rows, err := tx.Query(ctx, query, args...)
 		if err != nil {
 			return fmt.Errorf("list deliveries: %w", err)
 		}

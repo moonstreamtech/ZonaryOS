@@ -81,6 +81,10 @@ type productResponse struct {
 	CustomFields map[string]any `json:"customFields"`
 	IsActive     bool           `json:"isActive"`
 	CreatedAt    string         `json:"createdAt"`
+	// StockQuantity (Part 3, computed field) is only ever non-nil on
+	// handleGetProduct's own response - see Product.StockQuantity's own
+	// doc comment for why ListProducts leaves it unset.
+	StockQuantity *string `json:"stockQuantity,omitempty"`
 }
 
 func toProductResponse(p Product) productResponse {
@@ -88,7 +92,7 @@ func toProductResponse(p Product) productResponse {
 		ID: p.ID.String(), SKU: p.SKU, Name: p.Name, Description: p.Description, Unit: p.Unit,
 		UnitPrice: p.UnitPrice, CostPrice: p.CostPrice, TaxRate: p.TaxRate, Category: p.Category,
 		MinQuantity: p.MinQuantity, CustomFields: p.CustomFields, IsActive: p.IsActive,
-		CreatedAt: p.CreatedAt.Format(time.RFC3339),
+		CreatedAt: p.CreatedAt.Format(time.RFC3339), StockQuantity: p.StockQuantity,
 	}
 }
 
@@ -116,7 +120,7 @@ func handleListProducts(pool *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 
-		opts := ListProductsOptions{ActiveOnly: r.URL.Query().Get("activeOnly") == "true"}
+		opts := ListProductsOptions{ActiveOnly: r.URL.Query().Get("activeOnly") == "true", Search: r.URL.Query().Get("q")}
 		products, err := ListProducts(r.Context(), pool, firmID, userID, opts)
 		if err != nil {
 			writeInventoryError(w, err)
@@ -377,7 +381,7 @@ func handleListSuppliers(pool *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 
-		opts := ListSuppliersOptions{ActiveOnly: r.URL.Query().Get("activeOnly") == "true"}
+		opts := ListSuppliersOptions{ActiveOnly: r.URL.Query().Get("activeOnly") == "true", Search: r.URL.Query().Get("q")}
 		suppliers, err := ListSuppliers(r.Context(), pool, firmID, userID, opts)
 		if err != nil {
 			writeInventoryError(w, err)

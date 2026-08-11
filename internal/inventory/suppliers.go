@@ -223,6 +223,10 @@ func UpdateSupplier(ctx context.Context, pool *pgxpool.Pool, firmID, userID, sup
 // supplier.
 type ListSuppliersOptions struct {
 	ActiveOnly bool
+	// Search, when non-empty, keeps only suppliers whose search_tsv
+	// (migrations/0024 - name/contact_name/email) matches this text via
+	// full-text search.
+	Search string
 }
 
 // ListSuppliers returns firmID's suppliers, ordered by name. Member-gated
@@ -242,8 +246,9 @@ func ListSuppliers(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.
 			SELECT id, firm_id, name, contact_name, email, phone, address, currency, payment_terms, custom_fields, is_active, created_at
 			FROM suppliers
 			WHERE ($1 = false OR is_active)
+			  AND ($2 = '' OR search_tsv @@ plainto_tsquery('simple', normalize_search_text($2)))
 			ORDER BY name
-		`, opts.ActiveOnly)
+		`, opts.ActiveOnly, opts.Search)
 		if err != nil {
 			return fmt.Errorf("list suppliers: %w", err)
 		}

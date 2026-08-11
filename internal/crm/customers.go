@@ -106,6 +106,15 @@ type Customer struct {
 	CustomFields           map[string]any
 	SourceWorkflowInstance *uuid.UUID
 	CreatedAt              time.Time
+	// TotalInvoiced/TotalPaid are virtual fields (Part 3 of the search/
+	// filtering/enrichment batch): TotalInvoiced is SUM(invoices.total)
+	// for invoices linked to this customer, TotalPaid is SUM(payments.amount)
+	// across those same invoices' payments - both computed at read time
+	// via one extra query each, never stored. Only ever populated by
+	// GetCustomer - same "detail response only, not list" discipline as
+	// Product.StockQuantity/Invoice.TotalPaid, for the same N+1 reason.
+	TotalInvoiced *string
+	TotalPaid     *string
 }
 
 // CreateCustomerInput is CreateCustomer's request shape.
@@ -291,10 +300,20 @@ func UpdateCustomer(ctx context.Context, pool *pgxpool.Pool, firmID, userID, cus
 	return customer, nil
 }
 
+// ListCustomersOptions filters ListCustomers - a zero value returns every
+// customer, matching this codebase's usual "zero value means unfiltered"
+// convention.
+type ListCustomersOptions struct {
+	// Search, when non-empty, keeps only customers whose search_tsv
+	// (migrations/0024 - name/email/phone) matches this text via
+	// full-text search.
+	Search string
+}
+
 // ListCustomers returns firmID's customers, ordered by name. Member-gated
 // (not owner-gated): reading the customer list is ordinary firm data
 // visibility, the same tier as internal/inventory.ListSuppliers.
-func ListCustomers(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.UUID) ([]Customer, error) {
+func ListCustomers(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.UUID, opts ListCustomersOptions) ([]Customer, error) {
 	var customers []Customer
 	err := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
 		isMember, err := permission.IsMember(ctx, tx, firmID, userID)
@@ -308,8 +327,9 @@ func ListCustomers(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.
 		rows, err := tx.Query(ctx, `
 			SELECT id, firm_id, name, email, phone, address, tax_id, credit_limit::text, currency, custom_fields, source_workflow_instance, created_at
 			FROM customers
+			WHERE ($1 = '' OR search_tsv @@ plainto_tsquery('simple', normalize_search_text($1)))
 			ORDER BY name
-		`)
+		`, opts.Search)
 		if err != nil {
 			return fmt.Errorf("list customers: %w", err)
 		}
@@ -359,7 +379,32 @@ func GetCustomer(ctx context.Context, pool *pgxpool.Pool, firmID, userID, custom
 			}
 			return fmt.Errorf("look up customer: %w", err)
 		}
-		return json.Unmarshal(customFieldsRaw, &customer.CustomFields)
+		if err := json.Unmarshal(customFieldsRaw, &customer.CustomFields); err != nil {
+			return err
+		}
+
+		// TotalInvoiced/TotalPaid: two extra aggregation queries, only
+		// for this single customer (GetCustomer is a one-row lookup, not
+		// a list) - COALESCE so a customer with no invoices/payments yet
+		// reads as "0", not NULL.
+		var totalInvoiced string
+		if err := tx.QueryRow(ctx, `
+			SELECT COALESCE(SUM(total), 0)::text FROM invoices WHERE customer_id = $1 AND firm_id = $2
+		`, customerID, firmID).Scan(&totalInvoiced); err != nil {
+			return fmt.Errorf("sum total invoiced: %w", err)
+		}
+		customer.TotalInvoiced = &totalInvoiced
+
+		var totalPaid string
+		if err := tx.QueryRow(ctx, `
+			SELECT COALESCE(SUM(p.amount), 0)::text
+			FROM payments p JOIN invoices i ON i.id = p.invoice_id
+			WHERE i.customer_id = $1 AND i.firm_id = $2
+		`, customerID, firmID).Scan(&totalPaid); err != nil {
+			return fmt.Errorf("sum total paid: %w", err)
+		}
+		customer.TotalPaid = &totalPaid
+		return nil
 	})
 	if err != nil {
 		return Customer{}, err

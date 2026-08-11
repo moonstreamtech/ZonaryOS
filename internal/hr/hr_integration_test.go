@@ -262,3 +262,31 @@ func TestPeople_CrossFirmIsolation(t *testing.T) {
 		t.Fatalf("expected ErrFirmNotFound when firm B's owner reads firm A's people, got %v", err)
 	}
 }
+
+// TestListPeople_SearchFindsByPhoneFragment is Part 1's own required
+// test case: full-text search (migrations/0024's search_tsv) finds a
+// person by a phone number fragment.
+func TestListPeople_SearchFindsByPhoneFragment(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+	firmID, ownerID := seedOwner(ctx, t, adminPool, appPool, "Firm Search", "hr-search-owner")
+
+	if _, err := hr.CreatePerson(ctx, appPool, firmID, ownerID, hr.CreatePersonInput{
+		FullName: "Grace Hopper", Type: hr.PersonTypeEmployee, Phone: "+90 555 123 4567",
+	}); err != nil {
+		t.Fatalf("CreatePerson: %v", err)
+	}
+	if _, err := hr.CreatePerson(ctx, appPool, firmID, ownerID, hr.CreatePersonInput{
+		FullName: "Alan Turing", Type: hr.PersonTypeEmployee, Phone: "+90 555 987 6543",
+	}); err != nil {
+		t.Fatalf("CreatePerson: %v", err)
+	}
+
+	people, err := hr.ListPeople(ctx, appPool, firmID, ownerID, hr.ListPeopleOptions{Search: "4567"})
+	if err != nil {
+		t.Fatalf("ListPeople (search): %v", err)
+	}
+	if len(people) != 1 || people[0].FullName != "Grace Hopper" {
+		t.Fatalf("expected search '4567' to match only Grace Hopper, got %+v", people)
+	}
+}

@@ -19,6 +19,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/identity"
 	"github.com/moonstreamtech/ZonaryOS/internal/inventory"
 	"github.com/moonstreamtech/ZonaryOS/internal/invoicing"
+	"github.com/moonstreamtech/ZonaryOS/internal/queryfilter"
 )
 
 // maxListInstancesLimit caps the ?limit= query param on GET
@@ -135,6 +136,11 @@ type instanceStateResponse struct {
 	State                stateInfoResponse         `json:"state"`
 	Payload              map[string]any            `json:"payload"`
 	AvailableActions     []availableActionResponse `json:"availableActions"`
+	// OpenApprovalsCount (Part 3, computed field) is only ever non-nil
+	// on handleCurrentState's own response - see
+	// InstanceState.OpenApprovalsCount's own doc comment for why
+	// ListInstances leaves it unset.
+	OpenApprovalsCount *int `json:"openApprovalsCount,omitempty"`
 }
 
 func toInstanceStateResponse(s InstanceState) instanceStateResponse {
@@ -144,6 +150,7 @@ func toInstanceStateResponse(s InstanceState) instanceStateResponse {
 		State:                stateInfoResponse{Key: s.State.Key, Name: s.State.Name},
 		Payload:              s.Payload,
 		AvailableActions:     make([]availableActionResponse, 0, len(s.AvailableActions)),
+		OpenApprovalsCount:   s.OpenApprovalsCount,
 	}
 	for _, a := range s.AvailableActions {
 		resp.AvailableActions = append(resp.AvailableActions, availableActionResponse{
@@ -177,7 +184,7 @@ func writeEngineError(w http.ResponseWriter, err error) {
 	case errors.Is(err, ErrPermissionDenied):
 		http.Error(w, err.Error(), http.StatusForbidden)
 	case errors.Is(err, ErrNoSuchTransition), errors.Is(err, ErrInvalidSpec), errors.Is(err, ErrPayloadValidation), errors.Is(err, ErrInvalidRule),
-		errors.Is(err, inventory.ErrInsufficientStock), errors.Is(err, inventory.ErrInvalidStockAdjustment):
+		errors.Is(err, inventory.ErrInsufficientStock), errors.Is(err, inventory.ErrInvalidStockAdjustment), errors.Is(err, ErrInvalidFilter):
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	case errors.Is(err, ErrDefinitionKeyExists), errors.Is(err, ErrApprovalNotPending), errors.Is(err, ErrApprovalExpired):
 		http.Error(w, err.Error(), http.StatusConflict)
@@ -945,10 +952,13 @@ func handleListInstances(pool *pgxpool.Pool) http.HandlerFunc {
 	}
 }
 
-// parseListInstancesOptions reads ?limit=/?offset=/?q= off r into
-// ListInstancesOptions, rejecting a negative or over-cap limit/offset
-// outright rather than silently clamping - a caller sending garbage
-// should see a 400, not a quietly "corrected" page.
+// parseListInstancesOptions reads ?limit=/?offset=/?q=/?filters= off r
+// into ListInstancesOptions, rejecting a negative or over-cap
+// limit/offset outright rather than silently clamping - a caller sending
+// garbage should see a 400, not a quietly "corrected" page. ?filters= is
+// a JSON-encoded `[{field, op, value}, ...]` array (Part 2 of the
+// search/filtering/enrichment batch, internal/queryfilter.Filter) -
+// malformed JSON here is a 400 too, same failure mode as a bad limit.
 func parseListInstancesOptions(r *http.Request) (ListInstancesOptions, error) {
 	q := r.URL.Query()
 	opts := ListInstancesOptions{Search: q.Get("q")}
@@ -967,6 +977,11 @@ func parseListInstancesOptions(r *http.Request) (ListInstancesOptions, error) {
 		}
 		opts.Offset = offset
 	}
+	filters, err := queryfilter.ParseFiltersParam(q.Get("filters"))
+	if err != nil {
+		return ListInstancesOptions{}, err
+	}
+	opts.Filters = filters
 	return opts, nil
 }
 

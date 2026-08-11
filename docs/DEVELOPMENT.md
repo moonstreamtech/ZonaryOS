@@ -1039,6 +1039,52 @@ go test ./internal/webhook/... -v
 go test ./internal/workflow/... -run TestE2E_APIKeyCreatesInstanceAndWebhookFires -v
 ```
 
+## Full-text search, advanced filtering, and data enrichment
+
+Three parts, no new packages except `internal/queryfilter` (a shared leaf) and `internal/search` (a coordinating package) - the rest extends existing list/detail endpoints.
+
+**Part 1, full-text search** (`migrations/0024_fulltext_search_filtering.up.sql`): a `search_tsv tsvector` column on `workflow_instances`/`products`/`customers`/`people`/`suppliers`, auto-maintained via a `BEFORE INSERT OR UPDATE` trigger per table (not a generated column - see below), GIN-indexed. `'simple'` text search config throughout (no stemming, works consistently across languages including Turkish), queried with `plainto_tsquery('simple', ...)` only - never `websearch_to_tsquery`/`to_tsquery` (see Scope boundaries).
+
+- **Trigger, not a generated column**: Postgres generated columns are restricted to functions of the SAME row's own columns - no subqueries allowed. `workflow_instances.search_tsv` needs a lookup into `workflow_states` (for the current state's key/name), which only a trigger (a full PL/pgSQL function, free to query other tables) can do; a trigger was used uniformly across all five tables for one consistent mechanism rather than a generated column on four tables and a trigger on the fifth.
+- **`normalize_search_text(text)`** (a small SQL function, also defined in the migration): replaces `@`/`.` with spaces before indexing AND before querying. Without it, Postgres's own text search parser recognizes an email address or bare `host.name` string as one atomic "email"/"host" lexeme (confirmed via `ts_debug`) - a search for just `"acme-example.com"` (a customer's email DOMAIN, this batch's own required test case) would never match `jane@acme-example.com` otherwise. Applied consistently on both the index side (the trigger) and the query side (every `plainto_tsquery('simple', normalize_search_text($N))` call site) - normalizing only one side would break matching entirely.
+- **workflow_instances**: indexes the current state's key/name plus every STRING LEAF of `payload` (arbitrary per-definition JSON) via `jsonb_path_query_array(payload, '$.**')` (walks every node recursively) filtered to `jsonb_typeof(elem) = 'string'` - not just top-level keys. This REPLACES `ListInstances`' pre-existing `?q=` param's old `ILIKE '%...%'` substring scan with a real GIN-indexed full-text query - a real, intentional behavior change: full-text search matches whole words/lexemes (`"gizmo"` matches a payload containing "gizmo"), not arbitrary substrings (`"giz"` alone no longer matches "gizmo" the way the old ILIKE scan did).
+- HTTP: `?q=` added to `GET /products`, `GET /customers`, `GET /people`, `GET /suppliers` (the pre-existing `GET .../workflow-instances?q=` now runs through `search_tsv` instead of ILIKE, same param name).
+- **Cross-entity search** (`internal/search`, new coordinating package - imports `internal/inventory`/`internal/crm`/`internal/hr`, the same "coordinating package imports the domain packages it needs" shape `internal/reports` already establishes for its own KPI dashboard): `GET /api/firms/{firmID}/search?q=&types=products,customers,people,suppliers` fans `q` out to each requested type's own `List*` function in parallel (one goroutine per type via `sync.WaitGroup`), each already permission-gated and `search_tsv`-backed - this function makes no authorization decision of its own. Results capped at 20 per type (a response-size backstop, not pagination) and sorted deterministically (grouped by type, then title) since goroutine completion order isn't. An empty `q` returns no hits without touching the database at all - no "browse everything" mode. `types` defaults to every known type when omitted.
+- Frontend: the pre-existing `/search` page (`GlobalSearchBox` in the nav shell, unchanged) now renders a second, type-grouped section alongside its original per-workflow-definition groups, fetched via the new cross-entity endpoint in parallel with the existing `searchAcrossDefinitions` call. Each entity hit links to its own list page (`/inventory`, `/hr`, `/suppliers`) except customers, which has a real per-record detail route (`/customers/[customerId]`).
+
+**Part 2, advanced filtering** (`internal/queryfilter`, new leaf package): `internal/reports.QuerySpec.Filters`' own `{field, op, value}` vocabulary (`eq`/`neq`/`lt`/`gt`/`lte`/`gte`/`contains`) and its filter-clause-building logic (`BuildClause` - a closed, caller-supplied field allow-list, every value bound via `$N`, never interpolated) were extracted out of `internal/reports.BuildQuery` into this new leaf package, which `internal/reports` itself now builds on top of (`CompareOp`/`fieldKind`/`fieldDef`/`QueryFilter` are now type aliases over `queryfilter`'s exported equivalents - same JSON shape, zero behavior change for existing `report_definitions` rows).
+
+- **Why a leaf package, not importing `internal/reports` directly**: `internal/reports` already imports `internal/workflow` and `internal/accounting` for its own KPI dashboard - if either of those imported `internal/reports` back to reuse its filter logic, that would be an import cycle. `internal/queryfilter` imports nothing from this codebase, so every package (including `internal/reports` itself, and `internal/invoicing`/`internal/logistics`, which `internal/workflow` and `internal/reports` both already import) can safely depend on it.
+- `?filters=` (a JSON-encoded `[{field, op, value}, ...]` array, parsed via the shared `queryfilter.ParseFiltersParam`) added to `GET /workflow-instances`, `GET /journal-entries`, `GET /invoices`, `GET /deliveries` - each package declares its own small closed field allow-list (`workflowInstanceFilterFields`/`journalEntryFilterFields`/`invoiceFilterFields`/`deliveryFilterFields`, mirroring the same columns `internal/reports.entityRegistry` already lists for these entities, redeclared rather than imported for the same cycle-avoidance reason) and calls `queryfilter.BuildClause` to translate the request into its own query's `WHERE` clause, composed with whatever other params (`?status=`, `?q=`, pagination) that endpoint already had.
+
+**Part 3, computed fields** (all detail-response-only, never on a list response - the N+1 this batch's own design brief explicitly warns against): each is one extra, single-row aggregation query, never stored.
+
+- `products`: `GetProduct` adds `stock_quantity` (`SUM(stock_levels.quantity)` across every location for that one product).
+- `invoices`: `GetInvoice` adds `total_paid` (`SUM(payments.amount)`) and `outstanding` (`total - total_paid`, computed via Postgres's own exact `numeric` arithmetic - `SELECT ($1::numeric - $2::numeric)::text`, never Go floats).
+- `customers`: `GetCustomer` adds `total_invoiced` (`SUM(invoices.total)` for invoices linked to this customer) and `total_paid` (`SUM(payments.amount)` across those same invoices' payments, via a `payments JOIN invoices` on `customer_id`).
+- `workflow_instances`: `CurrentState` adds `open_approvals_count` (`COUNT(*)` of this instance's own `pending_approvals` rows still `'pending'`). A `*int` (not a plain `int`) so `ListInstances`' own `InstanceState` values - built directly from its own batched query, never via `CurrentState` - stay distinguishably "not computed" (omitted from the JSON response via `omitempty`) rather than looking like a real zero count.
+- Each Go struct field carrying one of these (`Product.StockQuantity`, `Invoice.TotalPaid`/`Outstanding`, `Customer.TotalInvoiced`/`TotalPaid`) is a pointer, `nil` on every `List*` call and only ever populated by the single-record `Get*` call - the same "detail response only" discipline enforced structurally, not just by convention.
+
+### Scope boundaries
+
+No Elasticsearch or external search engine. No vector/semantic search. No search across historical `audit_log` content. No user-configurable ranking. `plainto_tsquery('simple', ...)` only - not `websearch_to_tsquery`/`to_tsquery` (more user-input escaping care and exposed query syntax, not worth the complexity yet).
+
+### Running these tests
+
+`internal/inventory/inventory_integration_test.go` (partial-name product search, `stock_quantity` reflecting a real movement), `internal/crm/crm_integration_test.go` (email-domain customer search, `total_invoiced`/`total_paid`), `internal/hr/hr_integration_test.go` (phone-fragment person search), `internal/search/search_integration_test.go` (cross-entity search returning hits from multiple types, empty-query/unknown-type edge cases), `internal/accounting/accounting_integration_test.go` (a `posted_at` date-range filter), `internal/invoicing/invoicing_integration_test.go` (a `total` numeric filter, `outstanding` after a partial payment) all need a real Postgres:
+
+```
+export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5433/zonaryos?sslmode=disable
+export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5433/zonaryos?sslmode=disable
+make migrate
+go test ./internal/inventory/... -v
+go test ./internal/crm/... -v
+go test ./internal/hr/... -v
+go test ./internal/search/... -v
+go test ./internal/accounting/... -run DateRangeFilter -v
+go test ./internal/invoicing/... -run 'NumericFilter|OutstandingAfterPartialPayment' -v
+```
+
 ## Continuous Integration
 
 `.github/workflows/ci.yml` turns most of the CI Checklist categories (CLAUDE.md's "How to Verify a Change") from manual PR-by-PR discipline into automated checks on every PR (and on push to `main`). Every job here existed as a manual step some earlier PR ran by hand - this file doesn't introduce new verification steps, it just stops trusting a human to remember to run them. **Canary/Rollback Trigger** remains the one item intentionally "Not Set Up": there is no ZonaryOS deployment target or infrastructure decided yet (see `docs/OPEN_POINTS.md` item 34) for a rollback trigger to hook into.

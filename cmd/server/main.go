@@ -40,6 +40,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/platformadmin"
 	"github.com/moonstreamtech/ZonaryOS/internal/portability"
 	"github.com/moonstreamtech/ZonaryOS/internal/reports"
+	"github.com/moonstreamtech/ZonaryOS/internal/search"
 	"github.com/moonstreamtech/ZonaryOS/internal/telemetry"
 	"github.com/moonstreamtech/ZonaryOS/internal/webhook"
 	"github.com/moonstreamtech/ZonaryOS/internal/wizard"
@@ -192,6 +193,7 @@ func main() {
 	documents.RegisterRoutes(mux, verifier, pool)
 	apikey.RegisterRoutes(mux, verifier, pool)
 	webhook.RegisterRoutes(mux, verifier, pool)
+	search.RegisterRoutes(mux, verifier, pool)
 	// platformAdminAllowlist is shared between internal/platformadmin's
 	// own routes and internal/currency's platform-admin-only
 	// POST /api/exchange-rates - one allowlist, the same "which real

@@ -70,6 +70,17 @@ type Product struct {
 	CustomFields map[string]any
 	IsActive     bool
 	CreatedAt    time.Time
+	// StockQuantity is a virtual field (Part 3 of the search/filtering/
+	// enrichment batch): SUM(stock_levels.quantity) across every location
+	// for this product, computed at read time via one extra aggregation
+	// query - never stored. Only ever populated by GetProduct (a single
+	// row, one cheap extra query); ListProducts deliberately leaves this
+	// nil for every row rather than joining/aggregating per row, which
+	// would turn a firm-wide product list into an N+1 (or a GROUP BY
+	// across the whole stock_levels table on every list call) - see this
+	// batch's own "either exclude these fields from list endpoints or use
+	// a single aggregation JOIN" scope note.
+	StockQuantity *string
 }
 
 func optionalString(s string) *string {
@@ -443,6 +454,11 @@ func nullableJSON(data []byte) []byte {
 type ListProductsOptions struct {
 	// ActiveOnly, when true, keeps only is_active products.
 	ActiveOnly bool
+	// Search, when non-empty, keeps only products whose search_tsv
+	// (migrations/0024 - name/sku/description/category) matches this
+	// text via full-text search (plainto_tsquery('simple', ...)), not a
+	// substring ILIKE scan.
+	Search string
 }
 
 // ListProducts returns firmID's products, ordered by sku. Member-gated
@@ -463,8 +479,9 @@ func ListProducts(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.U
 			SELECT id, firm_id, sku, name, description, unit, unit_price::text, cost_price::text, tax_rate::text, category, min_quantity::text, custom_fields, is_active, created_at
 			FROM products
 			WHERE ($1 = false OR is_active)
+			  AND ($2 = '' OR search_tsv @@ plainto_tsquery('simple', normalize_search_text($2)))
 			ORDER BY sku
-		`, opts.ActiveOnly)
+		`, opts.ActiveOnly, opts.Search)
 		if err != nil {
 			return fmt.Errorf("list products: %w", err)
 		}
@@ -515,7 +532,22 @@ func GetProduct(ctx context.Context, pool *pgxpool.Pool, firmID, userID, product
 			}
 			return fmt.Errorf("look up product: %w", err)
 		}
-		return json.Unmarshal(customFieldsRaw, &product.CustomFields)
+		if err := json.Unmarshal(customFieldsRaw, &product.CustomFields); err != nil {
+			return err
+		}
+
+		// StockQuantity: one extra aggregation query, only for this single
+		// product (GetProduct is a one-row lookup, not a list) - COALESCE
+		// so a product with no stock_levels rows at all reads as "0", not
+		// NULL.
+		var stockQuantity string
+		if err := tx.QueryRow(ctx, `
+			SELECT COALESCE(SUM(quantity), 0)::text FROM stock_levels WHERE product_id = $1 AND firm_id = $2
+		`, productID, firmID).Scan(&stockQuantity); err != nil {
+			return fmt.Errorf("sum stock quantity: %w", err)
+		}
+		product.StockQuantity = &stockQuantity
+		return nil
 	})
 	if err != nil {
 		return Product{}, err

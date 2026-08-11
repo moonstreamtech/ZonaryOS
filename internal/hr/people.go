@@ -349,6 +349,10 @@ func nullableJSON(data []byte) []byte {
 type ListPeopleOptions struct {
 	// Status, when non-empty, keeps only people with this status.
 	Status PersonStatus
+	// Search, when non-empty, keeps only people whose search_tsv
+	// (migrations/0024 - full_name/email/phone) matches this text via
+	// full-text search.
+	Search string
 }
 
 // ListPeople returns firmID's people, ordered by full name. Member-gated
@@ -370,8 +374,9 @@ func ListPeople(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.UUI
 			SELECT id, firm_id, full_name, type, email, phone, start_date, end_date, status, custom_fields, created_at
 			FROM people
 			WHERE ($1 = '' OR status = $1)
+			  AND ($2 = '' OR search_tsv @@ plainto_tsquery('simple', normalize_search_text($2)))
 			ORDER BY full_name
-		`, string(opts.Status))
+		`, string(opts.Status), opts.Search)
 		if err != nil {
 			return fmt.Errorf("list people: %w", err)
 		}

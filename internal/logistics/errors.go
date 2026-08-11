@@ -24,4 +24,9 @@ var (
 	// ErrInvalidDelivery means CreateDelivery/UpdateDelivery/CreateDeliveryTx
 	// was given a structurally invalid delivery (an unrecognized status).
 	ErrInvalidDelivery = errors.New("invalid delivery")
+
+	// ErrInvalidFilter means ListDeliveriesOptions.Filters referenced a
+	// field/op internal/queryfilter.BuildClause rejected against
+	// deliveryFilterFields - see ListDeliveries' own doc comment.
+	ErrInvalidFilter = errors.New("invalid filter")
 )

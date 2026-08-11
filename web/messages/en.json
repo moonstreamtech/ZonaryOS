@@ -714,12 +714,18 @@
   },
   "Search": {
     "title": "Search",
-    "placeholder": "Search across all workflows...",
+    "placeholder": "Search workflows, products, customers, people, suppliers...",
     "button": "Search",
-    "prompt": "Type something to search across every workflow in this firm.",
-    "empty": "No results found in any workflow.",
+    "prompt": "Type something to search across this firm.",
+    "empty": "No results found.",
     "loadError": "Couldn't load this firm's workflows to search. Please try again.",
-    "seeAllInWorkflow": "See all {count} results in {name}"
+    "seeAllInWorkflow": "See all {count} results in {name}",
+    "workflowResultsTitle": "Workflows",
+    "entityResultsTitle": "Other matches",
+    "typeProducts": "Products",
+    "typeCustomers": "Customers",
+    "typePeople": "People",
+    "typeSuppliers": "Suppliers"
   },
   "Members": {
     "title": "Members",

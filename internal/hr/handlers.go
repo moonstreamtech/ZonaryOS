@@ -116,7 +116,7 @@ func handleListPeople(pool *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 
-		opts := ListPeopleOptions{Status: PersonStatus(r.URL.Query().Get("status"))}
+		opts := ListPeopleOptions{Status: PersonStatus(r.URL.Query().Get("status")), Search: r.URL.Query().Get("q")}
 		people, err := ListPeople(r.Context(), pool, firmID, userID, opts)
 		if err != nil {
 			writeHRError(w, err)

@@ -714,12 +714,18 @@
   },
   "Search": {
     "title": "Ara",
-    "placeholder": "Tüm iş akışlarında ara...",
+    "placeholder": "İş akışlarında, ürünlerde, müşterilerde, kişilerde, tedarikçilerde ara...",
     "button": "Ara",
-    "prompt": "Bu firmadaki tüm iş akışlarında aramak için bir şeyler yazın.",
-    "empty": "Hiçbir iş akışında sonuç bulunamadı.",
+    "prompt": "Bu firmada aramak için bir şeyler yazın.",
+    "empty": "Sonuç bulunamadı.",
     "loadError": "Aramak için bu firmanın iş akışları yüklenemedi. Lütfen tekrar deneyin.",
-    "seeAllInWorkflow": "{name} içindeki {count} sonucun tümünü gör"
+    "seeAllInWorkflow": "{name} içindeki {count} sonucun tümünü gör",
+    "workflowResultsTitle": "İş akışları",
+    "entityResultsTitle": "Diğer eşleşmeler",
+    "typeProducts": "Ürünler",
+    "typeCustomers": "Müşteriler",
+    "typePeople": "Kişiler",
+    "typeSuppliers": "Tedarikçiler"
   },
   "Members": {
     "title": "Üyeler",

@@ -50,4 +50,9 @@ var (
 	// transaction as the entry's insert, so an unbalanced entry never
 	// commits.
 	ErrUnbalancedEntry = errors.New("journal entry is not balanced: total debits must equal total credits")
+
+	// ErrInvalidFilter means ListOptions.Filters referenced a field/op
+	// internal/queryfilter.BuildClause rejected against
+	// journalEntryFilterFields - see ListJournalEntries' own doc comment.
+	ErrInvalidFilter = errors.New("invalid filter")
 )

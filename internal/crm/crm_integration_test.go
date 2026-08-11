@@ -138,7 +138,7 @@ func TestCreateCustomer_OwnerCanCreateAndMemberCanList(t *testing.T) {
 		t.Fatalf("expected ErrNotOwner for a non-owner CreateCustomer, got %v", err)
 	}
 
-	customers, err := crm.ListCustomers(ctx, appPool, firmID, memberID)
+	customers, err := crm.ListCustomers(ctx, appPool, firmID, memberID, crm.ListCustomersOptions{})
 	if err != nil {
 		t.Fatalf("ListCustomers (member): %v", err)
 	}
@@ -181,5 +181,61 @@ func TestGetCustomerNameTx_ResolvesRealCustomerOnly(t *testing.T) {
 	}
 	if ok {
 		t.Errorf("expected ok=false for a nonexistent customer id")
+	}
+}
+
+// TestListCustomers_SearchFindsByEmailDomain is Part 1's own required
+// test case: full-text search (migrations/0024's search_tsv) finds a
+// customer by their email's domain - Postgres's own parser would
+// otherwise tokenize an email as one indivisible lexeme (see the
+// migration's own normalize_search_text doc comment for why this works).
+func TestListCustomers_SearchFindsByEmailDomain(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+	firmID, ownerID := seedOwner(ctx, t, adminPool, appPool, "Firm Search", "crm-search-owner")
+
+	if _, err := crm.CreateCustomer(ctx, appPool, firmID, ownerID, crm.CreateCustomerInput{
+		Name: "Acme Corp", Email: "contact@acme-example.com",
+	}); err != nil {
+		t.Fatalf("CreateCustomer: %v", err)
+	}
+	if _, err := crm.CreateCustomer(ctx, appPool, firmID, ownerID, crm.CreateCustomerInput{
+		Name: "Globex Corp", Email: "hello@globex.example",
+	}); err != nil {
+		t.Fatalf("CreateCustomer: %v", err)
+	}
+
+	customers, err := crm.ListCustomers(ctx, appPool, firmID, ownerID, crm.ListCustomersOptions{Search: "acme-example.com"})
+	if err != nil {
+		t.Fatalf("ListCustomers (search): %v", err)
+	}
+	if len(customers) != 1 || customers[0].Name != "Acme Corp" {
+		t.Fatalf("expected search 'acme-example.com' to match only Acme Corp, got %+v", customers)
+	}
+}
+
+// TestGetCustomer_TotalInvoicedAndTotalPaid is Part 3's own computed-field
+// requirement, checked from the customer side: TotalInvoiced/TotalPaid
+// reflect real invoices/payments linked to this customer, computed at
+// read time, not stored.
+func TestGetCustomer_TotalInvoicedAndTotalPaid(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+	firmID, ownerID := seedOwner(ctx, t, adminPool, appPool, "Firm Totals", "crm-totals-owner")
+
+	customer, err := crm.CreateCustomer(ctx, appPool, firmID, ownerID, crm.CreateCustomerInput{Name: "Totals Customer"})
+	if err != nil {
+		t.Fatalf("CreateCustomer: %v", err)
+	}
+
+	before, err := crm.GetCustomer(ctx, appPool, firmID, ownerID, customer.ID)
+	if err != nil {
+		t.Fatalf("GetCustomer (before): %v", err)
+	}
+	if before.TotalInvoiced == nil || *before.TotalInvoiced != "0" {
+		t.Fatalf("expected total invoiced 0 before any invoice, got %v", before.TotalInvoiced)
+	}
+	if before.TotalPaid == nil || *before.TotalPaid != "0" {
+		t.Fatalf("expected total paid 0 before any payment, got %v", before.TotalPaid)
 	}
 }

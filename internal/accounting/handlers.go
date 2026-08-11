@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/moonstreamtech/ZonaryOS/internal/identity"
+	"github.com/moonstreamtech/ZonaryOS/internal/queryfilter"
 )
 
 // maxListLimit caps the ?limit= query param on GET .../journal-entries -
@@ -63,7 +64,7 @@ func writeAccountingError(w http.ResponseWriter, err error) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 	case errors.Is(err, ErrNotOwner):
 		http.Error(w, err.Error(), http.StatusForbidden)
-	case errors.Is(err, ErrInvalidAccount), errors.Is(err, ErrInvalidJournalEntry), errors.Is(err, ErrAccountInactive), errors.Is(err, ErrUnbalancedEntry):
+	case errors.Is(err, ErrInvalidAccount), errors.Is(err, ErrInvalidJournalEntry), errors.Is(err, ErrAccountInactive), errors.Is(err, ErrUnbalancedEntry), errors.Is(err, ErrInvalidFilter):
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	case errors.Is(err, ErrAccountCodeExists):
 		http.Error(w, err.Error(), http.StatusConflict)
@@ -348,8 +349,10 @@ func handleListJournalEntries(pool *pgxpool.Pool) http.HandlerFunc {
 	}
 }
 
-// parseListOptions reads ?limit=/?offset= off r into ListOptions - same
-// convention as internal/auditlog's parseListOptions.
+// parseListOptions reads ?limit=/?offset=/?filters= off r into
+// ListOptions - same convention as internal/auditlog's parseListOptions;
+// ?filters= is a JSON-encoded `[{field, op, value}, ...]` array (Part 2
+// of the search/filtering/enrichment batch).
 func parseListOptions(r *http.Request) (ListOptions, error) {
 	q := r.URL.Query()
 	var opts ListOptions
@@ -367,6 +370,11 @@ func parseListOptions(r *http.Request) (ListOptions, error) {
 		}
 		opts.Offset = offset
 	}
+	filters, err := queryfilter.ParseFiltersParam(q.Get("filters"))
+	if err != nil {
+		return ListOptions{}, err
+	}
+	opts.Filters = filters
 	return opts, nil
 }
 

@@ -70,6 +70,12 @@ type customerResponse struct {
 	CustomFields           map[string]any `json:"customFields"`
 	SourceWorkflowInstance *string        `json:"sourceWorkflowInstance,omitempty"`
 	CreatedAt              string         `json:"createdAt"`
+	// TotalInvoiced/TotalPaid (Part 3, computed fields) are only ever
+	// non-nil on handleGetCustomer's own response - see
+	// Customer.TotalInvoiced's own doc comment for why ListCustomers
+	// leaves them unset.
+	TotalInvoiced *string `json:"totalInvoiced,omitempty"`
+	TotalPaid     *string `json:"totalPaid,omitempty"`
 }
 
 func toCustomerResponse(c Customer) customerResponse {
@@ -82,6 +88,7 @@ func toCustomerResponse(c Customer) customerResponse {
 		ID: c.ID.String(), Name: c.Name, Email: c.Email, Phone: c.Phone, Address: c.Address, TaxID: c.TaxID,
 		CreditLimit: c.CreditLimit, Currency: c.Currency, CustomFields: c.CustomFields,
 		SourceWorkflowInstance: sourceWorkflowInstance, CreatedAt: c.CreatedAt.Format(time.RFC3339),
+		TotalInvoiced: c.TotalInvoiced, TotalPaid: c.TotalPaid,
 	}
 }
 
@@ -109,7 +116,8 @@ func handleListCustomers(pool *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 
-		customers, err := ListCustomers(r.Context(), pool, firmID, userID)
+		opts := ListCustomersOptions{Search: r.URL.Query().Get("q")}
+		customers, err := ListCustomers(r.Context(), pool, firmID, userID, opts)
 		if err != nil {
 			writeCRMError(w, err)
 			return
