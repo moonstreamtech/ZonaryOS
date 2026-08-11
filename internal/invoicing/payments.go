@@ -20,6 +20,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
+	"github.com/moonstreamtech/ZonaryOS/internal/webhook"
 )
 
 const paymentAuditEntityType = "payment"
@@ -90,6 +91,7 @@ func RecordPayment(ctx context.Context, pool *pgxpool.Pool, firmID, userID, invo
 
 	var payment Payment
 	var inv Invoice
+	var justPaid bool
 	err := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
 		if err := requireInvoiceOwner(ctx, tx, firmID, userID); err != nil {
 			return err
@@ -155,6 +157,7 @@ func RecordPayment(ctx context.Context, pool *pgxpool.Pool, firmID, userID, invo
 			if _, err := tx.Exec(ctx, `UPDATE invoices SET status = $1 WHERE id = $2`, string(InvoiceStatusPaid), invoiceID); err != nil {
 				return fmt.Errorf("mark invoice paid: %w", err)
 			}
+			justPaid = true
 
 			lines := []accounting.LineInput{
 				{AccountCode: accounting.CashAccountCode, Side: accounting.SideDebit, Amount: invoiceTotal},
@@ -172,6 +175,15 @@ func RecordPayment(ctx context.Context, pool *pgxpool.Pool, firmID, userID, invo
 	})
 	if err != nil {
 		return Payment{}, Invoice{}, err
+	}
+	if justPaid {
+		webhook.Dispatch(pool, firmID, webhook.EventInvoicePaid, map[string]any{
+			"invoiceId":     invoiceID.String(),
+			"invoiceNumber": inv.InvoiceNumber,
+			"total":         inv.Total,
+			"currency":      inv.Currency,
+			"paymentId":     payment.ID.String(),
+		})
 	}
 	return payment, inv, nil
 }

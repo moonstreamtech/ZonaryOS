@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/moonstreamtech/ZonaryOS/internal/identity"
+	"github.com/moonstreamtech/ZonaryOS/internal/queryfilter"
 )
 
 // decodeJSONBody decodes r's body into v - same contract as every other
@@ -51,7 +52,7 @@ func writeLogisticsError(w http.ResponseWriter, err error) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 	case errors.Is(err, ErrNotOwner):
 		http.Error(w, err.Error(), http.StatusForbidden)
-	case errors.Is(err, ErrInvalidDelivery):
+	case errors.Is(err, ErrInvalidDelivery), errors.Is(err, ErrInvalidFilter):
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	default:
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -120,7 +121,12 @@ func handleListDeliveries(pool *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 
-		opts := ListDeliveriesOptions{Status: DeliveryStatus(r.URL.Query().Get("status"))}
+		filters, err := queryfilter.ParseFiltersParam(r.URL.Query().Get("filters"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		opts := ListDeliveriesOptions{Status: DeliveryStatus(r.URL.Query().Get("status")), Filters: filters}
 		deliveries, err := ListDeliveries(r.Context(), pool, firmID, userID, opts)
 		if err != nil {
 			writeLogisticsError(w, err)

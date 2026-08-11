@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/moonstreamtech/ZonaryOS/internal/identity"
+	"github.com/moonstreamtech/ZonaryOS/internal/queryfilter"
 )
 
 const dateLayout = "2006-01-02"
@@ -65,7 +66,7 @@ func writeInvoicingError(w http.ResponseWriter, err error) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 	case errors.Is(err, ErrNotOwner):
 		http.Error(w, err.Error(), http.StatusForbidden)
-	case errors.Is(err, ErrInvalidInvoice), errors.Is(err, ErrInvalidInvoiceLine), errors.Is(err, ErrInvalidPayment):
+	case errors.Is(err, ErrInvalidInvoice), errors.Is(err, ErrInvalidInvoiceLine), errors.Is(err, ErrInvalidPayment), errors.Is(err, ErrInvalidFilter):
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	default:
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -150,6 +151,12 @@ type invoiceResponse struct {
 	SourceWorkflowInstance *string               `json:"sourceWorkflowInstance,omitempty"`
 	CreatedAt              string                `json:"createdAt"`
 	Lines                  []invoiceLineResponse `json:"lines,omitempty"`
+	// TotalPaid/Outstanding (Part 3, computed fields) are only ever
+	// non-nil on handleGetInvoice's own response - see
+	// Invoice.TotalPaid's own doc comment for why ListInvoices leaves
+	// them unset.
+	TotalPaid   *string `json:"totalPaid,omitempty"`
+	Outstanding *string `json:"outstanding,omitempty"`
 }
 
 func toInvoiceResponse(inv Invoice) invoiceResponse {
@@ -173,6 +180,7 @@ func toInvoiceResponse(inv Invoice) invoiceResponse {
 		IssuedDate: issued.Format(dateLayout), DueDate: formatDate(inv.DueDate), Status: string(inv.Status),
 		Subtotal: inv.Subtotal, TaxAmount: inv.TaxAmount, Total: inv.Total, Currency: inv.Currency,
 		Notes: inv.Notes, SourceWorkflowInstance: sourceInstance, CreatedAt: inv.CreatedAt.Format(time.RFC3339), Lines: lines,
+		TotalPaid: inv.TotalPaid, Outstanding: inv.Outstanding,
 	}
 }
 
@@ -184,7 +192,12 @@ func handleListInvoices(pool *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 
-		opts := ListOptions{Status: InvoiceStatus(r.URL.Query().Get("status"))}
+		filters, err := queryfilter.ParseFiltersParam(r.URL.Query().Get("filters"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		opts := ListOptions{Status: InvoiceStatus(r.URL.Query().Get("status")), Filters: filters}
 		invoices, err := ListInvoices(r.Context(), pool, firmID, userID, opts)
 		if err != nil {
 			writeInvoicingError(w, err)

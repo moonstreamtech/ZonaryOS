@@ -46,6 +46,8 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/localization"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
+	"github.com/moonstreamtech/ZonaryOS/internal/queryfilter"
+	"github.com/moonstreamtech/ZonaryOS/internal/webhook"
 )
 
 const invoiceAuditEntityType = "invoice"
@@ -143,6 +145,17 @@ type Invoice struct {
 	SourceWorkflowInstance *uuid.UUID
 	CreatedAt              time.Time
 	Lines                  []InvoiceLine
+	// TotalPaid/Outstanding are virtual fields (Part 3 of the search/
+	// filtering/enrichment batch): TotalPaid is SUM(payments.amount) for
+	// this invoice, Outstanding is Total - TotalPaid, both computed at
+	// read time via one extra query - never stored (payments.go's own
+	// RecordPayment already computes an equivalent "fully paid" check
+	// inline for its own purposes, but doesn't persist a running total on
+	// the invoice row itself). Only ever populated by GetInvoice - same
+	// "detail response only, not list" discipline as
+	// Product.StockQuantity, for the same N+1 reason.
+	TotalPaid   *string
+	Outstanding *string
 }
 
 // InvoiceLine is one invoice_lines row.
@@ -380,6 +393,14 @@ func CreateInvoice(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.
 	if err != nil {
 		return Invoice{}, err
 	}
+
+	webhook.Dispatch(pool, firmID, webhook.EventInvoiceCreated, map[string]any{
+		"invoiceId":     inv.ID.String(),
+		"invoiceNumber": inv.InvoiceNumber,
+		"total":         inv.Total,
+		"currency":      inv.Currency,
+	})
+
 	return inv, nil
 }
 
@@ -410,6 +431,15 @@ type CreateInvoiceTxInput struct {
 // ciaudit:ignore-firmid-check: shared invoice-creation primitive; every
 // caller (internal/workflow's invoice-template hook) has already run its
 // own authorization check before calling this.
+//
+// Deliberately does NOT dispatch webhook.EventInvoiceCreated: this runs
+// inside the caller's still-open transaction (executeTransitionTx), and
+// webhook.Dispatch must only ever fire after the operation it describes
+// has actually committed - dispatching here could notify an external
+// system about an invoice that the outer transition still rolls back.
+// The transition's own webhook.EventWorkflowTransitionExecuted dispatch
+// (fired post-commit) is what external integrations observe for this
+// path instead; see this batch's own report for the full reasoning.
 func CreateInvoiceTx(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, instanceID uuid.UUID, input CreateInvoiceTxInput) (uuid.UUID, error) {
 	line := InvoiceLineInput{
 		Description: input.Description, Quantity: input.Quantity, UnitPrice: input.UnitPrice, ProductID: input.ProductID,
@@ -498,6 +528,30 @@ const invoiceColumns = `id, firm_id, invoice_number, customer_id, issued_date, d
 // value lists every invoice, unfiltered.
 type ListOptions struct {
 	Status InvoiceStatus
+	// Filters (Part 2 of the search/filtering/enrichment batch) reuses
+	// internal/reports' own `{field, op, value}` filter vocabulary
+	// (internal/queryfilter.Filter) against invoiceFilterFields, this
+	// package's own closed allow-list.
+	Filters []queryfilter.Filter
+}
+
+// invoiceFilterFields is ListInvoices' own closed field allow-list for
+// opts.Filters - the same columns
+// internal/reports.entityRegistry["invoices"] already lists, redeclared
+// here rather than imported (see internal/queryfilter's own doc comment
+// for why).
+var invoiceFilterFields = map[string]queryfilter.FieldDef{
+	"id":             {Column: "id", Kind: queryfilter.KindUUID},
+	"invoice_number": {Column: "invoice_number", Kind: queryfilter.KindString},
+	"customer_id":    {Column: "customer_id", Kind: queryfilter.KindUUID},
+	"status":         {Column: "status", Kind: queryfilter.KindString},
+	"subtotal":       {Column: "subtotal", Kind: queryfilter.KindNumber},
+	"tax_amount":     {Column: "tax_amount", Kind: queryfilter.KindNumber},
+	"total":          {Column: "total", Kind: queryfilter.KindNumber},
+	"currency":       {Column: "currency", Kind: queryfilter.KindString},
+	"issued_date":    {Column: "issued_date", Kind: queryfilter.KindTimestamp},
+	"due_date":       {Column: "due_date", Kind: queryfilter.KindTimestamp},
+	"created_at":     {Column: "created_at", Kind: queryfilter.KindTimestamp},
 }
 
 // ListInvoices returns firmID's invoices (without their lines - callers
@@ -516,10 +570,22 @@ func ListInvoices(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.U
 		}
 
 		query := `SELECT ` + invoiceColumns + ` FROM invoices`
+		var whereClauses []string
 		args := []any{}
 		if opts.Status != "" {
-			query += ` WHERE status = $1`
 			args = append(args, string(opts.Status))
+			whereClauses = append(whereClauses, fmt.Sprintf("status = $%d", len(args)))
+		}
+		// opts.Filters reuses internal/queryfilter.BuildClause against
+		// invoiceFilterFields - see ListOptions' own doc comment.
+		filterClauses, newArgs, err := queryfilter.BuildClause(invoiceFilterFields, opts.Filters, args)
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrInvalidFilter, err)
+		}
+		args = newArgs
+		whereClauses = append(whereClauses, filterClauses...)
+		if len(whereClauses) > 0 {
+			query += ` WHERE ` + strings.Join(whereClauses, " AND ")
 		}
 		query += ` ORDER BY created_at DESC`
 
@@ -686,7 +752,30 @@ func GetInvoice(ctx context.Context, pool *pgxpool.Pool, firmID, userID, invoice
 		}
 
 		inv.Lines, err = fetchInvoiceLinesTx(ctx, tx, invoiceID)
-		return err
+		if err != nil {
+			return err
+		}
+
+		// TotalPaid/Outstanding: one extra aggregation query, only for
+		// this single invoice (GetInvoice is a one-row lookup, not a
+		// list) - COALESCE so an invoice with no payments yet reads as
+		// "0" paid, not NULL. Postgres's own exact `numeric` arithmetic
+		// throughout, never a Go float - same discipline RecordPayment's
+		// own "fully paid" check follows.
+		var totalPaid string
+		if err := tx.QueryRow(ctx, `
+			SELECT COALESCE(SUM(amount), 0)::text FROM payments WHERE invoice_id = $1 AND firm_id = $2
+		`, invoiceID, firmID).Scan(&totalPaid); err != nil {
+			return fmt.Errorf("sum total paid: %w", err)
+		}
+		inv.TotalPaid = &totalPaid
+
+		var outstanding string
+		if err := tx.QueryRow(ctx, `SELECT ($1::numeric - $2::numeric)::text`, inv.Total, totalPaid).Scan(&outstanding); err != nil {
+			return fmt.Errorf("compute outstanding: %w", err)
+		}
+		inv.Outstanding = &outstanding
+		return nil
 	})
 	if err != nil {
 		return Invoice{}, err

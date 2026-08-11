@@ -20,6 +20,7 @@ import (
 
 	"github.com/moonstreamtech/ZonaryOS/internal/invoicing"
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
+	"github.com/moonstreamtech/ZonaryOS/internal/queryfilter"
 )
 
 // These tests exercise invoicing/payments/aging against a real Postgres
@@ -525,3 +526,71 @@ func TestReceivablesAging_BucketsByAge(t *testing.T) {
 }
 
 func ptrTime(t time.Time) *time.Time { return &t }
+
+// TestListInvoices_NumericFilter is Part 2's own required test case: a
+// numeric filter on invoices.total (via internal/queryfilter's shared
+// `{field, op, value}` vocabulary) keeps only invoices matching it.
+func TestListInvoices_NumericFilter(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+	firmID, ownerID := seedOwner(ctx, t, adminPool, appPool, "Firm Numeric Filter", "inv-numfilter-owner")
+
+	if _, err := invoicing.CreateInvoice(ctx, appPool, firmID, ownerID, nil, time.Now(), nil, "", "", []invoicing.InvoiceLineInput{
+		{Description: "Small item", Quantity: "1", UnitPrice: "20.00"},
+	}); err != nil {
+		t.Fatalf("CreateInvoice (small): %v", err)
+	}
+	large, err := invoicing.CreateInvoice(ctx, appPool, firmID, ownerID, nil, time.Now(), nil, "", "", []invoicing.InvoiceLineInput{
+		{Description: "Large item", Quantity: "1", UnitPrice: "500.00"},
+	})
+	if err != nil {
+		t.Fatalf("CreateInvoice (large): %v", err)
+	}
+
+	invoices, err := invoicing.ListInvoices(ctx, appPool, firmID, ownerID, invoicing.ListOptions{
+		Filters: []queryfilter.Filter{
+			{Field: "total", Op: queryfilter.OpGt, Value: "100"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ListInvoices (numeric filter): %v", err)
+	}
+	if len(invoices) != 1 || invoices[0].ID != large.ID {
+		t.Fatalf("expected only the large invoice (%s, total > 100) to match, got %+v", large.ID, invoices)
+	}
+}
+
+// TestGetInvoice_OutstandingAfterPartialPayment is Part 3's own required
+// test case: the outstanding virtual field on GetInvoice's response is
+// correct after a partial payment (total - total paid so far, not
+// re-fetched from a stale stored value).
+func TestGetInvoice_OutstandingAfterPartialPayment(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+	firmID, ownerID := seedOwner(ctx, t, adminPool, appPool, "Firm Outstanding", "inv-outstanding-owner")
+	seedCoreAccounts(ctx, t, appPool, firmID)
+
+	inv, err := invoicing.CreateInvoice(ctx, appPool, firmID, ownerID, nil, time.Now(), nil, "", "", []invoicing.InvoiceLineInput{
+		{Description: "Widget", Quantity: "1", UnitPrice: "100.00"},
+	})
+	if err != nil {
+		t.Fatalf("CreateInvoice: %v", err)
+	}
+
+	if _, _, err := invoicing.RecordPayment(ctx, appPool, firmID, ownerID, inv.ID, invoicing.RecordPaymentInput{
+		Amount: "40.00", PaidAt: time.Now(), Method: "bank_transfer",
+	}); err != nil {
+		t.Fatalf("RecordPayment (partial): %v", err)
+	}
+
+	got, err := invoicing.GetInvoice(ctx, appPool, firmID, ownerID, inv.ID)
+	if err != nil {
+		t.Fatalf("GetInvoice: %v", err)
+	}
+	if got.TotalPaid == nil || *got.TotalPaid != "40.0000" {
+		t.Fatalf("expected total paid 40.0000 after the partial payment, got %v", got.TotalPaid)
+	}
+	if got.Outstanding == nil || *got.Outstanding != "60.0000" {
+		t.Fatalf("expected outstanding 60.0000 (100 - 40) after the partial payment, got %v", got.Outstanding)
+	}
+}

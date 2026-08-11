@@ -1217,12 +1217,17 @@ func TestListInstances_PaginationAndSearch(t *testing.T) {
 		t.Errorf("expected Total to be 3 on page 2 too, got %d", page2.Total)
 	}
 
-	searched, err := workflow.ListInstances(ctx, appPool, firmID, userID, definitionID, workflow.ListInstancesOptions{Search: "giz"})
+	// Search is now full-text (migrations/0024's search_tsv,
+	// plainto_tsquery('simple', ...) - see this batch's own scope
+	// boundary on why not to_tsquery/websearch_to_tsquery), which matches
+	// whole words/lexemes, not arbitrary substrings - "giz" alone would
+	// no longer match "gizmo" the way the old ILIKE '%giz%' scan did.
+	searched, err := workflow.ListInstances(ctx, appPool, firmID, userID, definitionID, workflow.ListInstancesOptions{Search: "gizmo"})
 	if err != nil {
 		t.Fatalf("ListInstances search: %v", err)
 	}
 	if len(searched.Instances) != 1 || searched.Instances[0].InstanceID != ids[2] {
-		t.Errorf("expected search 'giz' to match only the gizmo instance, got %+v", searched.Instances)
+		t.Errorf("expected search 'gizmo' to match only the gizmo instance, got %+v", searched.Instances)
 	}
 	if searched.Total != 1 {
 		t.Errorf("expected search Total to be 1, got %d", searched.Total)

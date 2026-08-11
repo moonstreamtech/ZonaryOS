@@ -27,7 +27,10 @@ type Identity struct {
 
 type contextKey int
 
-const identityContextKey contextKey = iota
+const (
+	identityContextKey contextKey = iota
+	scopeRestrictionContextKey
+)
 
 // WithIdentity attaches id to ctx, for retrieval via FromContext.
 func WithIdentity(ctx context.Context, id Identity) context.Context {
@@ -38,4 +41,24 @@ func WithIdentity(ctx context.Context, id Identity) context.Context {
 func FromContext(ctx context.Context) (Identity, bool) {
 	id, ok := ctx.Value(identityContextKey).(Identity)
 	return id, ok
+}
+
+// WithScopeRestriction attaches scopes to ctx - a non-nil allow-list of
+// permission_keys that internal/permission.Has additionally requires
+// (on top of the caller's ordinary role-based grant) before returning
+// true, for the remainder of this request. Set only by Middleware, only
+// when a Fallback resolved the request to a scope-limited identity (an
+// API key - see internal/apikey.Fallback); an ordinary Keycloak login
+// never carries a scope restriction, so Has behaves exactly as before
+// for every request that isn't API-key-authenticated.
+func WithScopeRestriction(ctx context.Context, scopes []string) context.Context {
+	return context.WithValue(ctx, scopeRestrictionContextKey, scopes)
+}
+
+// ScopeRestriction retrieves the scope allow-list attached by
+// WithScopeRestriction, if any. internal/permission.Has is the sole
+// intended caller - see WithScopeRestriction's own doc comment.
+func ScopeRestriction(ctx context.Context) ([]string, bool) {
+	scopes, ok := ctx.Value(scopeRestrictionContextKey).([]string)
+	return scopes, ok
 }

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/moonstreamtech/ZonaryOS/internal/accounting"
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
+	"github.com/moonstreamtech/ZonaryOS/internal/queryfilter"
 )
 
 // These tests exercise the financial management core against a real
@@ -266,5 +268,54 @@ func TestAccounts_CrossFirmIsolation(t *testing.T) {
 	}
 	if resultB.Total != 0 || len(resultB.Entries) != 0 {
 		t.Fatalf("expected firm B to see no journal entries from firm A, got %+v", resultB)
+	}
+}
+
+// TestListJournalEntries_DateRangeFilter is Part 2's own required test
+// case: a date range filter on journal_entries.posted_at (via
+// internal/queryfilter's shared `{field, op, value}` vocabulary) keeps
+// only entries posted in that range.
+func TestListJournalEntries_DateRangeFilter(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	firmID, userID := seedOwner(ctx, t, adminPool, appPool, "Firm Date Filter", "owner-date-filter")
+	seedAccount(ctx, t, appPool, firmID, userID, "1100", "Trade Receivables", accounting.AccountTypeAsset)
+	seedAccount(ctx, t, appPool, firmID, userID, "4000", "Sales Revenue", accounting.AccountTypeRevenue)
+
+	oldEntryID, err := accounting.PostJournalEntry(ctx, appPool, firmID, userID, "Old sale", []accounting.LineInput{
+		{AccountCode: "1100", Side: accounting.SideDebit, Amount: "50.00"},
+		{AccountCode: "4000", Side: accounting.SideCredit, Amount: "50.00"},
+	})
+	if err != nil {
+		t.Fatalf("PostJournalEntry (old): %v", err)
+	}
+	// Backdate directly - PostJournalEntry itself always uses now(), so
+	// this is the only way to get a real, distinct posted_at to filter
+	// against in a test.
+	oldPostedAt := time.Now().AddDate(0, 0, -30)
+	if _, err := adminPool.Exec(ctx, `UPDATE journal_entries SET posted_at = $1 WHERE id = $2`, oldPostedAt, oldEntryID); err != nil {
+		t.Fatalf("backdate old entry: %v", err)
+	}
+
+	recentEntryID, err := accounting.PostJournalEntry(ctx, appPool, firmID, userID, "Recent sale", []accounting.LineInput{
+		{AccountCode: "1100", Side: accounting.SideDebit, Amount: "75.00"},
+		{AccountCode: "4000", Side: accounting.SideCredit, Amount: "75.00"},
+	})
+	if err != nil {
+		t.Fatalf("PostJournalEntry (recent): %v", err)
+	}
+
+	from := time.Now().AddDate(0, 0, -1)
+	result, err := accounting.ListJournalEntries(ctx, appPool, firmID, userID, accounting.ListOptions{
+		Filters: []queryfilter.Filter{
+			{Field: "posted_at", Op: queryfilter.OpGte, Value: from},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ListJournalEntries (date range): %v", err)
+	}
+	if result.Total != 1 || len(result.Entries) != 1 || result.Entries[0].ID != recentEntryID {
+		t.Fatalf("expected only the recent entry (%s) to match the date range filter, got %+v", recentEntryID, result)
 	}
 }

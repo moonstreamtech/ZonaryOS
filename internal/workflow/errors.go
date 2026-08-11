@@ -63,4 +63,9 @@ var (
 	// past its own expires_at - lazily transitioned to 'expired' status at
 	// that point (see resolveApprovalTx), never resolvable after.
 	ErrApprovalExpired = errors.New("pending approval has expired")
+
+	// ErrInvalidFilter means ListInstancesOptions.Filters referenced a
+	// field/op internal/queryfilter.BuildClause rejected against
+	// workflowInstanceFilterFields - see ListInstances' own doc comment.
+	ErrInvalidFilter = errors.New("invalid filter")
 )

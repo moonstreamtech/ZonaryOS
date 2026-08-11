@@ -12,55 +12,49 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/moonstreamtech/ZonaryOS/internal/queryfilter"
 )
 
-// CompareOp is a report filter's comparison operator - the same closed
-// vocabulary internal/workflow.CompareOp uses for rule condition leaves
-// (eq/neq/lt/gt/lte/gte/contains), redeclared here rather than imported
-// cross-package (this package already redeclares plenty of its own small
-// closed vocabularies, e.g. Period/KPIKind - one more is consistent, not
-// a new pattern).
-type CompareOp string
+// CompareOp, QueryFilter's Op vocabulary, is now internal/queryfilter's
+// own CompareOp - kept as a type alias (not a redeclaration) so every
+// existing QuerySpec.Filters caller/JSON shape is unchanged. Extracted
+// into that dependency-free leaf package so list endpoints outside this
+// package (internal/workflow, internal/accounting, internal/invoicing,
+// internal/logistics) can reuse the exact same filter-clause-building
+// logic for their own `?filters=` params without importing
+// internal/reports itself - which would cycle, since internal/reports
+// already imports internal/workflow and internal/accounting for its own
+// KPI dashboard. See internal/queryfilter's own doc comment for the full
+// reasoning.
+type CompareOp = queryfilter.CompareOp
 
 const (
-	OpEq       CompareOp = "eq"
-	OpNeq      CompareOp = "neq"
-	OpLt       CompareOp = "lt"
-	OpGt       CompareOp = "gt"
-	OpLte      CompareOp = "lte"
-	OpGte      CompareOp = "gte"
-	OpContains CompareOp = "contains"
+	OpEq       = queryfilter.OpEq
+	OpNeq      = queryfilter.OpNeq
+	OpLt       = queryfilter.OpLt
+	OpGt       = queryfilter.OpGt
+	OpLte      = queryfilter.OpLte
+	OpGte      = queryfilter.OpGte
+	OpContains = queryfilter.OpContains
 )
 
-var sqlCompareOp = map[CompareOp]string{
-	OpEq:  "=",
-	OpNeq: "<>",
-	OpLt:  "<",
-	OpGt:  ">",
-	OpLte: "<=",
-	OpGte: ">=",
-	// OpContains is handled separately (ILIKE), not through this map.
-}
-
-// fieldKind is a report field's value type - constrains which CompareOps
-// and aggregations are valid against it.
-type fieldKind string
+// fieldKind or fieldDef of THIS package's own entityRegistry are now type
+// aliases over internal/queryfilter's exported equivalents, for the same
+// reuse-without-coupling reason as CompareOp above - entityRegistry
+// itself (below) stays private to this package; only the field-kind/def
+// vocabulary is shared.
+type fieldKind = queryfilter.FieldKind
 
 const (
-	fieldString    fieldKind = "string"
-	fieldNumber    fieldKind = "number"
-	fieldTimestamp fieldKind = "timestamp"
-	fieldBoolean   fieldKind = "boolean"
-	fieldUUID      fieldKind = "uuid"
+	fieldString    = queryfilter.KindString
+	fieldNumber    = queryfilter.KindNumber
+	fieldTimestamp = queryfilter.KindTimestamp
+	fieldBoolean   = queryfilter.KindBoolean
+	fieldUUID      = queryfilter.KindUUID
 )
 
-type fieldDef struct {
-	// column is the real, trusted SQL column name - the only thing ever
-	// substituted into a query string for this field; it never comes from
-	// request input directly, only ever looked up by key in entityDef.fields.
-	column string
-	kind   fieldKind
-}
+type fieldDef = queryfilter.FieldDef
 
 type entityDef struct {
 	// table is the real, trusted SQL table name.
@@ -81,80 +75,80 @@ var entityRegistry = map[string]entityDef{
 	"workflow_instances": {
 		table: "workflow_instances",
 		fields: map[string]fieldDef{
-			"id":                     {"id", fieldUUID},
-			"workflow_definition_id": {"workflow_definition_id", fieldUUID},
-			"created_by_user_id":     {"created_by_user_id", fieldUUID},
-			"created_at":             {"created_at", fieldTimestamp},
-			"updated_at":             {"updated_at", fieldTimestamp},
+			"id":                     {Column: "id", Kind: fieldUUID},
+			"workflow_definition_id": {Column: "workflow_definition_id", Kind: fieldUUID},
+			"created_by_user_id":     {Column: "created_by_user_id", Kind: fieldUUID},
+			"created_at":             {Column: "created_at", Kind: fieldTimestamp},
+			"updated_at":             {Column: "updated_at", Kind: fieldTimestamp},
 		},
 	},
 	"journal_entries": {
 		table: "journal_entries",
 		fields: map[string]fieldDef{
-			"id":          {"id", fieldUUID},
-			"description": {"description", fieldString},
-			"source_type": {"source_type", fieldString},
-			"source_id":   {"source_id", fieldUUID},
-			"created_by":  {"created_by", fieldUUID},
-			"posted_at":   {"posted_at", fieldTimestamp},
-			"created_at":  {"created_at", fieldTimestamp},
+			"id":          {Column: "id", Kind: fieldUUID},
+			"description": {Column: "description", Kind: fieldString},
+			"source_type": {Column: "source_type", Kind: fieldString},
+			"source_id":   {Column: "source_id", Kind: fieldUUID},
+			"created_by":  {Column: "created_by", Kind: fieldUUID},
+			"posted_at":   {Column: "posted_at", Kind: fieldTimestamp},
+			"created_at":  {Column: "created_at", Kind: fieldTimestamp},
 		},
 	},
 	"invoices": {
 		table: "invoices",
 		fields: map[string]fieldDef{
-			"id":             {"id", fieldUUID},
-			"invoice_number": {"invoice_number", fieldString},
-			"customer_id":    {"customer_id", fieldUUID},
-			"status":         {"status", fieldString},
-			"subtotal":       {"subtotal", fieldNumber},
-			"tax_amount":     {"tax_amount", fieldNumber},
-			"total":          {"total", fieldNumber},
-			"currency":       {"currency", fieldString},
-			"issued_date":    {"issued_date", fieldTimestamp},
-			"due_date":       {"due_date", fieldTimestamp},
-			"created_at":     {"created_at", fieldTimestamp},
+			"id":             {Column: "id", Kind: fieldUUID},
+			"invoice_number": {Column: "invoice_number", Kind: fieldString},
+			"customer_id":    {Column: "customer_id", Kind: fieldUUID},
+			"status":         {Column: "status", Kind: fieldString},
+			"subtotal":       {Column: "subtotal", Kind: fieldNumber},
+			"tax_amount":     {Column: "tax_amount", Kind: fieldNumber},
+			"total":          {Column: "total", Kind: fieldNumber},
+			"currency":       {Column: "currency", Kind: fieldString},
+			"issued_date":    {Column: "issued_date", Kind: fieldTimestamp},
+			"due_date":       {Column: "due_date", Kind: fieldTimestamp},
+			"created_at":     {Column: "created_at", Kind: fieldTimestamp},
 		},
 	},
 	"deliveries": {
 		table: "deliveries",
 		fields: map[string]fieldDef{
-			"id":             {"id", fieldUUID},
-			"reference":      {"reference", fieldString},
-			"carrier":        {"carrier", fieldString},
-			"status":         {"status", fieldString},
-			"source_type":    {"source_type", fieldString},
-			"source_id":      {"source_id", fieldUUID},
-			"estimated_date": {"estimated_date", fieldTimestamp},
-			"actual_date":    {"actual_date", fieldTimestamp},
-			"created_at":     {"created_at", fieldTimestamp},
+			"id":             {Column: "id", Kind: fieldUUID},
+			"reference":      {Column: "reference", Kind: fieldString},
+			"carrier":        {Column: "carrier", Kind: fieldString},
+			"status":         {Column: "status", Kind: fieldString},
+			"source_type":    {Column: "source_type", Kind: fieldString},
+			"source_id":      {Column: "source_id", Kind: fieldUUID},
+			"estimated_date": {Column: "estimated_date", Kind: fieldTimestamp},
+			"actual_date":    {Column: "actual_date", Kind: fieldTimestamp},
+			"created_at":     {Column: "created_at", Kind: fieldTimestamp},
 		},
 	},
 	"people": {
 		table: "people",
 		fields: map[string]fieldDef{
-			"id":         {"id", fieldUUID},
-			"full_name":  {"full_name", fieldString},
-			"type":       {"type", fieldString},
-			"email":      {"email", fieldString},
-			"status":     {"status", fieldString},
-			"start_date": {"start_date", fieldTimestamp},
-			"end_date":   {"end_date", fieldTimestamp},
-			"created_at": {"created_at", fieldTimestamp},
+			"id":         {Column: "id", Kind: fieldUUID},
+			"full_name":  {Column: "full_name", Kind: fieldString},
+			"type":       {Column: "type", Kind: fieldString},
+			"email":      {Column: "email", Kind: fieldString},
+			"status":     {Column: "status", Kind: fieldString},
+			"start_date": {Column: "start_date", Kind: fieldTimestamp},
+			"end_date":   {Column: "end_date", Kind: fieldTimestamp},
+			"created_at": {Column: "created_at", Kind: fieldTimestamp},
 		},
 	},
 	"products": {
 		table: "products",
 		fields: map[string]fieldDef{
-			"id":         {"id", fieldUUID},
-			"sku":        {"sku", fieldString},
-			"name":       {"name", fieldString},
-			"unit":       {"unit", fieldString},
-			"unit_price": {"unit_price", fieldNumber},
-			"cost_price": {"cost_price", fieldNumber},
-			"category":   {"category", fieldString},
-			"is_active":  {"is_active", fieldBoolean},
-			"created_at": {"created_at", fieldTimestamp},
+			"id":         {Column: "id", Kind: fieldUUID},
+			"sku":        {Column: "sku", Kind: fieldString},
+			"name":       {Column: "name", Kind: fieldString},
+			"unit":       {Column: "unit", Kind: fieldString},
+			"unit_price": {Column: "unit_price", Kind: fieldNumber},
+			"cost_price": {Column: "cost_price", Kind: fieldNumber},
+			"category":   {Column: "category", Kind: fieldString},
+			"is_active":  {Column: "is_active", Kind: fieldBoolean},
+			"created_at": {Column: "created_at", Kind: fieldTimestamp},
 		},
 	},
 }
@@ -170,13 +164,11 @@ type QuerySpec struct {
 	DateRange *QueryDateRange `json:"date_range,omitempty"`
 }
 
-// QueryFilter is one `{field, op, value}` leaf - same field/op vocabulary
-// internal/workflow's rule condition leaves use (see CompareOp above).
-type QueryFilter struct {
-	Field string    `json:"field"`
-	Op    CompareOp `json:"op"`
-	Value any       `json:"value"`
-}
+// QueryFilter is one `{field, op, value}` leaf - now a type alias over
+// internal/queryfilter.Filter (identical JSON shape, so every stored
+// report_definitions.query_spec row still round-trips unchanged); see
+// this file's own import comment for why the type lives there.
+type QueryFilter = queryfilter.Filter
 
 // QueryMetric is one requested aggregation - Aggregation is either the
 // literal "count", or "sum(field)"/"avg(field)"/"min(field)"/"max(field)"
@@ -246,7 +238,7 @@ func BuildQuery(firmID uuid.UUID, spec QuerySpec) (BuiltQuery, error) {
 		if !ok {
 			return BuiltQuery{}, fmt.Errorf("%w: unknown group_by field %q for entity %q", ErrInvalidQuerySpec, spec.GroupBy, spec.Entity)
 		}
-		groupByCol = field.column
+		groupByCol = field.Column
 		// ::text: a GROUP BY column can be any type entityRegistry allows
 		// (uuid, timestamp, boolean, ...) - casting to text at the SQL
 		// level means executeQuerySpec can always scan group_key into a
@@ -272,59 +264,44 @@ func BuildQuery(firmID uuid.UUID, spec QuerySpec) (BuiltQuery, error) {
 		if !ok {
 			return BuiltQuery{}, fmt.Errorf("%w: unknown metric field %q for entity %q", ErrInvalidQuerySpec, fieldKey, spec.Entity)
 		}
-		if field.kind != fieldNumber {
+		if field.Kind != fieldNumber {
 			return BuiltQuery{}, fmt.Errorf("%w: field %q does not support aggregation %q", ErrInvalidQuerySpec, fieldKey, fn)
 		}
-		selectExprs = append(selectExprs, fmt.Sprintf("%s(%s)", fn, field.column))
+		selectExprs = append(selectExprs, fmt.Sprintf("%s(%s)", fn, field.Column))
 		metricNames = append(metricNames, m.Name)
 	}
 
 	var whereClauses []string
 	whereClauses = append(whereClauses, "firm_id = $1")
 
-	for _, f := range spec.Filters {
-		field, ok := entity.fields[f.Field]
-		if !ok {
-			return BuiltQuery{}, fmt.Errorf("%w: unknown filter field %q for entity %q", ErrInvalidQuerySpec, f.Field, spec.Entity)
-		}
-		if f.Op == OpContains && field.kind != fieldString {
-			return BuiltQuery{}, fmt.Errorf("%w: op %q is only valid on string fields", ErrInvalidQuerySpec, f.Op)
-		}
-		switch f.Op {
-		case OpEq, OpNeq, OpLt, OpGt, OpLte, OpGte:
-			sqlOp, ok := sqlCompareOp[f.Op]
-			if !ok {
-				return BuiltQuery{}, fmt.Errorf("%w: unsupported op %q", ErrInvalidQuerySpec, f.Op)
-			}
-			args = append(args, f.Value)
-			whereClauses = append(whereClauses, fmt.Sprintf("%s %s $%d", field.column, sqlOp, len(args)))
-		case OpContains:
-			s, ok := f.Value.(string)
-			if !ok {
-				return BuiltQuery{}, fmt.Errorf("%w: op %q requires a string value", ErrInvalidQuerySpec, f.Op)
-			}
-			args = append(args, "%"+s+"%")
-			whereClauses = append(whereClauses, fmt.Sprintf("%s ILIKE $%d", field.column, len(args)))
-		default:
-			return BuiltQuery{}, fmt.Errorf("%w: unsupported op %q", ErrInvalidQuerySpec, f.Op)
-		}
+	// Delegates to internal/queryfilter.BuildClause - the same
+	// filter-clause-building logic this function used to inline directly,
+	// now shared with every other list endpoint's own `?filters=` param
+	// (see this file's own import comment). entity.fields already IS a
+	// map[string]queryfilter.FieldDef (fieldDef is a type alias), so no
+	// conversion is needed.
+	filterClauses, newArgs, err := queryfilter.BuildClause(entity.fields, spec.Filters, args)
+	if err != nil {
+		return BuiltQuery{}, fmt.Errorf("%w: %w", ErrInvalidQuerySpec, err)
 	}
+	args = newArgs
+	whereClauses = append(whereClauses, filterClauses...)
 
 	if spec.DateRange != nil {
 		field, ok := entity.fields[spec.DateRange.Field]
 		if !ok {
 			return BuiltQuery{}, fmt.Errorf("%w: unknown date_range field %q for entity %q", ErrInvalidQuerySpec, spec.DateRange.Field, spec.Entity)
 		}
-		if field.kind != fieldTimestamp {
+		if field.Kind != fieldTimestamp {
 			return BuiltQuery{}, fmt.Errorf("%w: date_range field %q is not a timestamp field", ErrInvalidQuerySpec, spec.DateRange.Field)
 		}
 		if spec.DateRange.From != nil {
 			args = append(args, *spec.DateRange.From)
-			whereClauses = append(whereClauses, fmt.Sprintf("%s >= $%d", field.column, len(args)))
+			whereClauses = append(whereClauses, fmt.Sprintf("%s >= $%d", field.Column, len(args)))
 		}
 		if spec.DateRange.To != nil {
 			args = append(args, *spec.DateRange.To)
-			whereClauses = append(whereClauses, fmt.Sprintf("%s <= $%d", field.column, len(args)))
+			whereClauses = append(whereClauses, fmt.Sprintf("%s <= $%d", field.Column, len(args)))
 		}
 	}
 

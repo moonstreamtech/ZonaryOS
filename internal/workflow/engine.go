@@ -30,6 +30,8 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/logistics"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
+	"github.com/moonstreamtech/ZonaryOS/internal/queryfilter"
+	"github.com/moonstreamtech/ZonaryOS/internal/webhook"
 )
 
 // postgresUniqueViolation is the SQLSTATE code Postgres raises for a
@@ -1011,6 +1013,17 @@ func CreateInstance(ctx context.Context, pool *pgxpool.Pool, firmID, userID, def
 		return uuid.UUID{}, err
 	}
 
+	// webhook.Dispatch runs AFTER commit, same "nothing left to roll
+	// back, so a failure here must never fail the request" reasoning
+	// EvaluateRules' own doc comment gives just below - see
+	// internal/webhook's own package doc comment for the full design.
+	webhook.Dispatch(pool, firmID, webhook.EventWorkflowInstanceCreated, map[string]any{
+		"instanceId":    instanceID.String(),
+		"definitionKey": definitionKey,
+		"stateKey":      initialStateKey,
+		"payload":       payload,
+	})
+
 	// Rule evaluation runs AFTER the instance's own creation has committed
 	// - see EvaluateRules' doc comment (rules.go) for why this is the seam
 	// "immediately after commit where transaction boundaries prevent [inline]"
@@ -1055,6 +1068,14 @@ func ExecuteTransition(ctx context.Context, pool *pgxpool.Pool, firmID, userID, 
 	if err != nil {
 		return err
 	}
+
+	webhook.Dispatch(pool, firmID, webhook.EventWorkflowTransitionExecuted, map[string]any{
+		"instanceId":    instanceID.String(),
+		"definitionKey": definitionKey,
+		"actionKey":     actionKey,
+		"toState":       toStateKey,
+		"payload":       mergedPayload,
+	})
 
 	// See CreateInstance's identical post-commit EvaluateRules call for why
 	// this runs after the transition has already committed, and why an
@@ -1336,6 +1357,16 @@ type InstanceState struct {
 	State                StateInfo
 	Payload              map[string]any
 	AvailableActions     []AvailableAction
+	// OpenApprovalsCount is a virtual field (Part 3 of the search/
+	// filtering/enrichment batch): COUNT(*) of this instance's own
+	// pending_approvals rows still in 'pending' status, computed at read
+	// time via one extra query - never stored. A pointer (not a plain
+	// int) so ListInstances' own InstanceState values - built directly
+	// from ListInstances' own batched query, never via CurrentState -
+	// stay distinguishably "not computed" (nil) rather than looking like
+	// a real zero count; only CurrentState (a single-instance detail
+	// read) ever sets it.
+	OpenApprovalsCount *int
 }
 
 // CurrentState reads instanceID's current state and its structurally
@@ -1394,7 +1425,18 @@ func CurrentState(ctx context.Context, pool *pgxpool.Pool, firmID, userID, insta
 			}
 			result.AvailableActions = append(result.AvailableActions, a)
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+
+		var openApprovalsCount int
+		if err := tx.QueryRow(ctx, `
+			SELECT COUNT(*) FROM pending_approvals WHERE instance_id = $1 AND status = 'pending'
+		`, instanceID).Scan(&openApprovalsCount); err != nil {
+			return fmt.Errorf("count open approvals: %w", err)
+		}
+		result.OpenApprovalsCount = &openApprovalsCount
+		return nil
 	})
 	if err != nil {
 		return InstanceState{}, err
@@ -1418,12 +1460,35 @@ type ListInstancesOptions struct {
 	// past Limit-sized pages. Ignored when Limit is 0.
 	Offset int
 	// Search, when non-empty, keeps only instances whose current state's
-	// key/name or whose payload (serialized) contains this substring,
-	// case-insensitively. There's no fixed set of "searchable fields" -
-	// the payload is arbitrary per-definition JSON, so this matches
-	// against its raw text rather than assuming any particular key
-	// exists.
+	// key/name or whose payload's string leaves (indexed via
+	// workflow_instances.search_tsv, migrations/0024) match this text -
+	// full-text search via plainto_tsquery('simple', ...), not a
+	// substring ILIKE scan. There's no fixed set of "searchable fields" -
+	// the payload is arbitrary per-definition JSON, so search_tsv is
+	// built from every string leaf regardless of which key it's under.
 	Search string
+	// Filters (Part 2 of the search/filtering/enrichment batch) reuses
+	// internal/reports' own `{field, op, value}` filter vocabulary
+	// (internal/queryfilter.Filter) against workflowInstanceFilterFields,
+	// this package's own closed allow-list - the same "avoid duplicating
+	// the report builder's filtering logic" reuse internal/reports.BuildQuery
+	// itself is now built on top of.
+	Filters []queryfilter.Filter
+}
+
+// workflowInstanceFilterFields is ListInstances' own closed field
+// allow-list for opts.Filters - the same columns
+// internal/reports.entityRegistry["workflow_instances"] already lists,
+// redeclared here (not imported - internal/reports importing
+// internal/workflow already, the reverse would cycle, see
+// internal/queryfilter's own doc comment) since only the vocabulary is
+// shared, not the registry itself.
+var workflowInstanceFilterFields = map[string]queryfilter.FieldDef{
+	"id":                     {Column: "wi.id", Kind: queryfilter.KindUUID},
+	"workflow_definition_id": {Column: "wi.workflow_definition_id", Kind: queryfilter.KindUUID},
+	"created_by_user_id":     {Column: "wi.created_by_user_id", Kind: queryfilter.KindUUID},
+	"created_at":             {Column: "wi.created_at", Kind: queryfilter.KindTimestamp},
+	"updated_at":             {Column: "wi.updated_at", Kind: queryfilter.KindTimestamp},
 }
 
 // ListInstancesResult is ListInstances's return shape: the (possibly
@@ -1507,15 +1572,41 @@ func ListInstances(ctx context.Context, pool *pgxpool.Pool, firmID, userID, defi
 		// a Limit of 0 into a SQL NULL, and `LIMIT NULL` in Postgres
 		// means "no limit" - so the zero-value ListInstancesOptions
 		// keeps returning everything, unpaged.
-		instanceRows, err := tx.Query(ctx, `
+		//
+		// Search now matches against wi.search_tsv (migrations/0024's
+		// full-text search foundation) instead of an ILIKE scan - the
+		// same tsvector this batch also backs the cross-entity search
+		// endpoint with, so a state key/name or any payload string leaf
+		// (not just top-level fields) is searchable, GIN-indexed instead
+		// of a full table scan. normalize_search_text mirrors the exact
+		// normalization search_tsv itself was built with (see the
+		// migration's own doc comment on why: Postgres's parser tokenizes
+		// an email/host string as one atomic lexeme otherwise).
+		//
+		// opts.Filters (Part 2 of the same batch) reuses
+		// internal/queryfilter.BuildClause - the exact filter-clause
+		// logic internal/reports.BuildQuery itself now delegates to (see
+		// that package's own import comment) - against
+		// workflowInstanceFilterFields, this package's own closed
+		// allow-list, appended to args starting after the four params
+		// already bound above.
+		args := []any{definitionID, opts.Search, opts.Limit, opts.Offset}
+		filterClauses, args, err := queryfilter.BuildClause(workflowInstanceFilterFields, opts.Filters, args)
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrInvalidFilter, err)
+		}
+		query := `
 			SELECT wi.id, wi.current_state_id, ws.key, ws.name, wi.payload, COUNT(*) OVER()
 			FROM workflow_instances wi
 			JOIN workflow_states ws ON ws.id = wi.current_state_id
 			WHERE wi.workflow_definition_id = $1
-			  AND ($2 = '' OR ws.key ILIKE '%' || $2 || '%' OR ws.name ILIKE '%' || $2 || '%' OR wi.payload::text ILIKE '%' || $2 || '%')
-			ORDER BY wi.created_at
-			LIMIT NULLIF($3, 0) OFFSET $4
-		`, definitionID, opts.Search, opts.Limit, opts.Offset)
+			  AND ($2 = '' OR wi.search_tsv @@ plainto_tsquery('simple', normalize_search_text($2)))`
+		for _, c := range filterClauses {
+			query += " AND " + c
+		}
+		query += " ORDER BY wi.created_at LIMIT NULLIF($3, 0) OFFSET $4"
+
+		instanceRows, err := tx.Query(ctx, query, args...)
 		if err != nil {
 			return fmt.Errorf("look up instances: %w", err)
 		}

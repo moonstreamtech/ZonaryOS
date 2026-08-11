@@ -188,6 +188,24 @@ export default async function NavShell({ me, activeFirmId, isOwner }: Props) {
                   {t("documentTemplates")}
                 </Link>
               )}
+              {isOwner && (
+                <Link
+                  href="/settings/api-keys"
+                  data-permission-public="true"
+                  className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
+                >
+                  {t("apiKeys")}
+                </Link>
+              )}
+              {isOwner && (
+                <Link
+                  href="/settings/webhooks"
+                  data-permission-public="true"
+                  className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
+                >
+                  {t("webhooks")}
+                </Link>
+              )}
               <Link
                 href="/settings/members"
                 data-permission-public="true"

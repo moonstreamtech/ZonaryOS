@@ -38,4 +38,9 @@ var (
 	// ErrInvalidPayment means RecordPayment was given a structurally
 	// invalid payment (non-positive amount, no paid_at).
 	ErrInvalidPayment = errors.New("invalid payment")
+
+	// ErrInvalidFilter means ListOptions.Filters referenced a field/op
+	// internal/queryfilter.BuildClause rejected against
+	// invoiceFilterFields - see ListInvoices' own doc comment.
+	ErrInvalidFilter = errors.New("invalid filter")
 )

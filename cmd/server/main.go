@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/moonstreamtech/ZonaryOS/internal/accounting"
+	"github.com/moonstreamtech/ZonaryOS/internal/apikey"
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
 	"github.com/moonstreamtech/ZonaryOS/internal/crm"
 	"github.com/moonstreamtech/ZonaryOS/internal/currency"
@@ -39,7 +40,9 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/platformadmin"
 	"github.com/moonstreamtech/ZonaryOS/internal/portability"
 	"github.com/moonstreamtech/ZonaryOS/internal/reports"
+	"github.com/moonstreamtech/ZonaryOS/internal/search"
 	"github.com/moonstreamtech/ZonaryOS/internal/telemetry"
+	"github.com/moonstreamtech/ZonaryOS/internal/webhook"
 	"github.com/moonstreamtech/ZonaryOS/internal/wizard"
 	"github.com/moonstreamtech/ZonaryOS/internal/workflow"
 )
@@ -79,6 +82,11 @@ func main() {
 		slog.Error("init oidc verifier", "err", err)
 		os.Exit(1)
 	}
+	// Wires API-key auth into every existing `identity.Middleware(verifier)`
+	// call site across every module's own RegisterRoutes, with zero
+	// changes to any of them - see identity.Verifier.Fallback's own doc
+	// comment for why the extension point lives here.
+	verifier.Fallback = &apikey.Fallback{Pool: pool}
 
 	broadcaster := permission.NewBroadcaster()
 
@@ -183,6 +191,9 @@ func main() {
 	portability.RegisterRoutes(mux, verifier, pool)
 	reports.RegisterRoutes(mux, verifier, pool)
 	documents.RegisterRoutes(mux, verifier, pool)
+	apikey.RegisterRoutes(mux, verifier, pool)
+	webhook.RegisterRoutes(mux, verifier, pool)
+	search.RegisterRoutes(mux, verifier, pool)
 	// platformAdminAllowlist is shared between internal/platformadmin's
 	// own routes and internal/currency's platform-admin-only
 	// POST /api/exchange-rates - one allowlist, the same "which real

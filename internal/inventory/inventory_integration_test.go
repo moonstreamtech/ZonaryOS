@@ -295,3 +295,64 @@ func TestAdjustStockTx_RejectsInsufficientStock(t *testing.T) {
 		t.Fatalf("expected only the initial increase's movement to exist, got %+v", movements)
 	}
 }
+
+// TestListProducts_SearchFindsByPartialName is Part 1's own required
+// test case: full-text search (migrations/0024's search_tsv) finds a
+// product by a partial (whole-word) name match.
+func TestListProducts_SearchFindsByPartialName(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+	firmID, ownerID := seedOwner(ctx, t, adminPool, appPool, "Firm Search", "inv-search-owner")
+
+	if _, err := inventory.CreateProduct(ctx, appPool, firmID, ownerID, inventory.CreateProductInput{SKU: "WM-1", Name: "Wireless Mouse", Description: "Ergonomic wireless mouse"}); err != nil {
+		t.Fatalf("CreateProduct: %v", err)
+	}
+	if _, err := inventory.CreateProduct(ctx, appPool, firmID, ownerID, inventory.CreateProductInput{SKU: "KB-1", Name: "Mechanical Keyboard"}); err != nil {
+		t.Fatalf("CreateProduct: %v", err)
+	}
+
+	products, err := inventory.ListProducts(ctx, appPool, firmID, ownerID, inventory.ListProductsOptions{Search: "Wireless"})
+	if err != nil {
+		t.Fatalf("ListProducts (search): %v", err)
+	}
+	if len(products) != 1 || products[0].Name != "Wireless Mouse" {
+		t.Fatalf("expected search 'Wireless' to match only the Wireless Mouse, got %+v", products)
+	}
+}
+
+// TestGetProduct_StockQuantityReflectsMovement is Part 3's own required
+// test case: the stock_quantity virtual field on GetProduct's response
+// reflects a real stock movement (not a stored/stale value).
+func TestGetProduct_StockQuantityReflectsMovement(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+	firmID, ownerID := seedOwner(ctx, t, adminPool, appPool, "Firm Stock Qty", "inv-stockqty-owner")
+
+	product, err := inventory.CreateProduct(ctx, appPool, firmID, ownerID, inventory.CreateProductInput{SKU: "SQ-1", Name: "Stock Qty Product"})
+	if err != nil {
+		t.Fatalf("CreateProduct: %v", err)
+	}
+
+	before, err := inventory.GetProduct(ctx, appPool, firmID, ownerID, product.ID)
+	if err != nil {
+		t.Fatalf("GetProduct (before): %v", err)
+	}
+	if before.StockQuantity == nil || *before.StockQuantity != "0" {
+		t.Fatalf("expected stock quantity 0 before any movement, got %v", before.StockQuantity)
+	}
+
+	err = zdb.WithFirmContext(ctx, appPool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		return inventory.AdjustStockTx(ctx, tx, firmID, product.ID, "", "15", "purchase", "test", nil)
+	})
+	if err != nil {
+		t.Fatalf("AdjustStockTx: %v", err)
+	}
+
+	after, err := inventory.GetProduct(ctx, appPool, firmID, ownerID, product.ID)
+	if err != nil {
+		t.Fatalf("GetProduct (after): %v", err)
+	}
+	if after.StockQuantity == nil || *after.StockQuantity != "15.0000" {
+		t.Fatalf("expected stock quantity 15.0000 after the movement, got %v", after.StockQuantity)
+	}
+}

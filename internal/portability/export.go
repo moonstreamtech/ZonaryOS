@@ -175,7 +175,7 @@ func ExportFirm(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.UUI
 		})
 	}
 
-	if doc.Customers, err = crm.ListCustomers(ctx, pool, firmID, userID); err != nil {
+	if doc.Customers, err = crm.ListCustomers(ctx, pool, firmID, userID, crm.ListCustomersOptions{}); err != nil {
 		return ExportDocument{}, err
 	}
 
