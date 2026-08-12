@@ -13,6 +13,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/moonstreamtech/ZonaryOS/internal/absence"
 	"github.com/moonstreamtech/ZonaryOS/internal/accounting"
 	"github.com/moonstreamtech/ZonaryOS/internal/apikey"
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
@@ -32,6 +33,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/localization"
 	"github.com/moonstreamtech/ZonaryOS/internal/logistics"
 	"github.com/moonstreamtech/ZonaryOS/internal/notification"
+	"github.com/moonstreamtech/ZonaryOS/internal/payroll"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/config"
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/db"
@@ -42,6 +44,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/reports"
 	"github.com/moonstreamtech/ZonaryOS/internal/search"
 	"github.com/moonstreamtech/ZonaryOS/internal/telemetry"
+	"github.com/moonstreamtech/ZonaryOS/internal/timetracking"
 	"github.com/moonstreamtech/ZonaryOS/internal/webhook"
 	"github.com/moonstreamtech/ZonaryOS/internal/wizard"
 	"github.com/moonstreamtech/ZonaryOS/internal/workflow"
@@ -184,6 +187,12 @@ func main() {
 	invite.RegisterRoutes(mux, verifier, pool)
 	accounting.RegisterRoutes(mux, verifier, pool)
 	hr.RegisterRoutes(mux, verifier, pool)
+	// internal/payroll + internal/timetracking + internal/absence (this
+	// batch): payroll foundation, time tracking, and HR depth
+	// (absences) - all built on internal/hr's people/contracts core.
+	payroll.RegisterRoutes(mux, verifier, pool)
+	timetracking.RegisterRoutes(mux, verifier, pool)
+	absence.RegisterRoutes(mux, verifier, pool)
 	inventory.RegisterRoutes(mux, verifier, pool)
 	logistics.RegisterRoutes(mux, verifier, pool)
 	crm.RegisterRoutes(mux, verifier, pool)
