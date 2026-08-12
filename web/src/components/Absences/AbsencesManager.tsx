@@ -171,7 +171,7 @@ export default function AbsencesManager({ firmId, absences, people, isOwner }: P
                 <div className="flex gap-2">
                   <button
                     type="button"
-                    data-permission="workflow.absence_approval.approve"
+                    data-permission-key="workflow.absence_approval.approve"
                     onClick={() => act(abs.id, "approve")}
                     disabled={actingOn === abs.id}
                     className="rounded-md border border-zinc-300 px-2 py-1 text-xs font-medium text-black hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-50 dark:hover:bg-zinc-900"
@@ -180,7 +180,7 @@ export default function AbsencesManager({ firmId, absences, people, isOwner }: P
                   </button>
                   <button
                     type="button"
-                    data-permission="workflow.absence_approval.reject"
+                    data-permission-key="workflow.absence_approval.reject"
                     onClick={() => act(abs.id, "reject")}
                     disabled={actingOn === abs.id}
                     className="rounded-md border border-zinc-300 px-2 py-1 text-xs font-medium text-black hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-50 dark:hover:bg-zinc-900"

@@ -9,6 +9,7 @@ import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { Link } from "@/i18n/navigation";
 import type { Customer } from "@/lib/crm";
+import EmptyState from "@/components/ui/EmptyState";
 
 type Props = {
   firmId: string;
@@ -36,6 +37,11 @@ export default function CustomersManager({ firmId, customers, isOwner }: Props) 
   const [address, setAddress] = useState("");
   const [createError, setCreateError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [filter, setFilter] = useState("");
+
+  const visibleCustomers = filter.trim()
+    ? customers.filter((c) => c.name.toLowerCase().includes(filter.trim().toLowerCase()))
+    : customers;
 
   async function submitCreate(e: FormEvent) {
     e.preventDefault();
@@ -146,13 +152,22 @@ export default function CustomersManager({ firmId, customers, isOwner }: Props) 
       )}
 
       {customers.length === 0 ? (
-        <p className="text-zinc-600 dark:text-zinc-400">{t("empty")}</p>
+        <EmptyState message={t("empty")} />
       ) : (
-        <div className="flex flex-col gap-2">
-          {customers.map((c) => (
+        <div className="flex flex-col gap-3">
+          <input
+            type="text"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder={t("filterPlaceholder")}
+            data-permission-public="true"
+            className="w-full max-w-xs rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm text-black dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
+          />
+          <div className="flex flex-col gap-2">
+          {visibleCustomers.map((c) => (
             <div
               key={c.id}
-              className="flex items-center justify-between gap-2 rounded-md border border-zinc-300 p-3 text-sm dark:border-zinc-700"
+              className="panel flex items-center justify-between gap-2 py-3 text-sm"
             >
               <div className="flex flex-col">
                 <span className="font-medium text-black dark:text-zinc-50">{c.name}</span>
@@ -174,6 +189,7 @@ export default function CustomersManager({ firmId, customers, isOwner }: Props) 
               </div>
             </div>
           ))}
+          </div>
         </div>
       )}
     </div>

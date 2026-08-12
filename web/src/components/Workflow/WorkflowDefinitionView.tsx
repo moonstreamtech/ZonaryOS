@@ -23,6 +23,7 @@ import WorkflowInstanceList from "./WorkflowInstanceList";
 import WorkflowHistory from "./WorkflowHistory";
 import RuleBuilder from "./RuleBuilder";
 import RuleList from "./RuleList";
+import ListPageHeader from "@/components/ui/ListPageHeader";
 
 // Page size for the instance list below - not user-configurable (no UI
 // for it), just the fixed page size pagination pages through.
@@ -60,6 +61,7 @@ export default async function WorkflowDefinitionView({
   q = "",
 }: Props) {
   const t = await getTranslations("Workflow");
+  const tNav = await getTranslations("Nav");
 
   const definition = await fetchDefinitionByKey(sessionToken, firmId, workflowKey);
   if (!definition) {
@@ -148,14 +150,21 @@ export default async function WorkflowDefinitionView({
   );
 
   return (
-    <main className="flex flex-1 flex-col items-center gap-10 bg-zinc-50 px-6 py-16 dark:bg-black">
+    <main className="flex flex-1 flex-col items-center gap-10 px-6 py-10">
       <div className="flex w-full max-w-2xl flex-col items-center gap-6">
         {/* definition.name is workflow_definitions.name from the
             backend - data, not UI copy, same convention as workflow
             state/action names elsewhere in this component tree. */}
-        <h1 className="text-3xl font-semibold tracking-tight text-black dark:text-zinc-50">
-          {definition.name}
-        </h1>
+        <div className="w-full">
+          <ListPageHeader
+            title={definition.name}
+            breadcrumb={[
+              { label: tNav("brand"), href: "/" },
+              { label: tNav("workflows"), href: "/workflows" },
+              { label: definition.name },
+            ]}
+          />
+        </div>
 
         <CreateInstanceForm
           firmId={firmId}

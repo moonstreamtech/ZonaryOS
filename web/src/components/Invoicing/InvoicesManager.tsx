@@ -10,6 +10,7 @@ import { useTranslations } from "next-intl";
 import { Link } from "@/i18n/navigation";
 import type { Invoice } from "@/lib/invoicing";
 import type { Customer } from "@/lib/crm";
+import EmptyState from "@/components/ui/EmptyState";
 
 type Props = {
   firmId: string;
@@ -45,6 +46,11 @@ export default function InvoicesManager({ firmId, invoices, customers, isOwner }
   const [unitPrice, setUnitPrice] = useState("");
   const [createError, setCreateError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [filter, setFilter] = useState("");
+
+  const visibleInvoices = filter.trim()
+    ? invoices.filter((inv) => inv.invoiceNumber.toLowerCase().includes(filter.trim().toLowerCase()))
+    : invoices;
 
   async function submitCreate(e: FormEvent) {
     e.preventDefault();
@@ -182,39 +188,54 @@ export default function InvoicesManager({ firmId, invoices, customers, isOwner }
       )}
 
       {invoices.length === 0 ? (
-        <p className="text-zinc-600 dark:text-zinc-400">{t("empty")}</p>
+        <EmptyState message={t("empty")} />
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full border-collapse text-left text-sm">
-            <thead>
-              <tr className="border-b border-zinc-300 text-zinc-600 dark:border-zinc-700 dark:text-zinc-400">
-                <th className="py-2 pr-4 font-medium">{t("columnNumber")}</th>
-                <th className="py-2 pr-4 font-medium">{t("columnStatus")}</th>
-                <th className="py-2 pr-4 font-medium">{t("columnTotal")}</th>
-                <th className="py-2 font-medium">{t("columnIssuedDate")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {invoices.map((inv) => (
-                <tr key={inv.id} className="border-b border-zinc-200 text-black dark:border-zinc-800 dark:text-zinc-50">
-                  <td className="py-2 pr-4 font-mono text-xs">
-                    <Link
-                      href={`/invoices/${inv.id}`}
-                      data-permission-public="true"
-                      className="underline-offset-4 hover:underline"
-                    >
-                      {inv.invoiceNumber}
-                    </Link>
-                  </td>
-                  <td className="py-2 pr-4">{t(`status.${inv.status}`)}</td>
-                  <td className="py-2 pr-4 font-mono">
-                    {inv.total} {inv.currency}
-                  </td>
-                  <td className="py-2">{inv.issuedDate}</td>
+        <div className="panel flex flex-col gap-3 p-0">
+          <div className="p-4 pb-0">
+            <input
+              type="text"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder={t("filterPlaceholder")}
+              data-permission-public="true"
+              className="w-full max-w-xs rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm text-black dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
+            />
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse text-left text-sm">
+              <thead>
+                <tr className="border-b border-zinc-300 text-zinc-600 dark:border-zinc-700 dark:text-zinc-400">
+                  <th className="py-2 pr-4 pl-4 font-medium">{t("columnNumber")}</th>
+                  <th className="py-2 pr-4 font-medium">{t("columnStatus")}</th>
+                  <th className="py-2 pr-4 font-medium">{t("columnTotal")}</th>
+                  <th className="py-2 pr-4 font-medium">{t("columnIssuedDate")}</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {visibleInvoices.map((inv) => (
+                  <tr
+                    key={inv.id}
+                    className="border-b border-zinc-200 text-black last:border-0 hover:bg-zinc-50 dark:border-zinc-800 dark:text-zinc-50 dark:hover:bg-zinc-950"
+                  >
+                    <td className="py-2 pr-4 pl-4 font-mono text-xs">
+                      <Link
+                        href={`/invoices/${inv.id}`}
+                        data-permission-public="true"
+                        className="underline-offset-4 hover:underline"
+                      >
+                        {inv.invoiceNumber}
+                      </Link>
+                    </td>
+                    <td className="py-2 pr-4">{t(`status.${inv.status}`)}</td>
+                    <td className="py-2 pr-4 font-mono">
+                      {inv.total} {inv.currency}
+                    </td>
+                    <td className="py-2 pr-4">{inv.issuedDate}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>

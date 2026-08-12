@@ -1,0 +1,123 @@
+/* Copyright (c) ZonaryOS. All rights reserved.
+ * Use of this source code is governed by the license found in the LICENSE
+ * file in the root of this repository (draft, pending legal review - see
+ * docs/OPEN_POINTS.md item 20).
+ *
+ * Design tokens formalizing the app's existing zinc/black/white palette
+ * (see the batch-level design brief) as real CSS custom properties, so
+ * the nav shell, dashboard, list-page pattern, and platform admin can
+ * reference named tokens (via Tailwind's `@theme inline` mapping, same
+ * mechanism globals.css already uses for --color-background/
+ * --color-foreground) instead of hardcoding `zinc-200` etc. This is not
+ * a new palette - every value below is the same zinc/black/white scale
+ * already used throughout the app, just named. Untouched pages keep
+ * their existing hardcoded Tailwind classes; this file does not change
+ * their rendering.
+ */
+
+:root {
+  /* Surfaces */
+  --color-surface: #ffffff;
+  --color-surface-sunken: #fafafa; /* zinc-50 */
+  --color-surface-raised: #ffffff;
+
+  /* Borders */
+  --color-border: #e4e4e7; /* zinc-200 */
+  --color-border-strong: #a1a1aa; /* zinc-400 */
+
+  /* Text */
+  --color-text: #000000;
+  --color-text-secondary: #52525b; /* zinc-600 */
+  --color-text-muted: #71717a; /* zinc-500 */
+
+  /* Semantic */
+  --color-positive: #16a34a; /* green-600 */
+  --color-negative: #dc2626; /* red-600 */
+
+  /* Platform-admin-only accent (deliberately NOT used anywhere in the
+   * firm-scoped app - see platform-admin/page.tsx's doc comment on why
+   * this section needs a visually unmistakable identity). */
+  --color-platform-accent: #1e1b4b; /* indigo-950 */
+  --color-platform-accent-strong: #312e81; /* indigo-900 */
+  --color-platform-on-accent: #eef2ff; /* indigo-50 */
+
+  /* Spacing scale */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+
+  /* Radius */
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+
+  /* Shadow (cards) */
+  --shadow-card: 0 1px 2px 0 rgb(0 0 0 / 0.04);
+  --shadow-card-hover: 0 2px 8px 0 rgb(0 0 0 / 0.06);
+
+  /* Typography scale (named after the existing conventions this app
+   * already uses: page title, section label, body). */
+  --text-page-title: 1.875rem; /* text-3xl */
+  --text-section-label: 0.875rem; /* text-sm */
+  --text-body: 0.875rem; /* text-sm */
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-surface: #000000;
+    --color-surface-sunken: #000000;
+    --color-surface-raised: #09090b; /* zinc-950 */
+
+    --color-border: #27272a; /* zinc-800 */
+    --color-border-strong: #52525b; /* zinc-600 */
+
+    --color-text: #fafafa; /* zinc-50 */
+    --color-text-secondary: #a1a1aa; /* zinc-400 */
+    --color-text-muted: #a1a1aa; /* zinc-400 */
+
+    --color-platform-accent: #0b0a1f;
+    --color-platform-accent-strong: #1e1b4b;
+    --color-platform-on-accent: #eef2ff;
+
+    --shadow-card: 0 1px 2px 0 rgb(0 0 0 / 0.4);
+    --shadow-card-hover: 0 2px 10px 0 rgb(0 0 0 / 0.5);
+  }
+}
+
+@theme inline {
+  --color-surface: var(--color-surface);
+  --color-surface-sunken: var(--color-surface-sunken);
+  --color-surface-raised: var(--color-surface-raised);
+  --color-border: var(--color-border);
+  --color-border-strong: var(--color-border-strong);
+  --color-text: var(--color-text);
+  --color-text-secondary: var(--color-text-secondary);
+  --color-text-muted: var(--color-text-muted);
+  --color-platform-accent: var(--color-platform-accent);
+  --color-platform-accent-strong: var(--color-platform-accent-strong);
+  --color-platform-on-accent: var(--color-platform-on-accent);
+}
+
+/* Canonical card/panel surface - the one shared "panel" style item 1 of
+ * this batch calls for. Components can either apply this class directly
+ * or compose it via components/ui/Panel.tsx, which just forwards this
+ * class name plus children. */
+.panel {
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-card);
+  padding: var(--space-5);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+a.panel:hover,
+button.panel:hover,
+.panel--interactive:hover {
+  border-color: var(--color-border-strong);
+  box-shadow: var(--shadow-card-hover);
+}

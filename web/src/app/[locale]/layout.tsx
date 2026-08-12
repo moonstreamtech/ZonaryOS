@@ -13,6 +13,8 @@ import { routing } from "@/i18n/routing";
 import { fetchMe, fetchRoleInFirm, type MeResponse } from "@/lib/me";
 import { resolveActiveFirm } from "@/lib/activeFirm";
 import NavShell from "@/components/Nav/NavShell";
+import GlobalSearchBox from "@/components/Nav/GlobalSearchBox";
+import NotificationBell from "@/components/Nav/NotificationBell";
 import TelemetryClient from "@/components/Telemetry/TelemetryClient";
 import "./globals.css";
 
@@ -83,13 +85,29 @@ export default async function RootLayout({ children, params }: LayoutProps) {
       lang={locale}
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">
+      <body className="min-h-full flex flex-col bg-zinc-50 dark:bg-black">
         <NextIntlClientProvider>
           {/* Renders nothing - see that component's own doc comment for
               its default-off guarantee (NEXT_PUBLIC_ZONARYOS_TELEMETRY_ENABLED). */}
           <TelemetryClient />
-          <NavShell me={me} activeFirmId={firmId} isOwner={isOwner} />
-          {children}
+          <div className="flex min-h-full flex-1">
+            <NavShell me={me} activeFirmId={firmId} isOwner={isOwner} />
+            <div className="flex min-h-full flex-1 flex-col">
+              {/* Sidebar restructure (this batch) moved GlobalSearchBox
+                  and NotificationBell out of the old top header into
+                  this slim bar, which now runs above the page content
+                  instead of beside the nav - see NavShell.tsx's doc
+                  comment. Only rendered once there's an active firm,
+                  same gate the old header used for both. */}
+              {firmId && (
+                <div className="flex items-center justify-end gap-3 border-b border-zinc-200 bg-white px-4 py-2 dark:border-zinc-800 dark:bg-black">
+                  <GlobalSearchBox />
+                  <NotificationBell firmId={firmId} />
+                </div>
+              )}
+              <div className="flex flex-1 flex-col">{children}</div>
+            </div>
+          </div>
         </NextIntlClientProvider>
       </body>
     </html>

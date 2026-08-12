@@ -8,6 +8,7 @@ import { requireFirmContext } from "@/lib/firmContext";
 import { fetchRoleInFirm } from "@/lib/me";
 import { fetchProducts, fetchStock, fetchStockMovements } from "@/lib/inventory";
 import InventoryManager from "@/components/Inventory/InventoryManager";
+import ListPageHeader from "@/components/ui/ListPageHeader";
 
 type PageProps = {
   params: Promise<{ locale: string }>;
@@ -24,6 +25,7 @@ export default async function InventoryPage({ params }: PageProps) {
   const { locale } = await params;
   setRequestLocale(locale);
   const t = await getTranslations("Inventory");
+  const tNav = await getTranslations("Nav");
 
   const { sessionToken, firm } = await requireFirmContext(locale);
   const role = await fetchRoleInFirm(sessionToken, firm.firmId);
@@ -48,11 +50,12 @@ export default async function InventoryPage({ params }: PageProps) {
   const movementsResult = await fetchStockMovements(sessionToken, firm.firmId, { limit: 50 });
 
   return (
-    <main className="flex flex-1 flex-col items-center gap-10 bg-zinc-50 px-6 py-16 dark:bg-black">
-      <div className="flex w-full max-w-4xl flex-col items-center gap-2">
-        <h1 className="text-3xl font-semibold tracking-tight text-black dark:text-zinc-50">
-          {t("title")}
-        </h1>
+    <main className="flex flex-1 flex-col items-center gap-10 px-6 py-10">
+      <div className="w-full max-w-4xl">
+        <ListPageHeader
+          title={t("title")}
+          breadcrumb={[{ label: tNav("brand"), href: "/" }, { label: t("title") }]}
+        />
       </div>
 
       {productsWithStock === null ? (

@@ -7,8 +7,7 @@ import { getTranslations } from "next-intl/server";
 import { Link } from "@/i18n/navigation";
 import type { MeResponse } from "@/lib/me";
 import FirmSwitcher from "./FirmSwitcher";
-import GlobalSearchBox from "./GlobalSearchBox";
-import NotificationBell from "./NotificationBell";
+import NavLinks from "./NavLinks";
 import AuditModeClient from "@/components/AuditMode/AuditModeClient";
 
 type Props = {
@@ -17,18 +16,30 @@ type Props = {
   isOwner: boolean;
 };
 
-// Persistent navigation shell, mounted once in the root layout so it's
-// present on every authenticated page (item 5) - replacing the prior
-// single-link-on-homepage pattern (see app/[locale]/page.tsx's old
-// "goToStock" link) with a real header: brand, firm switcher, section
-// links, and Logout. Renders nothing for a signed-out visitor - the
-// homepage still owns its own sign-in call to action.
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase();
+  return (parts[0]![0]! + parts[parts.length - 1]![0]!).toUpperCase();
+}
+
+// Persistent left sidebar nav (restructured this batch from the prior
+// flat top `<header>` - see NavLinks.tsx for the grouped link list,
+// unchanged from the old header link-for-link). Mounted once in the root
+// layout so it's present on every authenticated page (item 5). Renders
+// nothing for a signed-out visitor - the homepage still owns its own
+// sign-in call to action.
 //
 // The Audit Mode toggle (components/AuditMode/AuditModeClient.tsx) is
-// rendered from here rather than directly in the root layout - it was
-// the layout's only other piece of authenticated-session UI, floating
-// unanchored to any structure; this shell is now the one place that owns
-// "chrome shown on every authenticated page."
+// rendered from here rather than directly in the root layout, same
+// reasoning as before this restructure: this shell is the one place that
+// owns "chrome shown on every authenticated page."
+//
+// GlobalSearchBox and NotificationBell moved out of this component with
+// the sidebar restructure - they're mounted in the root layout's slim
+// top bar now (see app/[locale]/layout.tsx), since a search box and a
+// notification bell don't fit a narrow vertical rail the way a list of
+// section links does.
 export default async function NavShell({ me, activeFirmId, isOwner }: Props) {
   const t = await getTranslations("Nav");
 
@@ -36,246 +47,64 @@ export default async function NavShell({ me, activeFirmId, isOwner }: Props) {
     return <AuditModeClient firmId={activeFirmId} isOwner={isOwner} />;
   }
 
+  const displayName = me.displayName || me.email;
+
   return (
     <>
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 bg-white px-6 py-3 dark:border-zinc-800 dark:bg-black">
-        <div className="flex flex-wrap items-center gap-4">
-          <Link
-            href="/"
-            data-permission-public="true"
-            className="text-sm font-semibold tracking-tight text-black dark:text-zinc-50"
-          >
-            {t("brand")}
-          </Link>
-
-          {activeFirmId && (
-            <FirmSwitcher firms={me.firms} activeFirmId={activeFirmId} />
-          )}
-
-          {activeFirmId && (
-            <nav className="flex items-center gap-3 text-sm">
-              <Link
-                href="/stock"
-                data-permission-public="true"
-                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
-              >
-                {t("stock")}
-              </Link>
-              <Link
-                href="/workflows"
-                data-permission-public="true"
-                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
-              >
-                {t("workflows")}
-              </Link>
-              <Link
-                href="/settings"
-                data-permission-public="true"
-                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
-              >
-                {t("settings")}
-              </Link>
-              <Link
-                href="/financials"
-                data-permission-public="true"
-                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
-              >
-                {t("financials")}
-              </Link>
-              <Link
-                href="/hr"
-                data-permission-public="true"
-                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
-              >
-                {t("hr")}
-              </Link>
-              <Link
-                href="/hr/payroll"
-                data-permission-public="true"
-                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
-              >
-                {t("payroll")}
-              </Link>
-              <Link
-                href="/hr/time"
-                data-permission-public="true"
-                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
-              >
-                {t("timeTracking")}
-              </Link>
-              <Link
-                href="/hr/absences"
-                data-permission-public="true"
-                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
-              >
-                {t("absences")}
-              </Link>
-              <Link
-                href="/tasks"
-                data-permission-public="true"
-                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
-              >
-                {t("tasks")}
-              </Link>
-              <Link
-                href="/reports"
-                data-permission-public="true"
-                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
-              >
-                {t("reports")}
-              </Link>
-              <Link
-                href="/inventory"
-                data-permission-public="true"
-                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
-              >
-                {t("inventory")}
-              </Link>
-              <Link
-                href="/suppliers"
-                data-permission-public="true"
-                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
-              >
-                {t("suppliers")}
-              </Link>
-              <Link
-                href="/logistics"
-                data-permission-public="true"
-                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
-              >
-                {t("logistics")}
-              </Link>
-              <Link
-                href="/customers"
-                data-permission-public="true"
-                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
-              >
-                {t("customers")}
-              </Link>
-              <Link
-                href="/invoices"
-                data-permission-public="true"
-                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
-              >
-                {t("invoices")}
-              </Link>
-              <Link
-                href="/edge-agents"
-                data-permission-public="true"
-                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
-              >
-                {t("edgeAgents")}
-              </Link>
-              <Link
-                href="/approvals"
-                data-permission-public="true"
-                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
-              >
-                {t("approvals")}
-              </Link>
-              {isOwner && (
-                <Link
-                  href="/settings/accounts"
-                  data-permission-public="true"
-                  className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
-                >
-                  {t("accounts")}
-                </Link>
-              )}
-              {isOwner && (
-                <Link
-                  href="/settings/addresses"
-                  data-permission-public="true"
-                  className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
-                >
-                  {t("addresses")}
-                </Link>
-              )}
-              {isOwner && (
-                <Link
-                  href="/settings/tax-rates"
-                  data-permission-public="true"
-                  className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
-                >
-                  {t("taxRates")}
-                </Link>
-              )}
-              {isOwner && (
-                <Link
-                  href="/settings/document-templates"
-                  data-permission-public="true"
-                  className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
-                >
-                  {t("documentTemplates")}
-                </Link>
-              )}
-              {isOwner && (
-                <Link
-                  href="/settings/api-keys"
-                  data-permission-public="true"
-                  className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
-                >
-                  {t("apiKeys")}
-                </Link>
-              )}
-              {isOwner && (
-                <Link
-                  href="/settings/webhooks"
-                  data-permission-public="true"
-                  className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
-                >
-                  {t("webhooks")}
-                </Link>
-              )}
-              <Link
-                href="/settings/members"
-                data-permission-public="true"
-                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
-              >
-                {t("members")}
-              </Link>
-              {isOwner && (
-                <Link
-                  href="/audit-log"
-                  data-permission-public="true"
-                  className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
-                >
-                  {t("auditLog")}
-                </Link>
-              )}
-              {isOwner && (
-                <Link
-                  href="/settings/permissions"
-                  data-permission-public="true"
-                  className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
-                >
-                  {t("permissions")}
-                </Link>
-              )}
-            </nav>
-          )}
-        </div>
-
-        {/* Item 3's firm-wide search entry point - mounted here so it's
-            reachable from every authenticated page, not just /search
-            itself (see components/Nav/GlobalSearchBox.tsx). */}
-        {activeFirmId && <GlobalSearchBox />}
-
-        {/* Notification inbox bell (this batch, Open Points item 41's
-            notification/approval system) - mounted here so the unread
-            badge is visible from every authenticated page, not just
-            /approvals itself. */}
-        {activeFirmId && <NotificationBell firmId={activeFirmId} />}
-
-        {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- /api/auth/logout is a route handler, not a page: it must be a real navigation, not client-side routing */}
-        <a
-          href="/api/auth/logout"
+      <aside className="flex w-14 shrink-0 flex-col border-r border-zinc-200 bg-white lg:w-60 dark:border-zinc-800 dark:bg-black">
+        <Link
+          href="/"
           data-permission-public="true"
-          className="text-sm font-medium text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
+          className="flex items-center gap-2 border-b border-zinc-200 px-3 py-4 text-sm font-semibold tracking-tight text-black dark:border-zinc-800 dark:text-zinc-50"
         >
-          {t("logout")}
-        </a>
-      </header>
+          <span
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-black text-xs font-bold text-white dark:bg-zinc-50 dark:text-black"
+            aria-hidden="true"
+          >
+            Z
+          </span>
+          <span className="hidden truncate lg:inline">{t("brand")}</span>
+        </Link>
+
+        {activeFirmId && (
+          <>
+            <div className="flex-1 overflow-y-auto">
+              <NavLinks isOwner={isOwner} />
+            </div>
+
+            <div className="flex flex-col gap-2 border-t border-zinc-200 px-2 py-3 dark:border-zinc-800">
+              <div className="px-1">
+                <FirmSwitcher firms={me.firms} activeFirmId={activeFirmId} />
+              </div>
+
+              <div className="flex items-center gap-2 px-1">
+                <span
+                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-zinc-200 text-xs font-semibold text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"
+                  aria-hidden="true"
+                  title={displayName}
+                >
+                  {initials(displayName)}
+                </span>
+                <span className="hidden truncate text-xs text-zinc-600 lg:inline dark:text-zinc-400">
+                  {displayName}
+                </span>
+              </div>
+
+              {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- /api/auth/logout is a route handler, not a page: it must be a real navigation, not client-side routing */}
+              <a
+                href="/api/auth/logout"
+                data-permission-public="true"
+                className="rounded-md px-3 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-50 dark:text-zinc-300 dark:hover:bg-zinc-950"
+              >
+                <span className="lg:hidden" aria-hidden="true">
+                  ⏻
+                </span>
+                <span className="hidden lg:inline">{t("logout")}</span>
+              </a>
+            </div>
+          </>
+        )}
+      </aside>
 
       <AuditModeClient firmId={activeFirmId} isOwner={isOwner} />
     </>

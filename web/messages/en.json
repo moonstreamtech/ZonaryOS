@@ -40,7 +40,12 @@
     "edgeAgents": "Edge Agents",
     "approvals": "Approvals",
     "logout": "Log out",
-    "firmSwitcherLabel": "Active firm"
+    "firmSwitcherLabel": "Active firm",
+    "groupOperations": "Operations",
+    "groupFinance": "Finance",
+    "groupHr": "HR",
+    "groupSettings": "Settings",
+    "groupAdministration": "Administration"
   },
   "Dashboard": {
     "welcome": "Welcome back, {name}.",
@@ -59,7 +64,10 @@
     "quickCreateButton": "+ Quick create",
     "quickCreateClose": "Close",
     "quickCreateSelectLabel": "Workflow",
-    "quickCreateEmpty": "No workflows available to create from yet."
+    "quickCreateEmpty": "No workflows available to create from yet.",
+    "summaryTitle": "Summary",
+    "recentActivityTitle": "Recent Activity",
+    "recentActivityEmpty": "No recent activity yet."
   },
   "Wizard": {
     "title": "Set up your firm",
@@ -873,7 +881,8 @@
     "columnName": "Firm name",
     "columnCreatedAt": "Created",
     "columnWorkflowDefinitionCount": "Workflow definitions",
-    "columnMemberCount": "Members"
+    "columnMemberCount": "Members",
+    "badge": "Platform Admin"
   },
   "Inventory": {
     "title": "Inventory",
@@ -905,7 +914,8 @@
     "movementReasonPurchase": "Purchase",
     "quantityColumn": "Quantity",
     "locationColumn": "Location",
-    "reasonColumn": "Reason"
+    "reasonColumn": "Reason",
+    "filterPlaceholder": "Filter by SKU or name"
   },
   "Suppliers": {
     "title": "Suppliers",
@@ -1023,7 +1033,8 @@
     "phone": "Phone",
     "address": "Address",
     "fromPipeline": "From Customer Pipeline",
-    "viewDetail": "View"
+    "viewDetail": "View",
+    "filterPlaceholder": "Filter by name"
   },
   "CustomerDetail": {
     "loadError": "Couldn't load this data. Please try again.",
@@ -1079,6 +1090,7 @@
       "paid": "Paid",
       "overdue": "Overdue",
       "cancelled": "Cancelled"
-    }
+    },
+    "filterPlaceholder": "Filter by invoice number"
   }
 }

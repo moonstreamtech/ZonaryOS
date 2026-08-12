@@ -40,7 +40,12 @@
     "tasks": "Görevler",
     "reports": "Raporlar",
     "logout": "Çıkış yap",
-    "firmSwitcherLabel": "Aktif firma"
+    "firmSwitcherLabel": "Aktif firma",
+    "groupOperations": "Operasyonlar",
+    "groupFinance": "Finans",
+    "groupHr": "İnsan Kaynakları",
+    "groupSettings": "Ayarlar",
+    "groupAdministration": "Yönetim"
   },
   "Dashboard": {
     "welcome": "Tekrar hoş geldiniz, {name}.",
@@ -59,7 +64,10 @@
     "quickCreateButton": "+ Hızlı oluştur",
     "quickCreateClose": "Kapat",
     "quickCreateSelectLabel": "İş akışı",
-    "quickCreateEmpty": "Henüz oluşturmak için kullanılabilir bir iş akışı yok."
+    "quickCreateEmpty": "Henüz oluşturmak için kullanılabilir bir iş akışı yok.",
+    "summaryTitle": "Özet",
+    "recentActivityTitle": "Son Etkinlik",
+    "recentActivityEmpty": "Henüz etkinlik yok."
   },
   "Wizard": {
     "title": "Firmanızı oluşturun",
@@ -873,7 +881,8 @@
     "columnName": "Firma adı",
     "columnCreatedAt": "Oluşturulma",
     "columnWorkflowDefinitionCount": "İş akışı tanımları",
-    "columnMemberCount": "Üyeler"
+    "columnMemberCount": "Üyeler",
+    "badge": "Platform Yöneticisi"
   },
   "Inventory": {
     "title": "Envanter",
@@ -905,7 +914,8 @@
     "movementReasonPurchase": "Satın alma",
     "quantityColumn": "Miktar",
     "locationColumn": "Konum",
-    "reasonColumn": "Neden"
+    "reasonColumn": "Neden",
+    "filterPlaceholder": "SKU veya isme göre filtrele"
   },
   "Suppliers": {
     "title": "Tedarikçiler",
@@ -1023,7 +1033,8 @@
     "phone": "Telefon",
     "address": "Adres",
     "fromPipeline": "Müşteri Hattından",
-    "viewDetail": "Görüntüle"
+    "viewDetail": "Görüntüle",
+    "filterPlaceholder": "İsme göre filtrele"
   },
   "CustomerDetail": {
     "loadError": "Bu veri yüklenemedi. Lütfen tekrar deneyin.",
@@ -1079,6 +1090,7 @@
       "paid": "Ödendi",
       "overdue": "Gecikmiş",
       "cancelled": "İptal edildi"
-    }
+    },
+    "filterPlaceholder": "Fatura numarasına göre filtrele"
   }
 }
