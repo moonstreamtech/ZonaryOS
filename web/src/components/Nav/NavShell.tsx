@@ -90,6 +90,27 @@ export default async function NavShell({ me, activeFirmId, isOwner }: Props) {
                 {t("hr")}
               </Link>
               <Link
+                href="/hr/payroll"
+                data-permission-public="true"
+                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
+              >
+                {t("payroll")}
+              </Link>
+              <Link
+                href="/hr/time"
+                data-permission-public="true"
+                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
+              >
+                {t("timeTracking")}
+              </Link>
+              <Link
+                href="/hr/absences"
+                data-permission-public="true"
+                className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
+              >
+                {t("absences")}
+              </Link>
+              <Link
                 href="/tasks"
                 data-permission-public="true"
                 className="text-zinc-700 underline-offset-4 hover:underline dark:text-zinc-300"
