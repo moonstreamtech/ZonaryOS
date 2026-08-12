@@ -28,7 +28,7 @@ export default function FirmSwitcher({ firms, activeFirmId }: Props) {
 
   if (firms.length <= 1) {
     return (
-      <span className="text-sm font-medium text-black dark:text-zinc-50">
+      <span className="text-sm font-medium text-[var(--color-sidebar-fg)]">
         {firms[0]?.firmName}
       </span>
     );
@@ -60,7 +60,7 @@ export default function FirmSwitcher({ firms, activeFirmId }: Props) {
         value={activeFirmId}
         disabled={pending}
         onChange={(e) => switchFirm(e.target.value)}
-        className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm text-black disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-white"
+        className="w-full rounded-md border border-[var(--color-sidebar-hover)] bg-[var(--color-sidebar-hover)] px-2 py-1 text-sm text-[var(--color-sidebar-fg)] disabled:opacity-50"
       >
         {firms.map((firm) => (
           <option key={firm.firmId} value={firm.firmId}>

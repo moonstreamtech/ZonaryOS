@@ -45,7 +45,10 @@
     "groupFinance": "Finance",
     "groupHr": "HR",
     "groupSettings": "Settings",
-    "groupAdministration": "Administration"
+    "groupAdministration": "Administration",
+    "dashboard": "Dashboard",
+    "searchLabel": "Search",
+    "bottomNavLabel": "Primary"
   },
   "Dashboard": {
     "welcome": "Welcome back, {name}.",

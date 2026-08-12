@@ -13,8 +13,6 @@ import { routing } from "@/i18n/routing";
 import { fetchMe, fetchRoleInFirm, type MeResponse } from "@/lib/me";
 import { resolveActiveFirm } from "@/lib/activeFirm";
 import NavShell from "@/components/Nav/NavShell";
-import GlobalSearchBox from "@/components/Nav/GlobalSearchBox";
-import NotificationBell from "@/components/Nav/NotificationBell";
 import TelemetryClient from "@/components/Telemetry/TelemetryClient";
 import "./globals.css";
 
@@ -93,19 +91,16 @@ export default async function RootLayout({ children, params }: LayoutProps) {
           <div className="flex min-h-full flex-1">
             <NavShell me={me} activeFirmId={firmId} isOwner={isOwner} />
             <div className="flex min-h-full flex-1 flex-col">
-              {/* Sidebar restructure (this batch) moved GlobalSearchBox
-                  and NotificationBell out of the old top header into
-                  this slim bar, which now runs above the page content
-                  instead of beside the nav - see NavShell.tsx's doc
-                  comment. Only rendered once there's an active firm,
-                  same gate the old header used for both. */}
-              {firmId && (
-                <div className="flex items-center justify-end gap-3 border-b border-zinc-200 bg-white px-4 py-2 dark:border-zinc-800 dark:bg-black">
-                  <GlobalSearchBox />
-                  <NotificationBell firmId={firmId} />
-                </div>
-              )}
-              <div className="flex flex-1 flex-col">{children}</div>
+              {/* Mobile-nav rework (this batch): the old slim top bar
+                  (GlobalSearchBox + NotificationBell above the page
+                  content) is gone - both now live in NavShell's sidebar
+                  bottom section instead, so mobile page content starts at
+                  the very top with nothing above it. `pb-16` reserves
+                  room below `lg` for MobileBottomNav's fixed bar (also
+                  mounted from NavShell) so it doesn't cover the last bit
+                  of content; `lg:pb-0` drops that padding once the bottom
+                  bar itself is hidden. */}
+              <div className="flex flex-1 flex-col pb-16 lg:pb-0">{children}</div>
             </div>
           </div>
         </NextIntlClientProvider>

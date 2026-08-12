@@ -34,10 +34,20 @@ async function fetchBackendStatus(): Promise<boolean> {
 // historical trend line: there's no time-series data to diff against, so
 // this is scoped honestly to "does this workflow currently have any
 // instances at all" per the batch brief (item 3), nothing more.
-function TrendGlyph({ up }: { up: boolean }) {
+//
+// `tone` (added this batch): the KPI cards below now have a dark header
+// strip (zinc-900) with the light content area's cards elsewhere still
+// light, so this glyph needs a colorway that reads on both - "light" for
+// the dark strip's white-on-dark number row, "default" (the original
+// zinc-400/green-500 pairing) for everywhere else.
+function TrendGlyph({ up, tone = "default" }: { up: boolean; tone?: "default" | "light" }) {
   if (up) {
     return (
-      <svg viewBox="0 0 16 16" className="h-4 w-4 text-green-600 dark:text-green-500" aria-hidden="true">
+      <svg
+        viewBox="0 0 16 16"
+        className={tone === "light" ? "h-4 w-4 text-green-400" : "h-4 w-4 text-green-600 dark:text-green-500"}
+        aria-hidden="true"
+      >
         <path
           d="M2 13 L7 8 L10 11 L14 4"
           fill="none"
@@ -51,15 +61,23 @@ function TrendGlyph({ up }: { up: boolean }) {
     );
   }
   return (
-    <svg viewBox="0 0 16 16" className="h-4 w-4 text-zinc-400 dark:text-zinc-500" aria-hidden="true">
+    <svg
+      viewBox="0 0 16 16"
+      className={tone === "light" ? "h-4 w-4 text-zinc-500" : "h-4 w-4 text-zinc-400 dark:text-zinc-500"}
+      aria-hidden="true"
+    >
       <path d="M2 8 H14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
     </svg>
   );
 }
 
-function WorkflowIcon() {
+function WorkflowIcon({ tone = "default" }: { tone?: "default" | "light" }) {
   return (
-    <svg viewBox="0 0 20 20" className="h-5 w-5 text-zinc-500 dark:text-zinc-400" aria-hidden="true">
+    <svg
+      viewBox="0 0 20 20"
+      className={tone === "light" ? "h-5 w-5 text-zinc-400" : "h-5 w-5 text-zinc-500 dark:text-zinc-400"}
+      aria-hidden="true"
+    >
       <rect x="2" y="3" width="6" height="6" rx="1" fill="none" stroke="currentColor" strokeWidth="1.4" />
       <rect x="12" y="11" width="6" height="6" rx="1" fill="none" stroke="currentColor" strokeWidth="1.4" />
       <path d="M8 6 H12 V11" fill="none" stroke="currentColor" strokeWidth="1.4" />
@@ -69,7 +87,7 @@ function WorkflowIcon() {
 
 function AuditIcon() {
   return (
-    <svg viewBox="0 0 20 20" className="h-5 w-5 text-zinc-500 dark:text-zinc-400" aria-hidden="true">
+    <svg viewBox="0 0 20 20" className="h-5 w-5 text-zinc-400" aria-hidden="true">
       <path d="M4 3 H14 L16 5 V17 H4 Z" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
       <path d="M7 8 H13 M7 11 H13 M7 14 H10" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
     </svg>
@@ -184,12 +202,19 @@ export default async function Home({ params }: PageProps) {
   return (
     <main className="flex flex-1 flex-col items-center gap-10 px-6 py-10">
       <div className="flex w-full max-w-5xl flex-col gap-1">
-        <h1 className="text-3xl font-semibold tracking-tight text-black dark:text-zinc-50">
-          {firm.firmName}
-        </h1>
-        <p className="text-zinc-600 dark:text-zinc-400">
+        {/* Dashboard typography (this batch): the greeting is now the
+            small, muted line and the firm name is the big, bold,
+            wordmark-like one - inverted from the prior batch's plain
+            <h1>. tDash("welcome") itself is unchanged (still the single,
+            non-time-of-day-aware string) - only its size/weight moved,
+            per the task brief's explicit "restyle it smaller/muted, that
+            alone satisfies the visual intent" fallback. */}
+        <p className="text-sm text-zinc-500 dark:text-zinc-500">
           {tDash("welcome", { name: me.displayName || me.email })}
         </p>
+        <h1 className="text-4xl font-bold tracking-tight text-black dark:text-zinc-50">
+          {firm.firmName}
+        </h1>
         <p className="text-sm text-zinc-500 dark:text-zinc-500">
           {tDash("roleLabel")}: {role?.roleName ?? tDash("roleUnavailable")}
         </p>
@@ -225,28 +250,42 @@ export default async function Home({ params }: PageProps) {
             {counts.map((definitionCounts) => {
               const primaryCount = definitionCounts.counts.reduce((sum, c) => sum + c.count, 0);
               return (
+                /* KPI card restyle (this batch): a darker zinc-900 header
+                   strip carrying the icon/trend row + the big white
+                   number, with the label + state breakdown in a lighter
+                   panel below - per the design brief's "dark card header
+                   strip, white number on dark, description below in
+                   gray". `!p-0` overrides .panel's own padding (see
+                   tokens.css) so the header strip can bleed edge-to-edge;
+                   `overflow-hidden` keeps it inside the card's rounded
+                   corners. */
                 <Link
                   key={definitionCounts.definitionId}
                   href={`/workflows/${definitionCounts.key}`}
                   data-permission-public="true"
-                  className="panel panel--interactive flex flex-col gap-2"
+                  className="panel panel--interactive flex flex-col overflow-hidden !p-0"
                 >
-                  <div className="flex items-center justify-between">
-                    <WorkflowIcon />
-                    <TrendGlyph up={primaryCount > 0} />
+                  <div className="flex flex-col gap-2 bg-zinc-900 px-5 py-4">
+                    <div className="flex items-center justify-between">
+                      <WorkflowIcon tone="light" />
+                      <TrendGlyph up={primaryCount > 0} tone="light" />
+                    </div>
+                    <p className="text-2xl font-bold text-white">{primaryCount}</p>
                   </div>
-                  {/* definitionCounts.name/stateName are workflow_definitions
-                      /workflow_states.name from the backend - data, not UI
-                      copy, same convention as elsewhere in this component
-                      tree. */}
-                  <h3 className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
-                    {definitionCounts.name}
-                  </h3>
-                  <p className="text-lg font-semibold text-black dark:text-zinc-50">
-                    {definitionCounts.counts
-                      .map((c) => `${c.count} ${c.stateName}`)
-                      .join(", ")}
-                  </p>
+                  <div className="flex flex-col gap-1 px-5 py-3">
+                    {/* definitionCounts.name/stateName are workflow_definitions
+                        /workflow_states.name from the backend - data, not UI
+                        copy, same convention as elsewhere in this component
+                        tree. */}
+                    <h3 className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
+                      {definitionCounts.name}
+                    </h3>
+                    <p className="text-xs text-zinc-500 dark:text-zinc-500">
+                      {definitionCounts.counts
+                        .map((c) => `${c.count} ${c.stateName}`)
+                        .join(", ")}
+                    </p>
+                  </div>
                 </Link>
               );
             })}
@@ -266,42 +305,50 @@ export default async function Home({ params }: PageProps) {
           <div className="h-px flex-1 bg-zinc-200 dark:bg-zinc-800" />
         </div>
         <div className="grid w-full gap-4 sm:grid-cols-2">
-          <div className="panel flex flex-col gap-2">
-            <div className="flex items-center justify-between">
-              <WorkflowIcon />
-              <TrendGlyph up={(definitions?.length ?? 0) > 0} />
-            </div>
-            <h3 className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
-              {tDash("workflowCountLabel")}
-            </h3>
-            <p className="text-2xl font-semibold text-black dark:text-zinc-50">
-              {definitions === null ? tDash("itemCountUnavailable") : definitions.length}
-            </p>
-            <Link
-              href="/workflows"
-              data-permission-public="true"
-              className="text-sm font-medium text-zinc-950 underline dark:text-zinc-50"
-            >
-              {tDash("goToWorkflows")}
-            </Link>
-          </div>
-
-          {isOwner && (
-            <div className="panel flex flex-col gap-2">
-              <AuditIcon />
-              <h3 className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
-                {tDash("auditLogCardTitle")}
-              </h3>
-              <p className="text-sm text-zinc-600 dark:text-zinc-400">
-                {tDash("auditLogCardBody")}
+          <div className="panel flex flex-col overflow-hidden !p-0">
+            <div className="flex flex-col gap-2 bg-zinc-900 px-5 py-4">
+              <div className="flex items-center justify-between">
+                <WorkflowIcon tone="light" />
+                <TrendGlyph up={(definitions?.length ?? 0) > 0} tone="light" />
+              </div>
+              <p className="text-2xl font-bold text-white">
+                {definitions === null ? tDash("itemCountUnavailable") : definitions.length}
               </p>
+            </div>
+            <div className="flex flex-col gap-1 px-5 py-3">
+              <h3 className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
+                {tDash("workflowCountLabel")}
+              </h3>
               <Link
-                href="/audit-log"
+                href="/workflows"
                 data-permission-public="true"
                 className="text-sm font-medium text-zinc-950 underline dark:text-zinc-50"
               >
-                {tDash("goToAuditLog")}
+                {tDash("goToWorkflows")}
               </Link>
+            </div>
+          </div>
+
+          {isOwner && (
+            <div className="panel flex flex-col overflow-hidden !p-0">
+              <div className="flex flex-col gap-2 bg-zinc-900 px-5 py-4">
+                <AuditIcon />
+              </div>
+              <div className="flex flex-col gap-1 px-5 py-3">
+                <h3 className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
+                  {tDash("auditLogCardTitle")}
+                </h3>
+                <p className="text-sm text-zinc-600 dark:text-zinc-400">
+                  {tDash("auditLogCardBody")}
+                </p>
+                <Link
+                  href="/audit-log"
+                  data-permission-public="true"
+                  className="text-sm font-medium text-zinc-950 underline dark:text-zinc-50"
+                >
+                  {tDash("goToAuditLog")}
+                </Link>
+              </div>
             </div>
           )}
         </div>

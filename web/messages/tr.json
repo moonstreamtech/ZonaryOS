@@ -45,7 +45,10 @@
     "groupFinance": "Finans",
     "groupHr": "İnsan Kaynakları",
     "groupSettings": "Ayarlar",
-    "groupAdministration": "Yönetim"
+    "groupAdministration": "Yönetim",
+    "dashboard": "Pano",
+    "searchLabel": "Ara",
+    "bottomNavLabel": "Ana"
   },
   "Dashboard": {
     "welcome": "Tekrar hoş geldiniz, {name}.",

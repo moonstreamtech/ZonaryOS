@@ -103,7 +103,7 @@ export default function NotificationBell({ firmId }: Props) {
         data-permission-public="true"
         onClick={toggleOpen}
         aria-label={t("bellLabel")}
-        className="relative rounded-md p-1.5 text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-900"
+        className="relative rounded-md p-1.5 text-[var(--color-sidebar-fg-muted)] hover:bg-[var(--color-sidebar-hover)] hover:text-[var(--color-sidebar-fg)]"
       >
         <span aria-hidden="true">🔔</span>
         {unreadCount > 0 && (

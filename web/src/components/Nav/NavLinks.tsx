@@ -7,6 +7,13 @@
 import { usePathname } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { Link } from "@/i18n/navigation";
+import {
+  IconOperations,
+  IconFinance,
+  IconHr,
+  IconSettings,
+  IconAdministration,
+} from "./icons";
 
 type NavItem = {
   href: string;
@@ -14,24 +21,26 @@ type NavItem = {
   ownerOnly?: boolean;
 };
 
+type IconComponent = (props: { className?: string }) => React.ReactElement;
+
 type NavGroup = {
   key: string;
   labelKey: string;
-  icon: string;
+  icon: IconComponent;
   items: NavItem[];
 };
 
 // Every link the old flat header (NavShell.tsx, pre-sidebar) carried,
 // grouped into the five sections this batch's brief calls for. No link
-// was dropped or renamed - this is a pure regrouping. `icon` is a
-// single-letter abbreviation (no new icon library dependency, per the
-// batch brief's explicit "keep it simple" fallback) shown in the
-// icon-only collapsed state below the `lg` breakpoint.
+// was dropped or renamed - this is a pure regrouping. `icon` is a real
+// SVG glyph shared by every item in the group (see icons.tsx's doc
+// comment for why per-GROUP icons, not 20+ bespoke per-item icons) shown
+// both in the icon-only rail below `lg` and next to the label at `lg`+.
 const GROUPS: NavGroup[] = [
   {
     key: "operations",
     labelKey: "groupOperations",
-    icon: "O",
+    icon: IconOperations,
     items: [
       { href: "/stock", labelKey: "stock" },
       { href: "/workflows", labelKey: "workflows" },
@@ -47,7 +56,7 @@ const GROUPS: NavGroup[] = [
   {
     key: "finance",
     labelKey: "groupFinance",
-    icon: "F",
+    icon: IconFinance,
     items: [
       { href: "/financials", labelKey: "financials" },
       { href: "/invoices", labelKey: "invoices" },
@@ -58,7 +67,7 @@ const GROUPS: NavGroup[] = [
   {
     key: "hr",
     labelKey: "groupHr",
-    icon: "H",
+    icon: IconHr,
     items: [
       { href: "/hr", labelKey: "hr" },
       { href: "/hr/time", labelKey: "timeTracking" },
@@ -68,7 +77,7 @@ const GROUPS: NavGroup[] = [
   {
     key: "settings",
     labelKey: "groupSettings",
-    icon: "S",
+    icon: IconSettings,
     items: [
       { href: "/settings/accounts", labelKey: "accounts", ownerOnly: true },
       { href: "/settings/addresses", labelKey: "addresses", ownerOnly: true },
@@ -82,7 +91,7 @@ const GROUPS: NavGroup[] = [
   {
     key: "administration",
     labelKey: "groupAdministration",
-    icon: "A",
+    icon: IconAdministration,
     items: [
       { href: "/audit-log", labelKey: "auditLog", ownerOnly: true },
       { href: "/settings/permissions", labelKey: "permissions", ownerOnly: true },
@@ -101,6 +110,13 @@ type Props = {
 // composed into a server-rendered shell, not the whole shell turned
 // client). Every href/labelKey/ownerOnly gate below is unchanged from
 // the prior flat header - see GROUPS' own doc comment.
+//
+// Dark-sidebar rework (this batch): colors are fixed (not `dark:`
+// conditional) because the sidebar is always a dark surface regardless
+// of OS theme - see tokens.css's --color-sidebar-* doc comment. Layout
+// (icon-only rail vs. full label list) still switches on the `lg`
+// breakpoint via pure CSS, same mechanism as before, just retuned widths
+// (see NavShell.tsx).
 export default function NavLinks({ isOwner }: Props) {
   const t = useTranslations("Nav");
   const pathname = usePathname();
@@ -117,10 +133,11 @@ export default function NavLinks({ isOwner }: Props) {
       {GROUPS.map((group) => {
         const items = group.items.filter((item) => !item.ownerOnly || isOwner);
         if (items.length === 0) return null;
+        const GroupIcon = group.icon;
         return (
           <div key={group.key} className="flex flex-col gap-1">
             <span
-              className="hidden px-3 text-xs font-medium tracking-wide text-zinc-500 uppercase lg:block dark:text-zinc-500"
+              className="hidden px-3 text-xs font-medium tracking-wide text-[var(--color-sidebar-fg-muted)] uppercase lg:block"
               aria-hidden="true"
             >
               {t(group.labelKey)}
@@ -134,18 +151,13 @@ export default function NavLinks({ isOwner }: Props) {
                   data-permission-public="true"
                   aria-current={active ? "page" : undefined}
                   title={t(item.labelKey)}
-                  className={`flex items-center gap-3 rounded-md px-3 py-1.5 text-sm transition-colors ${
+                  className={`group flex items-center justify-center gap-3 rounded-md border-l-2 py-2 text-sm transition-colors lg:justify-start lg:px-3 lg:py-1.5 ${
                     active
-                      ? "bg-zinc-100 font-medium text-black dark:bg-zinc-900 dark:text-zinc-50"
-                      : "text-zinc-700 hover:bg-zinc-50 dark:text-zinc-300 dark:hover:bg-zinc-950"
+                      ? "border-[var(--color-sidebar-fg)] bg-[var(--color-sidebar-active)] font-medium text-[var(--color-sidebar-fg)]"
+                      : "border-transparent text-[var(--color-sidebar-fg-muted)] hover:bg-[var(--color-sidebar-hover)] hover:text-[var(--color-sidebar-fg)]"
                   }`}
                 >
-                  <span
-                    className="flex h-5 w-5 shrink-0 items-center justify-center rounded border border-zinc-300 text-[10px] font-semibold text-zinc-500 lg:hidden dark:border-zinc-700 dark:text-zinc-400"
-                    aria-hidden="true"
-                  >
-                    {group.icon}
-                  </span>
+                  <GroupIcon className="h-4 w-4" />
                   <span className="hidden lg:inline">{t(item.labelKey)}</span>
                 </Link>
               );

@@ -64,6 +64,20 @@
   --text-page-title: 1.875rem; /* text-3xl */
   --text-section-label: 0.875rem; /* text-sm */
   --text-body: 0.875rem; /* text-sm */
+
+  /* Sidebar surface (mobile-nav rework batch) - deliberately NOT wired
+   * into the `@media (prefers-color-scheme: dark)` block below like the
+   * rest of this file's tokens. The sidebar is always a dark surface,
+   * light OS theme or dark: the brief calls for the app shell to read
+   * like the login screen's dark, geometric theme regardless of the
+   * light-content-area system the rest of the app keeps. zinc-900, not
+   * pure black, per spec. */
+  --color-sidebar-bg: #18181b; /* zinc-900 */
+  --color-sidebar-fg: #fafafa; /* zinc-50 */
+  --color-sidebar-fg-muted: #a1a1aa; /* zinc-400 */
+  --color-sidebar-hover: #27272a; /* zinc-800 */
+  --color-sidebar-active: #3f3f46; /* zinc-700 */
+  --color-sidebar-border: #27272a; /* zinc-800 */
 }
 
 @media (prefers-color-scheme: dark) {
@@ -100,6 +114,12 @@
   --color-platform-accent: var(--color-platform-accent);
   --color-platform-accent-strong: var(--color-platform-accent-strong);
   --color-platform-on-accent: var(--color-platform-on-accent);
+  --color-sidebar-bg: var(--color-sidebar-bg);
+  --color-sidebar-fg: var(--color-sidebar-fg);
+  --color-sidebar-fg-muted: var(--color-sidebar-fg-muted);
+  --color-sidebar-hover: var(--color-sidebar-hover);
+  --color-sidebar-active: var(--color-sidebar-active);
+  --color-sidebar-border: var(--color-sidebar-border);
 }
 
 /* Canonical card/panel surface - the one shared "panel" style item 1 of
