@@ -25,6 +25,14 @@ const (
 	InventoryAccountCode        = "1200"
 	TradePayablesAccountCode    = "2000"
 	SalesRevenueAccountCode     = "4000"
+	// SalariesPayableAccountCode/SalaryExpenseAccountCode (payroll
+	// foundation batch): "2200"/"5200" - the next free liability/expense
+	// codes after TradePayablesAccountCode's "2000"/Accounts Payable's
+	// "2100" and Cost of Goods Sold's "5000"/Purchase Expense's "5100"
+	// respectively (see peopleAccounts below and coreAccounts/
+	// purchasesAccounts above for what's already taken).
+	SalariesPayableAccountCode = "2200"
+	SalaryExpenseAccountCode   = "5200"
 )
 
 // seedAccount is one row SeedDefaultChartOfAccountsTx inserts - a plain,
@@ -82,6 +90,17 @@ var purchasesAccounts = []seedAccount{
 	{code: "5100", name: "Purchase Expense", typ: AccountTypeExpense},
 }
 
+// peopleAccounts are seeded when the firm's wizard answers say it manages
+// people (employees/contractors it runs payroll for) - the same
+// precondition internal/wizard.SeedSelection.ManagesPeople gates, so
+// internal/payroll's period-close journal posting (DR Salary Expense /
+// CR Salaries Payable) can always assume these two accounts exist
+// whenever a firm has payroll periods to close at all.
+var peopleAccounts = []seedAccount{
+	{code: SalaryExpenseAccountCode, name: "Salary Expense", typ: AccountTypeExpense},
+	{code: SalariesPayableAccountCode, name: "Salaries Payable", typ: AccountTypeLiability},
+}
+
 // SeedChartOptions gates which of the parametric, wizard-answer-dependent
 // account groups SeedDefaultChartOfAccountsTx seeds beyond the always-on
 // core tier - a plain struct of booleans (not internal/wizard.SeedSelection
@@ -105,6 +124,9 @@ type SeedChartOptions struct {
 	// corresponding option here. Adding those two accounts now, unseeded
 	// by anything, would just be dead schema.
 	PurchasesFromSuppliers bool
+	// ManagesPeople seeds peopleAccounts (Salary Expense, Salaries
+	// Payable) - mirrors internal/wizard.SeedSelection.ManagesPeople.
+	ManagesPeople bool
 }
 
 // SeedDefaultChartOfAccountsTx seeds firmID's starter chart of accounts,
@@ -129,7 +151,7 @@ func SeedDefaultChartOfAccountsTx(ctx context.Context, tx pgx.Tx, firmID uuid.UU
 	// insert "1200" twice. A map keyed by code, converted to a
 	// code-sorted slice for a deterministic insert order, handles this
 	// cleanly regardless of which combination of groups is active.
-	byCode := make(map[string]seedAccount, len(coreAccounts)+len(sellsAccounts)+len(purchasesAccounts))
+	byCode := make(map[string]seedAccount, len(coreAccounts)+len(sellsAccounts)+len(purchasesAccounts)+len(peopleAccounts))
 	for _, a := range coreAccounts {
 		byCode[a.code] = a
 	}
@@ -140,6 +162,11 @@ func SeedDefaultChartOfAccountsTx(ctx context.Context, tx pgx.Tx, firmID uuid.UU
 	}
 	if opts.PurchasesFromSuppliers {
 		for _, a := range purchasesAccounts {
+			byCode[a.code] = a
+		}
+	}
+	if opts.ManagesPeople {
+		for _, a := range peopleAccounts {
 			byCode[a.code] = a
 		}
 	}

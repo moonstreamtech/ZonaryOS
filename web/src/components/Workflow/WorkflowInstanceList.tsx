@@ -135,23 +135,23 @@ export default function WorkflowInstanceList({
           {q ? t("searchEmpty") : t("empty")}
         </p>
       ) : (
-        <div className="w-full overflow-x-auto">
+        <div className="panel w-full overflow-x-auto p-0">
           <table className="w-full border-collapse text-left text-sm">
             <thead>
               <tr className="border-b border-zinc-300 text-zinc-600 dark:border-zinc-700 dark:text-zinc-400">
-                <th className="py-2 pr-4 font-medium">{t("columnPayload")}</th>
+                <th className="py-2 pr-4 pl-4 font-medium">{t("columnPayload")}</th>
                 <th className="py-2 pr-4 font-medium">{t("columnState")}</th>
                 <th className="py-2 pr-4 font-medium">{t("columnActions")}</th>
-                <th className="py-2 font-medium" />
+                <th className="py-2 pr-4 font-medium" />
               </tr>
             </thead>
             <tbody>
               {instances.map((instance) => (
                 <tr
                   key={instance.instanceId}
-                  className="border-b border-zinc-200 text-black dark:border-zinc-800 dark:text-zinc-50"
+                  className="border-b border-zinc-200 text-black last:border-0 hover:bg-zinc-50 dark:border-zinc-800 dark:text-zinc-50 dark:hover:bg-zinc-950"
                 >
-                  <td className="py-2 pr-4">
+                  <td className="py-2 pr-4 pl-4">
                     {formatPayload(instance.payload) || (
                       <span className="text-zinc-400 dark:text-zinc-600">
                         —
@@ -190,7 +190,7 @@ export default function WorkflowInstanceList({
                       </div>
                     )}
                   </td>
-                  <td className="py-2 text-right">
+                  <td className="py-2 pr-4 text-right">
                     <Link
                       href={`/workflows/instance/${instance.instanceId}`}
                       data-permission-public="true"

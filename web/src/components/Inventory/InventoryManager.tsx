@@ -8,6 +8,7 @@ import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import type { Product, StockLevel, StockMovement } from "@/lib/inventory";
+import EmptyState from "@/components/ui/EmptyState";
 
 type ProductWithStock = Product & { stock: StockLevel[] };
 
@@ -52,6 +53,15 @@ export default function InventoryManager({ firmId, products, movements, isOwner 
   const [submitting, setSubmitting] = useState(false);
 
   const [expandedProductId, setExpandedProductId] = useState<string | null>(null);
+  const [filter, setFilter] = useState("");
+
+  const visibleProducts = filter.trim()
+    ? products.filter(
+        (p) =>
+          p.name.toLowerCase().includes(filter.trim().toLowerCase()) ||
+          p.sku.toLowerCase().includes(filter.trim().toLowerCase()),
+      )
+    : products;
 
   async function submitCreate(e: FormEvent) {
     e.preventDefault();
@@ -210,15 +220,24 @@ export default function InventoryManager({ firmId, products, movements, isOwner 
       )}
 
       {products.length === 0 ? (
-        <p className="text-zinc-600 dark:text-zinc-400">{t("empty")}</p>
+        <EmptyState message={t("empty")} />
       ) : (
-        <div className="flex flex-col gap-2">
-          {products.map((product) => {
+        <div className="flex flex-col gap-3">
+          <input
+            type="text"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder={t("filterPlaceholder")}
+            data-permission-public="true"
+            className="w-full max-w-xs rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm text-black dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
+          />
+          <div className="flex flex-col gap-2">
+          {visibleProducts.map((product) => {
             const lowStock = isLowStock(product);
             return (
               <div
                 key={product.id}
-                className={`rounded-md border ${lowStock ? "border-amber-400 dark:border-amber-600" : "border-zinc-300 dark:border-zinc-700"}`}
+                className={`rounded-lg border bg-white shadow-[var(--shadow-card)] dark:bg-zinc-950 ${lowStock ? "border-amber-400 dark:border-amber-600" : "border-zinc-200 dark:border-zinc-800"}`}
               >
                 <button
                   type="button"
@@ -273,6 +292,7 @@ export default function InventoryManager({ firmId, products, movements, isOwner 
               </div>
             );
           })}
+          </div>
         </div>
       )}
 
@@ -283,7 +303,7 @@ export default function InventoryManager({ firmId, products, movements, isOwner 
         {movements.length === 0 ? (
           <p className="text-zinc-600 dark:text-zinc-400">{t("noMovements")}</p>
         ) : (
-          <div className="overflow-x-auto rounded-md border border-zinc-300 dark:border-zinc-700">
+          <div className="panel overflow-x-auto p-0">
             <table className="w-full text-left text-xs">
               <thead className="border-b border-zinc-200 text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
                 <tr>

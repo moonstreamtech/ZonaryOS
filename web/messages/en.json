@@ -27,6 +27,9 @@
     "apiKeys": "API Keys",
     "webhooks": "Webhooks",
     "hr": "People",
+    "payroll": "Payroll",
+    "timeTracking": "Time Tracking",
+    "absences": "Absences",
     "tasks": "Tasks",
     "reports": "Reports",
     "inventory": "Inventory",
@@ -37,7 +40,15 @@
     "edgeAgents": "Edge Agents",
     "approvals": "Approvals",
     "logout": "Log out",
-    "firmSwitcherLabel": "Active firm"
+    "firmSwitcherLabel": "Active firm",
+    "groupOperations": "Operations",
+    "groupFinance": "Finance",
+    "groupHr": "HR",
+    "groupSettings": "Settings",
+    "groupAdministration": "Administration",
+    "dashboard": "Dashboard",
+    "searchLabel": "Search",
+    "bottomNavLabel": "Primary"
   },
   "Dashboard": {
     "welcome": "Welcome back, {name}.",
@@ -56,7 +67,10 @@
     "quickCreateButton": "+ Quick create",
     "quickCreateClose": "Close",
     "quickCreateSelectLabel": "Workflow",
-    "quickCreateEmpty": "No workflows available to create from yet."
+    "quickCreateEmpty": "No workflows available to create from yet.",
+    "summaryTitle": "Summary",
+    "recentActivityTitle": "Recent Activity",
+    "recentActivityEmpty": "No recent activity yet."
   },
   "Wizard": {
     "title": "Set up your firm",
@@ -65,6 +79,7 @@
     "doYouManageCustomerRelationships": "Do you manage customer relationships?",
     "doYouPurchaseFromSuppliers": "Do you purchase from suppliers?",
     "doYouManageTasksOrApprovals": "Do you manage tasks or approvals internally?",
+    "doYouManagePeople": "Do you have employees or people you manage?",
     "doYouManufacture": "Do you manufacture products?",
     "answerYes": "Yes",
     "answerNo": "No",
@@ -522,6 +537,92 @@
     "contractCreateError": "Couldn't create this contract. Please try again.",
     "addContract": "Add contract"
   },
+  "Payroll": {
+    "title": "Payroll",
+    "loadError": "Couldn't load this data. Please try again.",
+    "empty": "No payroll periods yet.",
+    "periodsTitle": "Payroll periods",
+    "newPeriod": "+ New period",
+    "cancel": "Cancel",
+    "create": "Create",
+    "createFieldsRequired": "Please fill in name, start date, and end date.",
+    "createError": "Couldn't create this period. Please try again.",
+    "periodName": "Name",
+    "periodStart": "Period start",
+    "periodEnd": "Period end",
+    "status": {
+      "open": "Open",
+      "processing": "Processing",
+      "closed": "Closed"
+    },
+    "closePeriod": "Close period",
+    "closeError": "Couldn't close this period. Please try again.",
+    "entriesTitle": "Entries",
+    "loadingEntries": "Loading entries…",
+    "noEntries": "No entries yet.",
+    "entryPerson": "Person",
+    "entryGross": "Gross amount",
+    "entryNet": "Net amount",
+    "entryFieldsRequired": "Please choose a person and enter gross/net amounts.",
+    "entryCreateError": "Couldn't add this entry. Please try again.",
+    "addEntry": "Add entry"
+  },
+  "TimeTracking": {
+    "title": "Time Tracking",
+    "loadError": "Couldn't load this data. Please try again.",
+    "empty": "No time entries match this filter.",
+    "filterPerson": "Person",
+    "filterAllPeople": "All people",
+    "filterFrom": "From",
+    "filterTo": "To",
+    "logTime": "Log time",
+    "cancel": "Cancel",
+    "logFieldsRequired": "Please choose a person, date, and hours.",
+    "logError": "Couldn't log this entry. Please try again.",
+    "entryPerson": "Person",
+    "entryDate": "Date",
+    "entryHours": "Hours",
+    "entryDescription": "Description",
+    "entryBillable": "Billable",
+    "colPerson": "Person",
+    "colDate": "Date",
+    "colHours": "Hours",
+    "colDescription": "Description",
+    "colBillable": "Billable",
+    "yes": "Yes",
+    "no": "No"
+  },
+  "Absences": {
+    "title": "Absences",
+    "loadError": "Couldn't load this data. Please try again.",
+    "empty": "No absence requests yet.",
+    "listTitle": "Absence requests",
+    "newRequest": "+ New request",
+    "cancel": "Cancel",
+    "requestPerson": "Person",
+    "requestType": "Type",
+    "requestStartDate": "Start date",
+    "requestEndDate": "End date",
+    "requestNotes": "Notes",
+    "requestFieldsRequired": "Please choose a person and enter start/end dates.",
+    "requestError": "Couldn't submit this request. Please try again.",
+    "submitRequest": "Submit request",
+    "actionError": "Couldn't complete this action. Please try again.",
+    "approve": "Approve",
+    "reject": "Reject",
+    "type": {
+      "vacation": "Vacation",
+      "sick": "Sick",
+      "unpaid": "Unpaid",
+      "maternity": "Maternity",
+      "other": "Other"
+    },
+    "status": {
+      "pending": "Pending",
+      "approved": "Approved",
+      "rejected": "Rejected"
+    }
+  },
   "Tasks": {
     "title": "Tasks",
     "definitionMissing": "This firm hasn't set up the Task / Approval workflow yet.",
@@ -783,7 +884,8 @@
     "columnName": "Firm name",
     "columnCreatedAt": "Created",
     "columnWorkflowDefinitionCount": "Workflow definitions",
-    "columnMemberCount": "Members"
+    "columnMemberCount": "Members",
+    "badge": "Platform Admin"
   },
   "Inventory": {
     "title": "Inventory",
@@ -815,7 +917,8 @@
     "movementReasonPurchase": "Purchase",
     "quantityColumn": "Quantity",
     "locationColumn": "Location",
-    "reasonColumn": "Reason"
+    "reasonColumn": "Reason",
+    "filterPlaceholder": "Filter by SKU or name"
   },
   "Suppliers": {
     "title": "Suppliers",
@@ -933,7 +1036,8 @@
     "phone": "Phone",
     "address": "Address",
     "fromPipeline": "From Customer Pipeline",
-    "viewDetail": "View"
+    "viewDetail": "View",
+    "filterPlaceholder": "Filter by name"
   },
   "CustomerDetail": {
     "loadError": "Couldn't load this data. Please try again.",
@@ -989,6 +1093,7 @@
       "paid": "Paid",
       "overdue": "Overdue",
       "cancelled": "Cancelled"
-    }
+    },
+    "filterPlaceholder": "Filter by invoice number"
   }
 }

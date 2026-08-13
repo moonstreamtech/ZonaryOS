@@ -41,17 +41,27 @@ export default async function ExchangeRatesPage({ params }: PageProps) {
 
   const rates = await fetchExchangeRates();
 
+  const tAdmin = await getTranslations("PlatformAdmin");
+
   return (
-    <main className="flex flex-1 flex-col items-center gap-8 bg-zinc-50 px-6 py-16 dark:bg-black">
-      <div className="flex w-full max-w-3xl flex-col items-center gap-2">
-        <h1 className="text-3xl font-semibold tracking-tight text-black dark:text-zinc-50">{t("title")}</h1>
-        <p className="max-w-2xl text-center text-sm text-zinc-600 dark:text-zinc-400">{t("description")}</p>
+    <main className="flex flex-1 flex-col items-center gap-8 bg-[var(--color-platform-accent)] px-6 py-16">
+      {/* Same deliberately-not-zinc indigo accent as /platform-admin
+          itself - see that page's own doc comment on why this section
+          needs a visually unmistakable identity. */}
+      <div className="flex w-full max-w-3xl flex-col items-center gap-3">
+        <span className="rounded-full bg-[var(--color-platform-accent-strong)] px-3 py-1 text-xs font-semibold tracking-wide text-[var(--color-platform-on-accent)] uppercase">
+          {tAdmin("badge")}
+        </span>
+        <h1 className="text-3xl font-semibold tracking-tight text-[var(--color-platform-on-accent)]">{t("title")}</h1>
+        <p className="max-w-2xl text-center text-sm text-indigo-200">{t("description")}</p>
       </div>
 
       {rates === null ? (
-        <p className="text-red-600 dark:text-red-400">{t("loadError")}</p>
+        <p className="text-red-300">{t("loadError")}</p>
       ) : (
-        <ExchangeRatesManager rates={rates} />
+        <div className="w-full max-w-3xl rounded-lg border border-indigo-800 bg-white p-4 dark:bg-zinc-950">
+          <ExchangeRatesManager rates={rates} />
+        </div>
       )}
     </main>
   );

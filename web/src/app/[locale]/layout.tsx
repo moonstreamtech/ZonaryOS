@@ -83,13 +83,26 @@ export default async function RootLayout({ children, params }: LayoutProps) {
       lang={locale}
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">
+      <body className="min-h-full flex flex-col bg-zinc-50 dark:bg-black">
         <NextIntlClientProvider>
           {/* Renders nothing - see that component's own doc comment for
               its default-off guarantee (NEXT_PUBLIC_ZONARYOS_TELEMETRY_ENABLED). */}
           <TelemetryClient />
-          <NavShell me={me} activeFirmId={firmId} isOwner={isOwner} />
-          {children}
+          <div className="flex min-h-full flex-1">
+            <NavShell me={me} activeFirmId={firmId} isOwner={isOwner} />
+            <div className="flex min-h-full flex-1 flex-col">
+              {/* Mobile-nav rework (this batch): the old slim top bar
+                  (GlobalSearchBox + NotificationBell above the page
+                  content) is gone - both now live in NavShell's sidebar
+                  bottom section instead, so mobile page content starts at
+                  the very top with nothing above it. `pb-16` reserves
+                  room below `lg` for MobileBottomNav's fixed bar (also
+                  mounted from NavShell) so it doesn't cover the last bit
+                  of content; `lg:pb-0` drops that padding once the bottom
+                  bar itself is hidden. */}
+              <div className="flex flex-1 flex-col pb-16 lg:pb-0">{children}</div>
+            </div>
+          </div>
         </NextIntlClientProvider>
       </body>
     </html>

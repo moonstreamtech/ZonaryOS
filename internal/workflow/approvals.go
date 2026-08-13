@@ -231,6 +231,31 @@ func createPendingApprovalAndNotify(ctx context.Context, pool *pgxpool.Pool, fir
 	return approval, nil
 }
 
+// RequestApproval creates a pending_approvals row (and notifies every firm
+// member holding the relevant permission) for instanceID's actionKey
+// transition, OUTSIDE of the rule-engine's own EvaluateRules/non-
+// autonomous-rule-match path - for callers (like internal/absence) that
+// need a deterministic, always-required approval on a specific action
+// rather than a firm-configured rule. Uses the same pending_approvals +
+// notification mechanism EvaluateRules itself uses
+// (createPendingApprovalAndNotify), with an empty Rule{} (RuleID stays
+// NULL - "no rule triggered this, application logic did"). Rule{}'s zero
+// value is handled correctly by createPendingApprovalAndNotify already
+// (its own `if rule.ID != uuid.Nil` guard leaves ruleID nil), and an empty
+// Rule.Name just produces a slightly generic "Approval needed: " title/
+// body with no rule name - acceptable, not worth a special case.
+//
+// ciaudit:ignore-firmid-check: thin wrapper around
+// createPendingApprovalAndNotify, which itself makes no authorization
+// decision (same as EvaluateRules' own call site) - the caller (e.g.
+// internal/absence.CreateAbsence) is responsible for having already
+// checked the requester's standing (permission.IsMember) before calling
+// this, the same division of responsibility
+// accounting.PostJournalEntryTx's own doc comment documents for itself.
+func RequestApproval(ctx context.Context, pool *pgxpool.Pool, firmID, requestedBy, instanceID uuid.UUID, definitionKey, stateKey, actionKey string) (PendingApproval, error) {
+	return createPendingApprovalAndNotify(ctx, pool, firmID, requestedBy, instanceID, definitionKey, stateKey, Rule{}, actionKey)
+}
+
 // ListPendingApprovals returns every still-pending approval in firmID
 // that userID could actually act on (holds the approval's own
 // permission_key) - member-gated first, then filtered by permission, not

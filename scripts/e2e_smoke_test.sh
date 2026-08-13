@@ -86,11 +86,11 @@ echo "$ROOT_NODE" | python3 -c "import sys, json; d = json.load(sys.stdin); asse
 FIRM_NAME="E2E Smoke Firm $(date +%s)"
 # sells=yes, tracks inventory=yes, manages CRM=yes, purchases=no (kept
 # available below for the manual UI-path purchase_order definition),
-# manages tasks=no, manufactures=no -> seeds Stock In -> Sale AND
-# Customer Pipeline, matching what the rest of this script assumes FIRM_ID
-# already has.
-log "wizard: walking sells=yes/inventory=yes/crm=yes/purchase=no/tasks=no/manufacture=no to create a default firm ('$FIRM_NAME')"
-ANSWER_RESPONSE=$(wizard_walk "$FIRM_NAME" yes yes yes no no no)
+# manages tasks=no, manages people=no, manufactures=no -> seeds Stock In ->
+# Sale AND Customer Pipeline (and not absence_approval, since people=no),
+# matching what the rest of this script assumes FIRM_ID already has.
+log "wizard: walking sells=yes/inventory=yes/crm=yes/purchase=no/tasks=no/people=no/manufacture=no to create a default firm ('$FIRM_NAME')"
+ANSWER_RESPONSE=$(wizard_walk "$FIRM_NAME" yes yes yes no no no no)
 FIRM_ID=$(echo "$ANSWER_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['result']['firmId'])")
 [ -n "$FIRM_ID" ] || fail "did not get a firmId back from the wizard answer: $ANSWER_RESPONSE"
 log "firm created: $FIRM_ID"
@@ -339,7 +339,7 @@ log "wizard: creating a second firm for the same user ('$SECOND_FIRM_NAME'), to 
 # This firm only needs to exist for the firm-switch check below - answers
 # "no" all the way through, so it's created with zero seeded workflows
 # (Open Points item 37).
-SECOND_ANSWER_RESPONSE=$(wizard_walk "$SECOND_FIRM_NAME" no no no no)
+SECOND_ANSWER_RESPONSE=$(wizard_walk "$SECOND_FIRM_NAME" no no no no no)
 SECOND_FIRM_ID=$(echo "$SECOND_ANSWER_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['result']['firmId'])")
 [ -n "$SECOND_FIRM_ID" ] || fail "did not get a firmId back from the second wizard answer: $SECOND_ANSWER_RESPONSE"
 log "second firm created: $SECOND_FIRM_ID"
@@ -695,8 +695,8 @@ log "invites: full self-registration -> invite -> accept flow verified end-to-en
 # prove the generic UI renders a second, structurally different
 # definition; it is not the workflow this section exercises.
 
-log "purchase order: walking sells=no/purchase=yes/tasks=no/manufacture=no to create a firm that seeds the real Purchase Order workflow"
-PO_ANSWER_RESPONSE=$(wizard_walk "E2E PO Firm $(date +%s)" no yes no no)
+log "purchase order: walking sells=no/purchase=yes/tasks=no/people=no/manufacture=no to create a firm that seeds the real Purchase Order workflow"
+PO_ANSWER_RESPONSE=$(wizard_walk "E2E PO Firm $(date +%s)" no yes no no no)
 PO_FIRM_ID=$(echo "$PO_ANSWER_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['result']['firmId'])")
 [ -n "$PO_FIRM_ID" ] || fail "did not get a firmId back from the wizard answer: $PO_ANSWER_RESPONSE"
 log "purchase order firm created: $PO_FIRM_ID"
@@ -890,7 +890,7 @@ log "HR (UI path) confirmed"
 # --- /inventory and /suppliers render it -------------------------------
 
 log "inventory: creating a firm that both sells (tracks inventory) and purchases from suppliers"
-INV_ANSWER_RESPONSE=$(wizard_walk "E2E Inventory Firm $(date +%s)" yes yes no yes no no)
+INV_ANSWER_RESPONSE=$(wizard_walk "E2E Inventory Firm $(date +%s)" yes yes no yes no no no)
 INV_FIRM_ID=$(echo "$INV_ANSWER_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['result']['firmId'])")
 [ -n "$INV_FIRM_ID" ] || fail "did not get a firmId back from the wizard answer: $INV_ANSWER_RESPONSE"
 log "inventory firm created: $INV_FIRM_ID"
@@ -1032,7 +1032,7 @@ log "portability: export document structure confirmed (version, firm, accounts, 
 
 log "portability: creating a brand-new, empty firm as the import target"
 IMPORT_TARGET_FIRM_NAME="E2E Import Target $(date +%s)"
-IMPORT_TARGET_ANSWER=$(wizard_walk "$IMPORT_TARGET_FIRM_NAME" no no no no)
+IMPORT_TARGET_ANSWER=$(wizard_walk "$IMPORT_TARGET_FIRM_NAME" no no no no no)
 IMPORT_TARGET_FIRM_ID=$(echo "$IMPORT_TARGET_ANSWER" | python3 -c "import sys, json; print(json.load(sys.stdin)['result']['firmId'])")
 [ -n "$IMPORT_TARGET_FIRM_ID" ] || fail "did not get a firmId back for the import target firm: $IMPORT_TARGET_ANSWER"
 log "portability: import target firm created: $IMPORT_TARGET_FIRM_ID"

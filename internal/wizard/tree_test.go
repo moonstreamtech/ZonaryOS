@@ -31,7 +31,7 @@ func TestAnswer_RejectsUnknownAnswerValue(t *testing.T) {
 }
 
 func TestAnswer_RejectsAnsweringANonQuestionNode(t *testing.T) {
-	action := walk(t, "no", "no", "no", "no")
+	action := walk(t, "no", "no", "no", "no", "no")
 	if _, err := action.Answer("anything"); !errors.Is(err, wizard.ErrNotQuestion) {
 		t.Fatalf("expected ErrNotQuestion, got %v", err)
 	}
@@ -106,9 +106,9 @@ func TestAnswer_SellsYesAsksInventoryThenCRM(t *testing.T) {
 // the accumulated SeedSelection, and "yes" dead-ending at the existing
 // placeholder.
 func TestAnswer_FullSequenceEndsAtManufactureThenAction(t *testing.T) {
-	manufactureNode := walk(t, "yes", "yes", "yes", "yes", "yes")
+	manufactureNode := walk(t, "yes", "yes", "yes", "yes", "yes", "yes")
 	if manufactureNode.QuestionKey != "doYouManufacture" {
-		t.Fatalf("expected the 6th node to be doYouManufacture, got %q", manufactureNode.QuestionKey)
+		t.Fatalf("expected the 7th node to be doYouManufacture, got %q", manufactureNode.QuestionKey)
 	}
 
 	action, err := manufactureNode.Answer("no")
@@ -126,7 +126,7 @@ func TestAnswer_FullSequenceEndsAtManufactureThenAction(t *testing.T) {
 	}
 	want := wizard.SeedSelection{
 		Sells: true, TracksInventory: true, ManagesCRM: true,
-		PurchasesFromSuppliers: true, ManagesTasks: true,
+		PurchasesFromSuppliers: true, ManagesTasks: true, ManagesPeople: true,
 	}
 	if *action.Seed != want {
 		t.Errorf("expected accumulated SeedSelection %+v, got %+v", want, *action.Seed)
@@ -148,9 +148,9 @@ func TestAnswer_FullSequenceEndsAtManufactureThenAction(t *testing.T) {
 // the test above: every question answered "no" should leave that
 // question's SeedSelection field false, not just default-zero by luck.
 func TestAnswer_SeedSelectionReflectsEachNoPath(t *testing.T) {
-	manufactureNode := walk(t, "no", "no", "no")
+	manufactureNode := walk(t, "no", "no", "no", "no")
 	if manufactureNode.QuestionKey != "doYouManufacture" {
-		t.Fatalf("expected doYouManufacture after sells=no, purchase=no, tasks=no, got %q", manufactureNode.QuestionKey)
+		t.Fatalf("expected doYouManufacture after sells=no, purchase=no, tasks=no, people=no, got %q", manufactureNode.QuestionKey)
 	}
 
 	action, err := manufactureNode.Answer("no")

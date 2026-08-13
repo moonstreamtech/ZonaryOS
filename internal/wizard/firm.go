@@ -57,6 +57,7 @@ type CreateDefaultFirmResult struct {
 	CustomerPipelineDefinitionID uuid.UUID
 	PurchaseOrderDefinitionID    uuid.UUID
 	TaskApprovalDefinitionID     uuid.UUID
+	AbsenceApprovalDefinitionID  uuid.UUID
 }
 
 // CreateDefaultFirm is the wizard's one implemented terminal action
@@ -148,6 +149,7 @@ func CreateDefaultFirm(ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID
 	if err := accounting.SeedDefaultChartOfAccountsTx(ctx, tx, result.FirmID, accounting.SeedChartOptions{
 		Sells:                  sel.Sells,
 		PurchasesFromSuppliers: sel.PurchasesFromSuppliers,
+		ManagesPeople:          sel.ManagesPeople,
 	}); err != nil {
 		return CreateDefaultFirmResult{}, fmt.Errorf("seed default chart of accounts: %w", err)
 	}
@@ -189,6 +191,14 @@ func CreateDefaultFirm(ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID
 			return CreateDefaultFirmResult{}, fmt.Errorf("seed task approval workflow: %w", err)
 		}
 		result.TaskApprovalDefinitionID = taskApprovalDefinitionID
+	}
+
+	if sel.ManagesPeople {
+		absenceApprovalDefinitionID, err := workflow.SeedAbsenceApprovalWorkflowTx(ctx, tx, result.FirmID, result.RoleID)
+		if err != nil {
+			return CreateDefaultFirmResult{}, fmt.Errorf("seed absence approval workflow: %w", err)
+		}
+		result.AbsenceApprovalDefinitionID = absenceApprovalDefinitionID
 	}
 
 	if _, err := tx.Exec(ctx, `

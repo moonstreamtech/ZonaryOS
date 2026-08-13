@@ -27,6 +27,9 @@
     "apiKeys": "API Anahtarları",
     "webhooks": "Webhook'lar",
     "hr": "Personel",
+    "payroll": "Bordro",
+    "timeTracking": "Zaman Takibi",
+    "absences": "Devamsızlıklar",
     "inventory": "Envanter",
     "suppliers": "Tedarikçiler",
     "logistics": "Lojistik",
@@ -37,7 +40,15 @@
     "tasks": "Görevler",
     "reports": "Raporlar",
     "logout": "Çıkış yap",
-    "firmSwitcherLabel": "Aktif firma"
+    "firmSwitcherLabel": "Aktif firma",
+    "groupOperations": "Operasyonlar",
+    "groupFinance": "Finans",
+    "groupHr": "İnsan Kaynakları",
+    "groupSettings": "Ayarlar",
+    "groupAdministration": "Yönetim",
+    "dashboard": "Pano",
+    "searchLabel": "Ara",
+    "bottomNavLabel": "Ana"
   },
   "Dashboard": {
     "welcome": "Tekrar hoş geldiniz, {name}.",
@@ -56,7 +67,10 @@
     "quickCreateButton": "+ Hızlı oluştur",
     "quickCreateClose": "Kapat",
     "quickCreateSelectLabel": "İş akışı",
-    "quickCreateEmpty": "Henüz oluşturmak için kullanılabilir bir iş akışı yok."
+    "quickCreateEmpty": "Henüz oluşturmak için kullanılabilir bir iş akışı yok.",
+    "summaryTitle": "Özet",
+    "recentActivityTitle": "Son Etkinlik",
+    "recentActivityEmpty": "Henüz etkinlik yok."
   },
   "Wizard": {
     "title": "Firmanızı oluşturun",
@@ -65,6 +79,7 @@
     "doYouManageCustomerRelationships": "Müşteri ilişkileri yönetiyor musunuz?",
     "doYouPurchaseFromSuppliers": "Tedarikçilerden satın alma yapıyor musunuz?",
     "doYouManageTasksOrApprovals": "Şirket içi görev veya onay süreçleri yönetiyor musunuz?",
+    "doYouManagePeople": "Çalışanlarınız veya yönettiğiniz kişiler var mı?",
     "doYouManufacture": "Üretim yapıyor musunuz?",
     "answerYes": "Evet",
     "answerNo": "Hayır",
@@ -522,6 +537,92 @@
     "contractCreateError": "Bu sözleşme oluşturulamadı. Lütfen tekrar deneyin.",
     "addContract": "Sözleşme ekle"
   },
+  "Payroll": {
+    "title": "Bordro",
+    "loadError": "Bu veri yüklenemedi. Lütfen tekrar deneyin.",
+    "empty": "Henüz bordro dönemi yok.",
+    "periodsTitle": "Bordro dönemleri",
+    "newPeriod": "+ Yeni dönem",
+    "cancel": "İptal",
+    "create": "Oluştur",
+    "createFieldsRequired": "Lütfen adı, başlangıç tarihini ve bitiş tarihini girin.",
+    "createError": "Bu dönem oluşturulamadı. Lütfen tekrar deneyin.",
+    "periodName": "Ad",
+    "periodStart": "Dönem başlangıcı",
+    "periodEnd": "Dönem bitişi",
+    "status": {
+      "open": "Açık",
+      "processing": "İşleniyor",
+      "closed": "Kapalı"
+    },
+    "closePeriod": "Dönemi kapat",
+    "closeError": "Bu dönem kapatılamadı. Lütfen tekrar deneyin.",
+    "entriesTitle": "Kayıtlar",
+    "loadingEntries": "Kayıtlar yükleniyor…",
+    "noEntries": "Henüz kayıt yok.",
+    "entryPerson": "Kişi",
+    "entryGross": "Brüt tutar",
+    "entryNet": "Net tutar",
+    "entryFieldsRequired": "Lütfen bir kişi seçin ve brüt/net tutarları girin.",
+    "entryCreateError": "Bu kayıt eklenemedi. Lütfen tekrar deneyin.",
+    "addEntry": "Kayıt ekle"
+  },
+  "TimeTracking": {
+    "title": "Zaman Takibi",
+    "loadError": "Bu veri yüklenemedi. Lütfen tekrar deneyin.",
+    "empty": "Bu filtreyle eşleşen zaman kaydı yok.",
+    "filterPerson": "Kişi",
+    "filterAllPeople": "Tüm kişiler",
+    "filterFrom": "Başlangıç",
+    "filterTo": "Bitiş",
+    "logTime": "Zaman kaydet",
+    "cancel": "İptal",
+    "logFieldsRequired": "Lütfen bir kişi, tarih ve saat girin.",
+    "logError": "Bu kayıt eklenemedi. Lütfen tekrar deneyin.",
+    "entryPerson": "Kişi",
+    "entryDate": "Tarih",
+    "entryHours": "Saat",
+    "entryDescription": "Açıklama",
+    "entryBillable": "Faturalanabilir",
+    "colPerson": "Kişi",
+    "colDate": "Tarih",
+    "colHours": "Saat",
+    "colDescription": "Açıklama",
+    "colBillable": "Faturalanabilir",
+    "yes": "Evet",
+    "no": "Hayır"
+  },
+  "Absences": {
+    "title": "İzinler",
+    "loadError": "Bu veri yüklenemedi. Lütfen tekrar deneyin.",
+    "empty": "Henüz izin talebi yok.",
+    "listTitle": "İzin talepleri",
+    "newRequest": "+ Yeni talep",
+    "cancel": "İptal",
+    "requestPerson": "Kişi",
+    "requestType": "Tür",
+    "requestStartDate": "Başlangıç tarihi",
+    "requestEndDate": "Bitiş tarihi",
+    "requestNotes": "Notlar",
+    "requestFieldsRequired": "Lütfen bir kişi seçin ve başlangıç/bitiş tarihlerini girin.",
+    "requestError": "Bu talep gönderilemedi. Lütfen tekrar deneyin.",
+    "submitRequest": "Talebi gönder",
+    "actionError": "Bu işlem tamamlanamadı. Lütfen tekrar deneyin.",
+    "approve": "Onayla",
+    "reject": "Reddet",
+    "type": {
+      "vacation": "Yıllık izin",
+      "sick": "Hastalık izni",
+      "unpaid": "Ücretsiz izin",
+      "maternity": "Doğum izni",
+      "other": "Diğer"
+    },
+    "status": {
+      "pending": "Beklemede",
+      "approved": "Onaylandı",
+      "rejected": "Reddedildi"
+    }
+  },
   "Tasks": {
     "title": "Görevler",
     "definitionMissing": "Bu firma henüz Görev / Onay iş akışını kurmadı.",
@@ -783,7 +884,8 @@
     "columnName": "Firma adı",
     "columnCreatedAt": "Oluşturulma",
     "columnWorkflowDefinitionCount": "İş akışı tanımları",
-    "columnMemberCount": "Üyeler"
+    "columnMemberCount": "Üyeler",
+    "badge": "Platform Yöneticisi"
   },
   "Inventory": {
     "title": "Envanter",
@@ -815,7 +917,8 @@
     "movementReasonPurchase": "Satın alma",
     "quantityColumn": "Miktar",
     "locationColumn": "Konum",
-    "reasonColumn": "Neden"
+    "reasonColumn": "Neden",
+    "filterPlaceholder": "SKU veya isme göre filtrele"
   },
   "Suppliers": {
     "title": "Tedarikçiler",
@@ -933,7 +1036,8 @@
     "phone": "Telefon",
     "address": "Adres",
     "fromPipeline": "Müşteri Hattından",
-    "viewDetail": "Görüntüle"
+    "viewDetail": "Görüntüle",
+    "filterPlaceholder": "İsme göre filtrele"
   },
   "CustomerDetail": {
     "loadError": "Bu veri yüklenemedi. Lütfen tekrar deneyin.",
@@ -989,6 +1093,7 @@
       "paid": "Ödendi",
       "overdue": "Gecikmiş",
       "cancelled": "İptal edildi"
-    }
+    },
+    "filterPlaceholder": "Fatura numarasına göre filtrele"
   }
 }

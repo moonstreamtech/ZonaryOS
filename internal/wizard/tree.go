@@ -74,6 +74,13 @@ type SeedSelection struct {
 	// brief). true seeds the Task / Approval workflow
 	// (workflow.TaskApprovalSpec).
 	ManagesTasks bool
+	// ManagesPeople is root question 4 (payroll foundation + time
+	// tracking + HR depth batch), "do you have employees or people you
+	// manage?" - asked after tasks, before manufacture. true seeds the
+	// Absence Approval workflow (workflow.AbsenceApprovalSpec) and the
+	// Salary Expense / Salaries Payable accounts
+	// (internal/accounting.SeedChartOptions.ManagesPeople).
+	ManagesPeople bool
 }
 
 // Answer is one option a NodeQuestion offers. Value is the stable
@@ -151,10 +158,28 @@ func buildManufactureNode(keyPrefix string, sel SeedSelection) *Node {
 	}
 }
 
+// buildPeopleNode is root question 4, "do you have employees or people you
+// manage?" - asked of every firm regardless of earlier answers (like
+// buildTasksNode, people management is universal), the step right before
+// the final manufacturing question on every path.
+func buildPeopleNode(keyPrefix string, sel SeedSelection) *Node {
+	yes, no := sel, sel
+	yes.ManagesPeople, no.ManagesPeople = true, false
+	return &Node{
+		Key:         keyPrefix + "_people",
+		Kind:        NodeQuestion,
+		QuestionKey: "doYouManagePeople",
+		Answers: yesNoAnswers(
+			buildManufactureNode(keyPrefix+"Yes", yes),
+			buildManufactureNode(keyPrefix+"No", no),
+		),
+	}
+}
+
 // buildTasksNode is root question 3, "do you manage tasks or approvals
 // internally?" - asked of every firm regardless of question 1's answer
-// (tasks/approvals are universal), the step right before the final
-// manufacturing question on every path.
+// (tasks/approvals are universal), the step right before the (new) people
+// question on every path.
 func buildTasksNode(keyPrefix string, sel SeedSelection) *Node {
 	yes, no := sel, sel
 	yes.ManagesTasks, no.ManagesTasks = true, false
@@ -163,8 +188,8 @@ func buildTasksNode(keyPrefix string, sel SeedSelection) *Node {
 		Kind:        NodeQuestion,
 		QuestionKey: "doYouManageTasksOrApprovals",
 		Answers: yesNoAnswers(
-			buildManufactureNode(keyPrefix+"Yes", yes),
-			buildManufactureNode(keyPrefix+"No", no),
+			buildPeopleNode(keyPrefix+"Yes", yes),
+			buildPeopleNode(keyPrefix+"No", no),
 		),
 	}
 }
