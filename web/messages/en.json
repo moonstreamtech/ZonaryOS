@@ -6,6 +6,20 @@
     "statusOk": "Connected",
     "statusError": "Unreachable"
   },
+  "Landing": {
+    "wordmark": "ZONARYOS",
+    "tagline": "The universal business operating system",
+    "signIn": "Sign In",
+    "getStarted": "Get Started Free",
+    "feature1Title": "Any workflow, any sector",
+    "feature1Body": "A parametric workflow engine models your process, not the other way around.",
+    "feature2Title": "Permissions built in",
+    "feature2Body": "Every action is role-gated from the start, with no bolt-on access control.",
+    "feature3Title": "Full audit trail",
+    "feature3Body": "Every change is traceable, so you always know who did what and when.",
+    "footerLicense": "Open source core. Commercial use requires a license.",
+    "footerDocs": "Documentation"
+  },
   "Auth": {
     "signIn": "Sign in",
     "signOut": "Sign out",

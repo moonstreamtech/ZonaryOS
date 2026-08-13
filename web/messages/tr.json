@@ -6,6 +6,20 @@
     "statusOk": "Bağlı",
     "statusError": "Ulaşılamıyor"
   },
+  "Landing": {
+    "wordmark": "ZONARYOS",
+    "tagline": "Evrensel işletme işletim sistemi",
+    "signIn": "Giriş Yap",
+    "getStarted": "Ücretsiz Başla",
+    "feature1Title": "Her iş akışı, her sektör",
+    "feature1Body": "Parametrik iş akışı motoru sürecinizi modeller; tersi değil.",
+    "feature2Title": "Yetkilendirme baştan dahil",
+    "feature2Body": "Her işlem role dayalı olarak kısıtlanır, sonradan eklenen bir erişim denetimi değildir.",
+    "feature3Title": "Eksiksiz denetim izi",
+    "feature3Body": "Her değişiklik izlenebilir; kimin ne zaman ne yaptığını her zaman bilirsiniz.",
+    "footerLicense": "Açık kaynak çekirdek. Ticari kullanım lisans gerektirir.",
+    "footerDocs": "Dokümantasyon"
+  },
   "Auth": {
     "signIn": "Giriş yap",
     "signOut": "Çıkış yap",
