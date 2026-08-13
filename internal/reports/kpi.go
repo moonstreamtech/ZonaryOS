@@ -101,6 +101,19 @@ const (
 	// report's own per-invoice arithmetic (internal/invoicing.ReceivablesAging),
 	// surfaced as a single dashboard number.
 	KPIKindReceivables KPIKind = "receivables"
+	// KPIKindSalesOrders (sales orders + full procurement cycle batch):
+	// dispatches further on SalesOrdersMetric below - both of this Kind's
+	// metrics query internal/salesorders' sales_orders table directly
+	// (same "own tables live outside this package, queried the same way
+	// KPIKindReceivables already queries invoices" reasoning
+	// KPIKindReceivables' own doc comment gives), deliberately its own
+	// Kind rather than folded into KPIKindReceivables - an order's own
+	// fulfillment status (draft/confirmed/picking/shipped/delivered) is a
+	// different vocabulary from an invoice's billing status
+	// (draft/sent/paid/overdue), so sharing one Kind would mean one
+	// metric silently querying the wrong table for the other's status
+	// values.
+	KPIKindSalesOrders KPIKind = "sales_orders"
 )
 
 // InventoryMetric is KPIKindInventoryKPI's own descriptor field - which
@@ -152,6 +165,23 @@ const (
 	// migrations/0013_logistics_crm_core.up.sql's own doc comment on this
 	// distinction).
 	CRMMetricActiveCustomers CRMMetric = "active_customers"
+)
+
+// SalesOrdersMetric is KPIKindSalesOrders' own descriptor field - which
+// sales-order-specific figure to compute, the same "room to grow without
+// a new Kind" pattern InventoryMetric/CRMMetric/ReceivablesMetric already
+// establish.
+type SalesOrdersMetric string
+
+const (
+	// SalesOrdersMetricOpenOrders: how many sales_orders are currently in
+	// draft/confirmed/picking - "open" meaning not yet shipped, delivered,
+	// or cancelled, per the design brief's "open_sales_orders" spec.
+	SalesOrdersMetricOpenOrders SalesOrdersMetric = "open_orders"
+	// SalesOrdersMetricSalesThisMonth: SUM(sales_orders.total) for orders
+	// created in the current calendar month, per the design brief's
+	// "sales_this_month" spec.
+	SalesOrdersMetricSalesThisMonth SalesOrdersMetric = "sales_this_month"
 )
 
 // ReceivablesMetric is KPIKindReceivables' own descriptor field - which
@@ -226,6 +256,9 @@ type KPIDescriptor struct {
 
 	// ReceivablesMetric is used by KPIKindReceivables.
 	ReceivablesMetric ReceivablesMetric
+
+	// SalesOrdersMetric is used by KPIKindSalesOrders.
+	SalesOrdersMetric SalesOrdersMetric
 }
 
 // kpiDescriptors is the dashboard's actual KPI list - the design brief's
@@ -285,6 +318,14 @@ var kpiDescriptors = []KPIDescriptor{
 	{
 		Key: "totalOutstanding", Kind: KPIKindReceivables,
 		ReceivablesMetric: ReceivablesMetricTotalOutstanding,
+	},
+	{
+		Key: "openSalesOrders", Kind: KPIKindSalesOrders,
+		SalesOrdersMetric: SalesOrdersMetricOpenOrders,
+	},
+	{
+		Key: "salesThisMonth", Kind: KPIKindSalesOrders,
+		SalesOrdersMetric: SalesOrdersMetricSalesThisMonth,
 	},
 }
 
@@ -392,6 +433,9 @@ func computeKPI(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, d KPIDescripto
 
 	case KPIKindReceivables:
 		return computeReceivablesKPI(ctx, tx, firmID, d)
+
+	case KPIKindSalesOrders:
+		return computeSalesOrdersKPI(ctx, tx, firmID, d)
 
 	default:
 		return KPIResult{}, fmt.Errorf("unknown KPI kind %q", d.Kind)
@@ -536,6 +580,49 @@ func computeReceivablesKPI(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, d K
 
 	default:
 		return KPIResult{}, fmt.Errorf("unknown receivables metric %q", d.ReceivablesMetric)
+	}
+}
+
+// computeSalesOrdersKPI dispatches on d.SalesOrdersMetric - the same role
+// computeReceivablesKPI's own switch plays for ReceivablesMetric.
+//
+// ciaudit:ignore-firmid-check: internal helper called only by computeKPI,
+// itself only called by GetDashboardKPIs after permission.IsMember has
+// already run - firmID here scopes each query (defense in depth alongside
+// RLS), it is not itself an authorization decision.
+func computeSalesOrdersKPI(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, d KPIDescriptor) (KPIResult, error) {
+	switch d.SalesOrdersMetric {
+	case SalesOrdersMetricOpenOrders:
+		var count int
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM sales_orders
+			WHERE firm_id = $1 AND status IN ('draft', 'confirmed', 'picking')
+		`, firmID).Scan(&count); err != nil {
+			return KPIResult{}, fmt.Errorf("count open sales orders: %w", err)
+		}
+		return KPIResult{Key: d.Key, Unit: unitCount, Value: fmt.Sprintf("%d", count)}, nil
+
+	case SalesOrdersMetricSalesThisMonth:
+		// date_trunc('month', now()): the current calendar month in the
+		// database's own session time zone - same "compute period bounds
+		// in SQL, not Go" discipline periodBounds/accountBalanceSum
+		// already follow elsewhere in this file, so this KPI and any
+		// other month-scoped one agree on exactly where a month begins.
+		var value string
+		if err := tx.QueryRow(ctx, `
+			SELECT COALESCE(SUM(total), 0)::numeric(19,4)::text
+			FROM sales_orders
+			WHERE firm_id = $1
+			  AND status != 'cancelled'
+			  AND created_at >= date_trunc('month', now())
+			  AND created_at < date_trunc('month', now()) + interval '1 month'
+		`, firmID).Scan(&value); err != nil {
+			return KPIResult{}, fmt.Errorf("sum sales this month: %w", err)
+		}
+		return KPIResult{Key: d.Key, Unit: unitCurrency, Value: value}, nil
+
+	default:
+		return KPIResult{}, fmt.Errorf("unknown sales orders metric %q", d.SalesOrdersMetric)
 	}
 }
 

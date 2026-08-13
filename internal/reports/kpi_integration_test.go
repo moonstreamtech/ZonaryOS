@@ -436,8 +436,8 @@ func TestGetDashboardKPIs_EmptyFirmReadsZeros(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetDashboardKPIs: %v", err)
 	}
-	if len(results) != 12 {
-		t.Fatalf("expected 12 KPI results, got %d: %+v", len(results), results)
+	if len(results) != 14 {
+		t.Fatalf("expected 14 KPI results, got %d: %+v", len(results), results)
 	}
 	for _, r := range results {
 		// A plain "0" or a zero-valued decimal string ("0.0000") both mean

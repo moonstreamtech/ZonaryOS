@@ -30,7 +30,9 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/logistics"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
+	"github.com/moonstreamtech/ZonaryOS/internal/procurement"
 	"github.com/moonstreamtech/ZonaryOS/internal/queryfilter"
+	"github.com/moonstreamtech/ZonaryOS/internal/salesorders"
 	"github.com/moonstreamtech/ZonaryOS/internal/webhook"
 )
 
@@ -425,6 +427,125 @@ func resolveInvoice(it *InvoiceTemplate, payload map[string]any) (invoicing.Crea
 	return invoicing.CreateInvoiceTxInput{
 		CustomerID: customerID, Description: interpolateTemplate(it.Description, payload),
 		Quantity: quantityStr, UnitPrice: unitPriceStr, ProductID: productID, IssuedDate: time.Now(),
+	}, true, nil
+}
+
+// resolveSalesOrder resolves sot against payload into the arguments
+// internal/salesorders.CreateSalesOrderTx needs - same "ok=false means a
+// required field simply wasn't supplied on this call, skip not fail"
+// contract resolveInvoice's own doc comment documents.
+func resolveSalesOrder(sot *SalesOrderTemplate, payload map[string]any) (salesorders.CreateSalesOrderTxInput, bool, error) {
+	quantity, quantityPresent, err := lookupNumberField(payload, sot.QuantityField)
+	if err != nil {
+		return salesorders.CreateSalesOrderTxInput{}, false, err
+	}
+	unitPrice, unitPricePresent, err := lookupNumberField(payload, sot.UnitPriceField)
+	if err != nil {
+		return salesorders.CreateSalesOrderTxInput{}, false, err
+	}
+	if !quantityPresent || !unitPricePresent {
+		return salesorders.CreateSalesOrderTxInput{}, false, nil
+	}
+	quantityStr, err := formatAmount(quantity)
+	if err != nil {
+		return salesorders.CreateSalesOrderTxInput{}, false, err
+	}
+	unitPriceStr, err := formatAmount(unitPrice)
+	if err != nil {
+		return salesorders.CreateSalesOrderTxInput{}, false, err
+	}
+
+	var productID *uuid.UUID
+	productIDStr, present, err := lookupStringField(payload, sot.ProductField)
+	if err != nil {
+		return salesorders.CreateSalesOrderTxInput{}, false, err
+	}
+	if present {
+		id, err := uuid.Parse(productIDStr)
+		if err != nil {
+			return salesorders.CreateSalesOrderTxInput{}, false, fmt.Errorf("%w: field %q must be a valid product id", ErrPayloadValidation, sot.ProductField)
+		}
+		productID = &id
+	}
+
+	var customerID *uuid.UUID
+	customerIDStr, present, err := lookupStringField(payload, sot.CustomerField)
+	if err != nil {
+		return salesorders.CreateSalesOrderTxInput{}, false, err
+	}
+	if present {
+		id, err := uuid.Parse(customerIDStr)
+		if err != nil {
+			return salesorders.CreateSalesOrderTxInput{}, false, fmt.Errorf("%w: field %q must be a valid customer id", ErrPayloadValidation, sot.CustomerField)
+		}
+		customerID = &id
+	}
+
+	shippingAddress, _, err := lookupStringField(payload, sot.ShippingAddressField)
+	if err != nil {
+		return salesorders.CreateSalesOrderTxInput{}, false, err
+	}
+
+	return salesorders.CreateSalesOrderTxInput{
+		CustomerID: customerID, Description: interpolateTemplate(sot.Description, payload),
+		Quantity: quantityStr, UnitPrice: unitPriceStr, ProductID: productID, ShippingAddress: shippingAddress,
+	}, true, nil
+}
+
+// resolvePurchaseOrder resolves pot against payload into the arguments
+// internal/procurement.CreatePurchaseOrderTx needs - same "ok=false means
+// a required field simply wasn't supplied, skip not fail" contract
+// resolveSalesOrder's own doc comment documents.
+func resolvePurchaseOrder(pot *PurchaseOrderTemplate, payload map[string]any) (procurement.CreatePurchaseOrderTxInput, bool, error) {
+	quantity, quantityPresent, err := lookupNumberField(payload, pot.QuantityField)
+	if err != nil {
+		return procurement.CreatePurchaseOrderTxInput{}, false, err
+	}
+	unitPrice, unitPricePresent, err := lookupNumberField(payload, pot.UnitPriceField)
+	if err != nil {
+		return procurement.CreatePurchaseOrderTxInput{}, false, err
+	}
+	if !quantityPresent || !unitPricePresent {
+		return procurement.CreatePurchaseOrderTxInput{}, false, nil
+	}
+	quantityStr, err := formatAmount(quantity)
+	if err != nil {
+		return procurement.CreatePurchaseOrderTxInput{}, false, err
+	}
+	unitPriceStr, err := formatAmount(unitPrice)
+	if err != nil {
+		return procurement.CreatePurchaseOrderTxInput{}, false, err
+	}
+
+	var productID *uuid.UUID
+	productIDStr, present, err := lookupStringField(payload, pot.ProductField)
+	if err != nil {
+		return procurement.CreatePurchaseOrderTxInput{}, false, err
+	}
+	if present {
+		id, err := uuid.Parse(productIDStr)
+		if err != nil {
+			return procurement.CreatePurchaseOrderTxInput{}, false, fmt.Errorf("%w: field %q must be a valid product id", ErrPayloadValidation, pot.ProductField)
+		}
+		productID = &id
+	}
+
+	var supplierID *uuid.UUID
+	supplierIDStr, present, err := lookupStringField(payload, pot.SupplierField)
+	if err != nil {
+		return procurement.CreatePurchaseOrderTxInput{}, false, err
+	}
+	if present {
+		id, err := uuid.Parse(supplierIDStr)
+		if err != nil {
+			return procurement.CreatePurchaseOrderTxInput{}, false, fmt.Errorf("%w: field %q must be a valid supplier id", ErrPayloadValidation, pot.SupplierField)
+		}
+		supplierID = &id
+	}
+
+	return procurement.CreatePurchaseOrderTxInput{
+		SupplierID: supplierID, Description: interpolateTemplate(pot.Description, payload),
+		Quantity: quantityStr, UnitPrice: unitPriceStr, ProductID: productID,
 	}, true, nil
 }
 
@@ -1173,6 +1294,14 @@ func executeTransitionTx(ctx context.Context, tx pgx.Tx, firmID, userID, instanc
 	if err != nil {
 		return "", "", nil, err
 	}
+	salesOrderTemplate, err := extractEffect[SalesOrderTemplate](effects, EffectKindSalesOrder)
+	if err != nil {
+		return "", "", nil, err
+	}
+	purchaseOrderTemplate, err := extractEffect[PurchaseOrderTemplate](effects, EffectKindPurchaseOrder)
+	if err != nil {
+		return "", "", nil, err
+	}
 
 	allowed, err := permission.Has(ctx, tx, firmID, userID, permissionKey)
 	if err != nil {
@@ -1322,6 +1451,46 @@ func executeTransitionTx(ctx context.Context, tx pgx.Tx, firmID, userID, instanc
 		}
 		if ok {
 			if _, err := invoicing.CreateInvoiceTx(ctx, tx, firmID, instanceID, invoiceInput); err != nil {
+				return "", "", nil, err
+			}
+		}
+	}
+
+	// The workflow-to-sales-order bridge (sixth bridge, sales orders +
+	// full procurement cycle batch): same shape as the invoicing bridge
+	// just above, through internal/salesorders.CreateSalesOrderTx -
+	// stock_to_sale's record_sale carries this alongside its existing
+	// InvoiceTemplate, so a sale now auto-creates BOTH a draft invoice AND
+	// a confirmed sales order, sourced to this instance, in the SAME
+	// transaction as the state change. ok=false means
+	// QuantityField/UnitPriceField simply weren't both supplied - skipped,
+	// not failed (resolveSalesOrder's own doc comment).
+	if salesOrderTemplate != nil {
+		salesOrderInput, ok, err := resolveSalesOrder(salesOrderTemplate, mergedPayload)
+		if err != nil {
+			return "", "", nil, err
+		}
+		if ok {
+			if _, err := salesorders.CreateSalesOrderTx(ctx, tx, firmID, instanceID, salesOrderInput); err != nil {
+				return "", "", nil, err
+			}
+		}
+	}
+
+	// The workflow-to-purchase-order bridge (seventh bridge): same shape,
+	// through internal/procurement.CreatePurchaseOrderTx - purchase_order's
+	// own "send" transition carries this (see purchase_order.go), so
+	// sending a draft PO now auto-creates a structured, sent purchase
+	// order record, sourced to this instance, in the SAME transaction as
+	// the state change. ok=false means QuantityField/UnitPriceField
+	// simply weren't both supplied - skipped, not failed.
+	if purchaseOrderTemplate != nil {
+		purchaseOrderInput, ok, err := resolvePurchaseOrder(purchaseOrderTemplate, mergedPayload)
+		if err != nil {
+			return "", "", nil, err
+		}
+		if ok {
+			if _, err := procurement.CreatePurchaseOrderTx(ctx, tx, firmID, instanceID, purchaseOrderInput); err != nil {
 				return "", "", nil, err
 			}
 		}

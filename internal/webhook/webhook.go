@@ -91,6 +91,14 @@ const (
 	EventInvoiceCreated             Event = "invoice.created"
 	EventInvoicePaid                Event = "invoice.paid"
 	EventApprovalPending            Event = "approval.pending"
+	// EventSalesOrderCreated/EventPurchaseOrderCreated (sales orders +
+	// procurement cycle batch): dispatched by internal/salesorders.CreateSalesOrder
+	// / internal/procurement.CreatePurchaseOrder respectively - the direct,
+	// owner-gated creation path only, same "never dispatched from inside
+	// the workflow bridge's still-open transaction" reasoning
+	// EventInvoiceCreated's own dispatch site documents.
+	EventSalesOrderCreated    Event = "sales_order.created"
+	EventPurchaseOrderCreated Event = "purchase_order.created"
 )
 
 // AllEvents is every event type this batch supports - the create/edit
@@ -102,6 +110,8 @@ var AllEvents = []Event{
 	EventInvoiceCreated,
 	EventInvoicePaid,
 	EventApprovalPending,
+	EventSalesOrderCreated,
+	EventPurchaseOrderCreated,
 }
 
 func validEvent(e string) bool {

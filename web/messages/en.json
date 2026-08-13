@@ -51,6 +51,7 @@
     "logistics": "Logistics",
     "customers": "Customers",
     "invoices": "Invoices",
+    "salesOrders": "Sales Orders",
     "edgeAgents": "Edge Agents",
     "approvals": "Approvals",
     "logout": "Log out",
@@ -672,7 +673,9 @@
       "pendingDeliveries": "Pending deliveries",
       "activeCustomers": "Active customers",
       "overdueInvoices": "Overdue invoices",
-      "totalOutstanding": "Total outstanding"
+      "totalOutstanding": "Total outstanding",
+      "openSalesOrders": "Open sales orders",
+      "salesThisMonth": "Sales this month"
     },
     "tabDashboard": "Dashboard",
     "tabMyReports": "My Reports",
@@ -1109,5 +1112,39 @@
       "cancelled": "Cancelled"
     },
     "filterPlaceholder": "Filter by invoice number"
+  },
+  "SalesOrders": {
+    "title": "Sales Orders",
+    "loadError": "Couldn't load this data. Please try again.",
+    "empty": "No sales orders yet.",
+    "ordersTitle": "Sales orders",
+    "newOrder": "+ New order",
+    "cancel": "Cancel",
+    "create": "Create",
+    "createRequired": "Please fill in the line description, quantity, and unit price.",
+    "createError": "Couldn't create this sales order. Please try again.",
+    "customer": "Customer",
+    "customerNone": "No customer",
+    "shippingAddress": "Shipping address",
+    "lineDescription": "Description",
+    "lineQuantity": "Quantity",
+    "lineUnitPrice": "Unit price",
+    "columnNumber": "Order #",
+    "columnStatus": "Status",
+    "columnTotal": "Total",
+    "columnCreatedAt": "Created",
+    "columnLineTotal": "Line total",
+    "changeStatus": "Change status:",
+    "statusChangeError": "Couldn't update the order's status. Please try again.",
+    "autoCreatedNote": "This order was created automatically from a sale.",
+    "filterPlaceholder": "Filter by order number",
+    "status": {
+      "draft": "Draft",
+      "confirmed": "Confirmed",
+      "picking": "Picking",
+      "shipped": "Shipped",
+      "delivered": "Delivered",
+      "cancelled": "Cancelled"
+    }
   }
 }

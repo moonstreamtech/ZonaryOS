@@ -49,6 +49,7 @@
     "logistics": "Lojistik",
     "customers": "Müşteriler",
     "invoices": "Faturalar",
+    "salesOrders": "Satış Siparişleri",
     "edgeAgents": "Uç Aracıları",
     "approvals": "Onaylar",
     "tasks": "Görevler",
@@ -672,7 +673,9 @@
       "pendingDeliveries": "Bekleyen teslimatlar",
       "activeCustomers": "Aktif müşteriler",
       "overdueInvoices": "Gecikmiş faturalar",
-      "totalOutstanding": "Toplam bekleyen tutar"
+      "totalOutstanding": "Toplam bekleyen tutar",
+      "openSalesOrders": "Açık satış siparişleri",
+      "salesThisMonth": "Bu ayki satışlar"
     },
     "tabDashboard": "Panel",
     "tabMyReports": "Raporlarım",
@@ -1109,5 +1112,39 @@
       "cancelled": "İptal edildi"
     },
     "filterPlaceholder": "Fatura numarasına göre filtrele"
+  },
+  "SalesOrders": {
+    "title": "Satış Siparişleri",
+    "loadError": "Bu veri yüklenemedi. Lütfen tekrar deneyin.",
+    "empty": "Henüz satış siparişi yok.",
+    "ordersTitle": "Satış siparişleri",
+    "newOrder": "+ Yeni sipariş",
+    "cancel": "İptal",
+    "create": "Oluştur",
+    "createRequired": "Lütfen açıklama, miktar ve birim fiyatı doldurun.",
+    "createError": "Bu satış siparişi oluşturulamadı. Lütfen tekrar deneyin.",
+    "customer": "Müşteri",
+    "customerNone": "Müşteri yok",
+    "shippingAddress": "Teslimat adresi",
+    "lineDescription": "Açıklama",
+    "lineQuantity": "Miktar",
+    "lineUnitPrice": "Birim fiyat",
+    "columnNumber": "Sipariş No",
+    "columnStatus": "Durum",
+    "columnTotal": "Toplam",
+    "columnCreatedAt": "Oluşturulma",
+    "columnLineTotal": "Satır toplamı",
+    "changeStatus": "Durumu değiştir:",
+    "statusChangeError": "Siparişin durumu güncellenemedi. Lütfen tekrar deneyin.",
+    "autoCreatedNote": "Bu sipariş bir satıştan otomatik olarak oluşturuldu.",
+    "filterPlaceholder": "Sipariş numarasına göre filtrele",
+    "status": {
+      "draft": "Taslak",
+      "confirmed": "Onaylandı",
+      "picking": "Toplanıyor",
+      "shipped": "Kargoya verildi",
+      "delivered": "Teslim edildi",
+      "cancelled": "İptal edildi"
+    }
   }
 }
