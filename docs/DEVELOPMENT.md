@@ -1176,6 +1176,51 @@ go test ./internal/workflow/... -run 'RecordSaleCreatesSalesOrder|RecordSaleWith
 go test ./internal/reports/... -run GetDashboardKPIs -v
 ```
 
+## Manufacturing module foundation and production planning
+
+Vision §3 names manufacturing as a core domain; the wizard's "do you manufacture?" question previously dead-ended at a "coming soon" placeholder. This batch builds the foundation: a Bill of Materials (BOM) per product, and production orders that consume a BOM's components and produce finished goods - the data model and operations foundation, deliberately not a full MES (no MRP, no capacity planning, no machine/workstation routing, no batch/lot tracking).
+
+**`internal/manufacturing`** (new package): `bom_headers`/`bom_lines` and `production_orders`/`production_order_material_issues`/`production_order_sequences` (`migrations/0027_manufacturing_core.up.sql`), all firm-scoped and RLS-enabled. Owner-gated writes, member-gated reads - same tier `internal/inventory`'s product/supplier mutations use.
+
+**BOM version management**: a product can have multiple BOM versions (`bom_headers.version`) but only one `is_active` at a time - enforced in Go (`deactivateOtherActiveBOMsTx`, `bom.go`), not a partial unique index: `CreateBOM`/`UpdateBOM` both clear `is_active` on every OTHER version for the same product in the SAME transaction as setting the new/updated one active, so there is never a window with two active versions or zero. `TestCreateBOM_ActiveVersionEnforcement` proves this both at creation time and via an explicit `UpdateBOM` re-activation.
+
+**Material issue atomicity and the seventh reuse of `AdjustStockTx`**: `StartProductionOrder` (`production.go`) moves a production order from `planned` to `in_progress` and, in the SAME transaction, auto-issues every BOM component - `quantity_per_unit * (quantity_planned / bom_headers.unit_yield)` per line, computed in Postgres's own exact `numeric` arithmetic then cast to `numeric(19,4)` (matching `internal/inventory`'s own `signedDecimalPattern` scale) before being handed to `AdjustStockTx`. This is the SAME `internal/inventory.AdjustStockTx` primitive `internal/workflow`'s `record_sale`/`receive` bridges already reuse - no parallel stock-adjustment mechanism was built for manufacturing. Mirrors `internal/payroll.ClosePeriod`'s own documented shape: `SELECT ... FOR UPDATE` locks the order row first (serializing concurrent `Start` calls), a status check rejects anything but `planned`, then each component is deducted and logged (`production_order_material_issues`, reason `"production_issue"`) in sequence. If ANY component's stock is insufficient, `AdjustStockTx` returns `ErrInsufficientStock` and the WHOLE transaction rolls back - every component already deducted in this same call, and the status flip, together - so there is no partial-issue outcome (`TestStartProductionOrder_InsufficientStockRollsBackAtomically` proves a plentiful component's deduction rolls back alongside a scarce one's rejection).
+
+**Completion and the journal entry structure**: `CompleteProductionOrder` moves `in_progress` to `completed`, adds `quantityProduced` (the actual amount made, independent of `quantity_planned`) to the finished product's stock via the same `AdjustStockTx` (reason `"production_complete"`), then posts ONE balanced journal entry, valued at the aggregate cost of the components THIS order's own material-issue log actually recorded (`SUM(production_order_material_issues.quantity_issued * products.cost_price)` - not re-derived from the BOM's current `quantity_per_unit`, which could have changed since the order started):
+
+```
+DR Work in Progress (1300) / CR Inventory (1200)   — component value
+DR Finished Goods (1400)   / CR Work in Progress (1300) — component value (same amount)
+```
+
+This is simple transfer costing (finished goods valued at the cost of materials consumed, no labor/overhead allocation) - WIP nets to exactly zero after completion, the correct steady-state balance for a completed order with no other order concurrently in progress. If the aggregate value is zero (no component had a `cost_price` set), the journal entry is skipped entirely rather than posted with a zero amount (`journal_lines.amount`'s own `CHECK (amount > 0)` would reject it) - the same "skip, not fail" contract `internal/workflow`'s own optional-data bridges (e.g. `resolveInvoice`) already establish: stock still moves, the order still completes, only the ledger entry is skipped.
+
+**Cancel leaves stock unchanged**: `CancelProductionOrder` (from `planned` or `in_progress`) never reverses a material issue - a started-then-cancelled order has genuinely consumed those components; "cancel" cancels the remaining work, not the physical reality of what already left stock. `TestCancelProductionOrder_LeavesStockUnchanged` covers the unambiguous case (cancelling a `planned` order that never issued anything).
+
+**Wizard wiring** (`internal/wizard/tree.go`): `buildManufactureNode`'s "yes" branch previously dead-ended at a `NodePlaceholder`; both "yes" and "no" now reach `ActionCreateDefaultFirm` with `SeedSelection.SeedManufacturing` set accordingly, the same shape every other yes/no question in this tree already uses. `CreateDefaultFirm` (`firm.go`) seeds Work in Progress (`1300`)/Finished Goods (`1400`) accounts (`accounting.SeedChartOptions.SeedManufacturing`, alongside Inventory - a manufacturing-only firm needs somewhere to issue components FROM, same reasoning `purchasesAccounts` already includes Inventory) and a minimal `manufacturing_order` workflow definition (`workflow.ManufacturingOrderSpec`: Planned -> In Progress -> Completed/Cancelled) when `SeedManufacturing` is true.
+
+**The `manufacturing_order` workflow carries no Effects** - deliberately: it's a parametric REPRESENTATION of the production order lifecycle (so manufacturing shows up in the dashboard's per-definition overview, quick-create, and global search, the same cross-module-consistency role `internal/absence`'s own backing workflow instance plays), not the mechanism that drives real work. The real `production_orders` table and `internal/manufacturing`'s own `Start`/`Complete`/`Cancel` HTTP handlers do the actual material-issue/stock/journal work directly - not through `ExecuteTransition`.
+
+- HTTP surface: `GET`/`POST /api/firms/{firmID}/boms`, `GET`/`PATCH`/`DELETE /api/firms/{firmID}/boms/{bomID}`, `POST`/`DELETE /api/firms/{firmID}/boms/{bomID}/lines[/{lineID}]`; `GET`/`POST /api/firms/{firmID}/production-orders`, `GET /api/firms/{firmID}/production-orders/{orderID}`, `POST .../start`, `POST .../complete`, `POST .../cancel`.
+- Frontend: `/manufacturing/bom` (`components/Manufacturing/BOMManager.tsx` - list with a minimal one-component create form) and `/manufacturing/bom/{bomId}` (`BOMDetail.tsx` - components, other versions with a "set active" control); `/manufacturing/orders` (`ProductionOrdersManager.tsx` - list, BOM dropdown filtered client-side to the chosen product) and `/manufacturing/orders/{orderId}` (`ProductionOrderDetail.tsx` - material issue log, start/complete/cancel actions).
+- New KPIs (`internal/reports/kpi.go`): `activeProductionOrders` (new `KPIKindManufacturing`/`ManufacturingMetricActiveProductionOrders` - count of `production_orders` in `planned`/`in_progress`) and `productionWipValue` (NOT a new Kind - a plain `KPIKindAccountBalanceNow` descriptor against `accounting.WorkInProgressAccountCode`, since WIP's balance already lives in `journal_entries`/`journal_lines`, data `KPIKindAccountBalanceNow` already knows how to sum).
+
+### Scope boundaries
+
+No MRP (material requirements planning), no capacity planning, no machine/workstation routing, no batch/lot tracking.
+
+### Running these tests
+
+`internal/manufacturing/manufacturing_integration_test.go` (BOM active-version enforcement, component list integrity, material issue deducting stock, insufficient-stock atomicity, completion adding finished goods and posting a balanced journal entry, cancel leaving stock unchanged) and `internal/wizard/firm_integration_test.go`'s `TestCreateDefaultFirm_SeedManufacturingSeedsExpectedAccountsAndWorkflow` all need a real Postgres:
+
+```
+export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5433/zonaryos?sslmode=disable
+export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5433/zonaryos?sslmode=disable
+make migrate
+go test ./internal/manufacturing/... -v
+go test ./internal/wizard/... -run Manufacturing -v
+```
+
 ## Continuous Integration
 
 `.github/workflows/ci.yml` turns most of the CI Checklist categories (CLAUDE.md's "How to Verify a Change") from manual PR-by-PR discipline into automated checks on every PR (and on push to `main`). Every job here existed as a manual step some earlier PR ran by hand - this file doesn't introduce new verification steps, it just stops trusting a human to remember to run them. **Canary/Rollback Trigger** remains the one item intentionally "Not Set Up": there is no ZonaryOS deployment target or infrastructure decided yet (see `docs/OPEN_POINTS.md` item 34) for a rollback trigger to hook into.

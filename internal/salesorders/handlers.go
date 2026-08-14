@@ -97,18 +97,18 @@ func toLineResponse(l SalesOrderLine) salesOrderLineResponse {
 }
 
 type salesOrderResponse struct {
-	ID                     string                    `json:"id"`
-	OrderNumber            string                    `json:"orderNumber"`
-	CustomerID             *string                   `json:"customerId,omitempty"`
-	Status                 string                    `json:"status"`
-	ShippingAddress        *string                   `json:"shippingAddress,omitempty"`
-	Notes                  *string                   `json:"notes,omitempty"`
-	Currency               string                    `json:"currency"`
-	Subtotal               string                    `json:"subtotal"`
-	TaxAmount              string                    `json:"taxAmount"`
-	Total                  string                    `json:"total"`
-	SourceWorkflowInstance *string                   `json:"sourceWorkflowInstance,omitempty"`
-	CreatedAt              string                    `json:"createdAt"`
+	ID                     string                   `json:"id"`
+	OrderNumber            string                   `json:"orderNumber"`
+	CustomerID             *string                  `json:"customerId,omitempty"`
+	Status                 string                   `json:"status"`
+	ShippingAddress        *string                  `json:"shippingAddress,omitempty"`
+	Notes                  *string                  `json:"notes,omitempty"`
+	Currency               string                   `json:"currency"`
+	Subtotal               string                   `json:"subtotal"`
+	TaxAmount              string                   `json:"taxAmount"`
+	Total                  string                   `json:"total"`
+	SourceWorkflowInstance *string                  `json:"sourceWorkflowInstance,omitempty"`
+	CreatedAt              string                   `json:"createdAt"`
 	Lines                  []salesOrderLineResponse `json:"lines,omitempty"`
 }
 

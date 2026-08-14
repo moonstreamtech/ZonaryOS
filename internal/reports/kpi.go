@@ -114,6 +114,13 @@ const (
 	// metric silently querying the wrong table for the other's status
 	// values.
 	KPIKindSalesOrders KPIKind = "sales_orders"
+	// KPIKindManufacturing (manufacturing module foundation batch):
+	// dispatches further on ManufacturingMetric below - queries
+	// internal/manufacturing's own production_orders table directly, same
+	// "own tables live outside this package, queried the same way
+	// KPIKindReceivables/KPIKindSalesOrders already query their own
+	// tables" reasoning those Kinds' own doc comments give.
+	KPIKindManufacturing KPIKind = "manufacturing"
 )
 
 // InventoryMetric is KPIKindInventoryKPI's own descriptor field - which
@@ -182,6 +189,25 @@ const (
 	// created in the current calendar month, per the design brief's
 	// "sales_this_month" spec.
 	SalesOrdersMetricSalesThisMonth SalesOrdersMetric = "sales_this_month"
+)
+
+// ManufacturingMetric is KPIKindManufacturing's own descriptor field -
+// which manufacturing-specific figure to compute, the same "room to grow
+// without a new Kind" pattern InventoryMetric/CRMMetric/ReceivablesMetric/
+// SalesOrdersMetric already establish.
+type ManufacturingMetric string
+
+const (
+	// ManufacturingMetricActiveProductionOrders: how many
+	// production_orders are currently in planned/in_progress, per the
+	// design brief's "active_production_orders" spec. (This batch's own
+	// "production_wip_value" KPI is NOT a ManufacturingMetric - it's a
+	// plain KPIKindAccountBalanceNow descriptor against
+	// accounting.WorkInProgressAccountCode, since WIP's balance already
+	// lives in journal_entries/journal_lines, the exact data
+	// KPIKindAccountBalanceNow already knows how to sum; no new query
+	// shape was needed for it.)
+	ManufacturingMetricActiveProductionOrders ManufacturingMetric = "active_production_orders"
 )
 
 // ReceivablesMetric is KPIKindReceivables' own descriptor field - which
@@ -259,6 +285,9 @@ type KPIDescriptor struct {
 
 	// SalesOrdersMetric is used by KPIKindSalesOrders.
 	SalesOrdersMetric SalesOrdersMetric
+
+	// ManufacturingMetric is used by KPIKindManufacturing.
+	ManufacturingMetric ManufacturingMetric
 }
 
 // kpiDescriptors is the dashboard's actual KPI list - the design brief's
@@ -326,6 +355,14 @@ var kpiDescriptors = []KPIDescriptor{
 	{
 		Key: "salesThisMonth", Kind: KPIKindSalesOrders,
 		SalesOrdersMetric: SalesOrdersMetricSalesThisMonth,
+	},
+	{
+		Key: "activeProductionOrders", Kind: KPIKindManufacturing,
+		ManufacturingMetric: ManufacturingMetricActiveProductionOrders,
+	},
+	{
+		Key: "productionWipValue", Kind: KPIKindAccountBalanceNow,
+		AccountCodes: []string{accounting.WorkInProgressAccountCode}, NormalDebit: true,
 	},
 }
 
@@ -436,6 +473,9 @@ func computeKPI(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, d KPIDescripto
 
 	case KPIKindSalesOrders:
 		return computeSalesOrdersKPI(ctx, tx, firmID, d)
+
+	case KPIKindManufacturing:
+		return computeManufacturingKPI(ctx, tx, firmID, d)
 
 	default:
 		return KPIResult{}, fmt.Errorf("unknown KPI kind %q", d.Kind)
@@ -623,6 +663,30 @@ func computeSalesOrdersKPI(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, d K
 
 	default:
 		return KPIResult{}, fmt.Errorf("unknown sales orders metric %q", d.SalesOrdersMetric)
+	}
+}
+
+// computeManufacturingKPI dispatches on d.ManufacturingMetric - the same
+// role computeSalesOrdersKPI's own switch plays for SalesOrdersMetric.
+//
+// ciaudit:ignore-firmid-check: internal helper called only by computeKPI,
+// itself only called by GetDashboardKPIs after permission.IsMember has
+// already run - firmID here scopes the query (defense in depth alongside
+// RLS), it is not itself an authorization decision.
+func computeManufacturingKPI(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, d KPIDescriptor) (KPIResult, error) {
+	switch d.ManufacturingMetric {
+	case ManufacturingMetricActiveProductionOrders:
+		var count int
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM production_orders
+			WHERE firm_id = $1 AND status IN ('planned', 'in_progress')
+		`, firmID).Scan(&count); err != nil {
+			return KPIResult{}, fmt.Errorf("count active production orders: %w", err)
+		}
+		return KPIResult{Key: d.Key, Unit: unitCount, Value: fmt.Sprintf("%d", count)}, nil
+
+	default:
+		return KPIResult{}, fmt.Errorf("unknown manufacturing metric %q", d.ManufacturingMetric)
 	}
 }
 

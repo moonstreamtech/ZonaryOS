@@ -81,6 +81,16 @@ type SeedSelection struct {
 	// Salary Expense / Salaries Payable accounts
 	// (internal/accounting.SeedChartOptions.ManagesPeople).
 	ManagesPeople bool
+	// SeedManufacturing is root question 5 (manufacturing module
+	// foundation batch), "do you manufacture products?" - the tree's last
+	// question on every path. true seeds the Work in Progress/Finished
+	// Goods accounts (internal/accounting.SeedChartOptions.SeedManufacturing)
+	// and the Manufacturing Order workflow
+	// (workflow.ManufacturingOrderSpec) - a parametric representation of
+	// the production order lifecycle, alongside the real
+	// internal/manufacturing.ProductionOrder table that actually drives
+	// material issues and completion.
+	SeedManufacturing bool
 }
 
 // Answer is one option a NodeQuestion offers. Value is the stable
@@ -131,28 +141,33 @@ func yesNoAnswers(yesNext, noNext *Node) []Answer {
 	}
 }
 
-// buildManufactureNode is root question 4, "do you manufacture products?"
-// - the tree's last question on every path. "no" reaches the
-// create-default-firm action carrying sel (the full accumulated
-// SeedSelection for this path); "yes" dead-ends at the pre-existing
-// "coming soon" placeholder - manufacturing support itself remains out of
-// scope, unchanged from the tree's original single-question slice.
+// buildManufactureNode is root question 5, "do you manufacture products?"
+// - the tree's last question on every path. Both answers reach the
+// create-default-firm action, carrying the full accumulated SeedSelection
+// for this path with SeedManufacturing set accordingly - manufacturing
+// module foundation batch: this used to dead-end "yes" at a "coming soon"
+// placeholder (Open Points item 12's original scope boundary); the
+// foundation now exists, so this is a real, wired question like every
+// other one in this tree.
 func buildManufactureNode(keyPrefix string, sel SeedSelection) *Node {
+	yes, no := sel, sel
+	yes.SeedManufacturing, no.SeedManufacturing = true, false
 	return &Node{
 		Key:         keyPrefix + "_manufacture",
 		Kind:        NodeQuestion,
 		QuestionKey: "doYouManufacture",
 		Answers: yesNoAnswers(
 			&Node{
-				Key:            keyPrefix + "_manufacturing_coming_soon",
-				Kind:           NodePlaceholder,
-				PlaceholderKey: "manufacturingComingSoon",
-			},
-			&Node{
-				Key:       keyPrefix + "_create_default_firm",
+				Key:       keyPrefix + "_manufactureYes_create_default_firm",
 				Kind:      NodeAction,
 				ActionKey: ActionCreateDefaultFirm,
-				Seed:      &sel,
+				Seed:      &yes,
+			},
+			&Node{
+				Key:       keyPrefix + "_manufactureNo_create_default_firm",
+				Kind:      NodeAction,
+				ActionKey: ActionCreateDefaultFirm,
+				Seed:      &no,
 			},
 		),
 	}
