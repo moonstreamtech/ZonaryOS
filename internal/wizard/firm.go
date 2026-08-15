@@ -50,14 +50,15 @@ const createFirmAuditAction = "create"
 // Open Points item 37's resolution: "a firm that says no to everything
 // still gets created; it just starts with no seeded workflows."
 type CreateDefaultFirmResult struct {
-	FirmID                       uuid.UUID
-	FirmName                     string
-	RoleID                       uuid.UUID
-	StockToSaleDefinitionID      uuid.UUID
-	CustomerPipelineDefinitionID uuid.UUID
-	PurchaseOrderDefinitionID    uuid.UUID
-	TaskApprovalDefinitionID     uuid.UUID
-	AbsenceApprovalDefinitionID  uuid.UUID
+	FirmID                         uuid.UUID
+	FirmName                       string
+	RoleID                         uuid.UUID
+	StockToSaleDefinitionID        uuid.UUID
+	CustomerPipelineDefinitionID   uuid.UUID
+	PurchaseOrderDefinitionID      uuid.UUID
+	TaskApprovalDefinitionID       uuid.UUID
+	AbsenceApprovalDefinitionID    uuid.UUID
+	ManufacturingOrderDefinitionID uuid.UUID
 }
 
 // CreateDefaultFirm is the wizard's one implemented terminal action
@@ -150,6 +151,7 @@ func CreateDefaultFirm(ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID
 		Sells:                  sel.Sells,
 		PurchasesFromSuppliers: sel.PurchasesFromSuppliers,
 		ManagesPeople:          sel.ManagesPeople,
+		SeedManufacturing:      sel.SeedManufacturing,
 	}); err != nil {
 		return CreateDefaultFirmResult{}, fmt.Errorf("seed default chart of accounts: %w", err)
 	}
@@ -199,6 +201,14 @@ func CreateDefaultFirm(ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID
 			return CreateDefaultFirmResult{}, fmt.Errorf("seed absence approval workflow: %w", err)
 		}
 		result.AbsenceApprovalDefinitionID = absenceApprovalDefinitionID
+	}
+
+	if sel.SeedManufacturing {
+		manufacturingOrderDefinitionID, err := workflow.SeedManufacturingOrderWorkflowTx(ctx, tx, result.FirmID, result.RoleID)
+		if err != nil {
+			return CreateDefaultFirmResult{}, fmt.Errorf("seed manufacturing order workflow: %w", err)
+		}
+		result.ManufacturingOrderDefinitionID = manufacturingOrderDefinitionID
 	}
 
 	if _, err := tx.Exec(ctx, `

@@ -93,6 +93,26 @@ var PurchaseOrderSpec = DefinitionSpec{
 				Key:         SendPurchaseOrderPermission,
 				Description: "Send a draft purchase order to its supplier.",
 			},
+			// The workflow-to-purchase-order bridge (seventh bridge, sales
+			// orders + full procurement cycle batch): sending a draft PO to
+			// a supplier is the commercial commitment worth recording as a
+			// real, structured purchase order (unlike the Journal bridge
+			// below on "receive", which is deliberately NOT on "send" - see
+			// that reasoning a few lines down; a structural order record
+			// and a financial posting are different concerns). When both
+			// quantity and unit_price are present, ExecuteTransition
+			// auto-creates a 'sent' purchase order (one line), sourced to
+			// this instance, in the SAME transaction as the state change -
+			// see internal/procurement.CreatePurchaseOrderTx.
+			Effects: []TransitionEffect{
+				PurchaseOrderEffect(PurchaseOrderTemplate{
+					Description:    "Purchase from {{supplier_name}}",
+					ProductField:   "product_id",
+					QuantityField:  "quantity",
+					UnitPriceField: "unit_price",
+					SupplierField:  "supplier_id",
+				}),
+			},
 			// Deliberately no Journal here, despite the original design
 			// brief proposing "DR Purchase Expense / CR Trade Payables"
 			// at send-time. Sending a draft PO to a supplier is a

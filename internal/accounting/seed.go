@@ -33,6 +33,12 @@ const (
 	// purchasesAccounts above for what's already taken).
 	SalariesPayableAccountCode = "2200"
 	SalaryExpenseAccountCode   = "5200"
+	// WorkInProgressAccountCode/FinishedGoodsAccountCode (manufacturing
+	// module foundation batch): "1300"/"1400" - the next free asset codes
+	// after Inventory's "1200" (see manufacturingAccounts below and
+	// coreAccounts/sellsAccounts above for what's already taken).
+	WorkInProgressAccountCode = "1300"
+	FinishedGoodsAccountCode  = "1400"
 )
 
 // seedAccount is one row SeedDefaultChartOfAccountsTx inserts - a plain,
@@ -101,6 +107,25 @@ var peopleAccounts = []seedAccount{
 	{code: SalariesPayableAccountCode, name: "Salaries Payable", typ: AccountTypeLiability},
 }
 
+// manufacturingAccounts are seeded when the firm's wizard answers say it
+// manufactures products - the same precondition
+// internal/wizard.SeedSelection.SeedManufacturing gates, so
+// internal/manufacturing's production-order material-issue/completion
+// journal postings (DR Work in Progress / CR Inventory on issue, DR
+// Finished Goods / CR Work in Progress on completion) can always assume
+// these two accounts exist whenever a firm has production orders to run
+// at all. InventoryAccountCode is included here too (same reasoning
+// purchasesAccounts' own doc comment gives for including it alongside
+// sellsAccounts): a manufacturing-only firm - SeedManufacturing true but
+// neither Sells nor PurchasesFromSuppliers - would otherwise have nowhere
+// to issue components FROM, hitting ErrAccountNotFound the first time it
+// started a production order.
+var manufacturingAccounts = []seedAccount{
+	{code: InventoryAccountCode, name: "Inventory", typ: AccountTypeAsset},
+	{code: WorkInProgressAccountCode, name: "Work in Progress", typ: AccountTypeAsset},
+	{code: FinishedGoodsAccountCode, name: "Finished Goods", typ: AccountTypeAsset},
+}
+
 // SeedChartOptions gates which of the parametric, wizard-answer-dependent
 // account groups SeedDefaultChartOfAccountsTx seeds beyond the always-on
 // core tier - a plain struct of booleans (not internal/wizard.SeedSelection
@@ -115,18 +140,14 @@ type SeedChartOptions struct {
 	// PurchasesFromSuppliers seeds purchasesAccounts (Accounts Payable,
 	// Purchase Expense) - mirrors
 	// internal/wizard.SeedSelection.PurchasesFromSuppliers.
-	//
-	// Manufacturing's own accounts (Work in Progress, Finished Goods) are
-	// deliberately not represented here at all: internal/wizard's own
-	// decision tree has no manufacturing branch yet (it's still a
-	// NodePlaceholder dead end - see internal/wizard/tree.go's package
-	// doc comment), so there is no wizard answer that could ever set a
-	// corresponding option here. Adding those two accounts now, unseeded
-	// by anything, would just be dead schema.
 	PurchasesFromSuppliers bool
 	// ManagesPeople seeds peopleAccounts (Salary Expense, Salaries
 	// Payable) - mirrors internal/wizard.SeedSelection.ManagesPeople.
 	ManagesPeople bool
+	// SeedManufacturing seeds manufacturingAccounts (Inventory, Work in
+	// Progress, Finished Goods) - mirrors
+	// internal/wizard.SeedSelection.SeedManufacturing.
+	SeedManufacturing bool
 }
 
 // SeedDefaultChartOfAccountsTx seeds firmID's starter chart of accounts,
@@ -151,7 +172,7 @@ func SeedDefaultChartOfAccountsTx(ctx context.Context, tx pgx.Tx, firmID uuid.UU
 	// insert "1200" twice. A map keyed by code, converted to a
 	// code-sorted slice for a deterministic insert order, handles this
 	// cleanly regardless of which combination of groups is active.
-	byCode := make(map[string]seedAccount, len(coreAccounts)+len(sellsAccounts)+len(purchasesAccounts)+len(peopleAccounts))
+	byCode := make(map[string]seedAccount, len(coreAccounts)+len(sellsAccounts)+len(purchasesAccounts)+len(peopleAccounts)+len(manufacturingAccounts))
 	for _, a := range coreAccounts {
 		byCode[a.code] = a
 	}
@@ -167,6 +188,11 @@ func SeedDefaultChartOfAccountsTx(ctx context.Context, tx pgx.Tx, firmID uuid.UU
 	}
 	if opts.ManagesPeople {
 		for _, a := range peopleAccounts {
+			byCode[a.code] = a
+		}
+	}
+	if opts.SeedManufacturing {
+		for _, a := range manufacturingAccounts {
 			byCode[a.code] = a
 		}
 	}

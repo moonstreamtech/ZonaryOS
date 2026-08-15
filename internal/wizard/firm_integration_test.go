@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/moonstreamtech/ZonaryOS/internal/accounting"
 	"github.com/moonstreamtech/ZonaryOS/internal/identity"
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
 	"github.com/moonstreamtech/ZonaryOS/internal/wizard"
@@ -460,5 +461,80 @@ func TestSeedSelection_SeedsExactlyExpectedWorkflows(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestCreateDefaultFirm_SeedManufacturingSeedsExpectedAccountsAndWorkflow
+// is the manufacturing module foundation batch's own required test case:
+// SeedManufacturing: true seeds the Work in Progress and Finished Goods
+// accounts (accounting.SeedChartOptions.SeedManufacturing), Inventory
+// alongside them (a manufacturing-only firm needs somewhere to issue
+// components FROM - see accounting's own manufacturingAccounts doc
+// comment), and the Manufacturing Order workflow definition
+// (workflow.ManufacturingOrderKey) - a firm that answers "no" gets none
+// of the three.
+func TestCreateDefaultFirm_SeedManufacturingSeedsExpectedAccountsAndWorkflow(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	yesUserID := seedUser(ctx, t, adminPool, "wizard-manufacturing-yes")
+	yesResult, err := wizard.CreateDefaultFirm(ctx, appPool, yesUserID, "Manufacturing Yes Firm", wizard.SeedSelection{SeedManufacturing: true})
+	if err != nil {
+		t.Fatalf("CreateDefaultFirm (SeedManufacturing: true): %v", err)
+	}
+	if yesResult.ManufacturingOrderDefinitionID == uuid.Nil {
+		t.Error("expected a non-nil ManufacturingOrderDefinitionID when SeedManufacturing is true")
+	}
+
+	wantCodes := map[string]bool{
+		accounting.InventoryAccountCode:      true,
+		accounting.WorkInProgressAccountCode: true,
+		accounting.FinishedGoodsAccountCode:  true,
+	}
+	err = zdb.WithFirmContext(ctx, appPool, yesResult.FirmID, func(ctx context.Context, tx pgx.Tx) error {
+		for code := range wantCodes {
+			var exists bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM accounts WHERE firm_id = $1 AND code = $2)`, yesResult.FirmID, code).Scan(&exists); err != nil {
+				return err
+			}
+			if !exists {
+				t.Errorf("expected account code %q to be seeded", code)
+			}
+		}
+		var definitionKey string
+		if err := tx.QueryRow(ctx, `SELECT key FROM workflow_definitions WHERE id = $1`, yesResult.ManufacturingOrderDefinitionID).Scan(&definitionKey); err != nil {
+			return err
+		}
+		if definitionKey != workflow.ManufacturingOrderKey {
+			t.Errorf("expected workflow definition key %q, got %q", workflow.ManufacturingOrderKey, definitionKey)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("verify seeded manufacturing accounts/workflow: %v", err)
+	}
+
+	noUserID := seedUser(ctx, t, adminPool, "wizard-manufacturing-no")
+	noResult, err := wizard.CreateDefaultFirm(ctx, appPool, noUserID, "Manufacturing No Firm", wizard.SeedSelection{})
+	if err != nil {
+		t.Fatalf("CreateDefaultFirm (SeedManufacturing: false): %v", err)
+	}
+	if noResult.ManufacturingOrderDefinitionID != uuid.Nil {
+		t.Error("expected a nil ManufacturingOrderDefinitionID when SeedManufacturing is false")
+	}
+	err = zdb.WithFirmContext(ctx, appPool, noResult.FirmID, func(ctx context.Context, tx pgx.Tx) error {
+		for _, code := range []string{accounting.WorkInProgressAccountCode, accounting.FinishedGoodsAccountCode} {
+			var exists bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM accounts WHERE firm_id = $1 AND code = $2)`, noResult.FirmID, code).Scan(&exists); err != nil {
+				return err
+			}
+			if exists {
+				t.Errorf("expected account code %q NOT to be seeded when SeedManufacturing is false", code)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("verify manufacturing accounts absent: %v", err)
 	}
 }

@@ -164,6 +164,30 @@ var StockToSaleSpec = DefinitionSpec{
 					UnitPriceField: "unit_price",
 					CustomerField:  "customer_id",
 				}),
+				// The workflow-to-sales-order bridge (sixth bridge, sales
+				// orders + full procurement cycle batch): "the accounting,
+				// customer, and sales modules now have enough data to
+				// generate real sales orders" - the exact same precondition
+				// the Invoice effect's own doc comment gives, applied to a
+				// structured, fulfillment-tracked order record instead of a
+				// billing document. When both quantity and unit_price are
+				// present, ExecuteTransition auto-creates a CONFIRMED sales
+				// order (one line, from this same sale - see
+				// internal/salesorders.CreateSalesOrderTx's own doc comment
+				// for why it starts 'confirmed' rather than 'draft'),
+				// sourced to this instance, in the SAME transaction as the
+				// journal entry, stock adjustment, delivery, invoice, and
+				// state change. destination_address (already an existing
+				// optional field above) is reused as ShippingAddressField -
+				// not a new field.
+				SalesOrderEffect(SalesOrderTemplate{
+					Description:          "Sale of {{item}}",
+					ProductField:         "product_id",
+					QuantityField:        "quantity",
+					UnitPriceField:       "unit_price",
+					CustomerField:        "customer_id",
+					ShippingAddressField: "destination_address",
+				}),
 			},
 		},
 	},

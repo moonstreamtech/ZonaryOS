@@ -1,0 +1,11 @@
+DROP POLICY production_order_sequences_tenant_isolation ON production_order_sequences;
+DROP POLICY production_order_material_issues_tenant_isolation ON production_order_material_issues;
+DROP POLICY production_orders_tenant_isolation ON production_orders;
+DROP POLICY bom_lines_tenant_isolation ON bom_lines;
+DROP POLICY bom_headers_tenant_isolation ON bom_headers;
+
+DROP TABLE production_order_sequences;
+DROP TABLE production_order_material_issues;
+DROP TABLE production_orders;
+DROP TABLE bom_lines;
+DROP TABLE bom_headers;

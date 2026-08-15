@@ -1,0 +1,13 @@
+DROP POLICY purchase_order_sequences_tenant_isolation ON purchase_order_sequences;
+DROP POLICY purchase_order_lines_tenant_isolation ON purchase_order_lines;
+DROP POLICY purchase_orders_tenant_isolation ON purchase_orders;
+DROP POLICY sales_order_sequences_tenant_isolation ON sales_order_sequences;
+DROP POLICY sales_order_lines_tenant_isolation ON sales_order_lines;
+DROP POLICY sales_orders_tenant_isolation ON sales_orders;
+
+DROP TABLE purchase_order_sequences;
+DROP TABLE purchase_order_lines;
+DROP TABLE purchase_orders;
+DROP TABLE sales_order_sequences;
+DROP TABLE sales_order_lines;
+DROP TABLE sales_orders;

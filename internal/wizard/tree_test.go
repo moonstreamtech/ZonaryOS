@@ -102,9 +102,10 @@ func TestAnswer_SellsYesAsksInventoryThenCRM(t *testing.T) {
 
 // TestAnswer_FullSequenceEndsAtManufactureThenAction walks every question
 // down one full path and checks the terminal manufacturing question is
-// reached last, with "no" resolving to the create-firm action carrying
-// the accumulated SeedSelection, and "yes" dead-ending at the existing
-// placeholder.
+// reached last, with both "no" and "yes" resolving to the create-firm
+// action carrying the accumulated SeedSelection - manufacturing module
+// foundation batch: "yes" used to dead-end at a placeholder, now it's a
+// real, wired answer like every other question in this tree.
 func TestAnswer_FullSequenceEndsAtManufactureThenAction(t *testing.T) {
 	manufactureNode := walk(t, "yes", "yes", "yes", "yes", "yes", "yes")
 	if manufactureNode.QuestionKey != "doYouManufacture" {
@@ -127,20 +128,26 @@ func TestAnswer_FullSequenceEndsAtManufactureThenAction(t *testing.T) {
 	want := wizard.SeedSelection{
 		Sells: true, TracksInventory: true, ManagesCRM: true,
 		PurchasesFromSuppliers: true, ManagesTasks: true, ManagesPeople: true,
+		SeedManufacturing: false,
 	}
 	if *action.Seed != want {
 		t.Errorf("expected accumulated SeedSelection %+v, got %+v", want, *action.Seed)
 	}
 
-	placeholder, err := manufactureNode.Answer("yes")
+	manufactureAction, err := manufactureNode.Answer("yes")
 	if err != nil {
 		t.Fatalf("Answer(\"yes\") on manufacture node: %v", err)
 	}
-	if placeholder.Kind != wizard.NodePlaceholder {
-		t.Fatalf("expected a placeholder node, got kind %v", placeholder.Kind)
+	if manufactureAction.Kind != wizard.NodeAction {
+		t.Fatalf("expected an action node, got kind %v", manufactureAction.Kind)
 	}
-	if placeholder.PlaceholderKey == "" {
-		t.Error("expected a non-empty placeholder key")
+	if manufactureAction.Seed == nil {
+		t.Fatal("expected a non-nil Seed on the create-default-firm action node")
+	}
+	wantManufacturing := want
+	wantManufacturing.SeedManufacturing = true
+	if *manufactureAction.Seed != wantManufacturing {
+		t.Errorf("expected accumulated SeedSelection %+v, got %+v", wantManufacturing, *manufactureAction.Seed)
 	}
 }
 

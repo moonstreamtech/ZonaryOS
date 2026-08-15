@@ -115,6 +115,17 @@ const (
 	EffectKindDelivery = "delivery"
 	EffectKindCustomer = "customer"
 	EffectKindInvoice  = "invoice"
+	// EffectKindSalesOrder/EffectKindPurchaseOrder (sales orders + full
+	// procurement cycle batch) are the sixth and seventh bridge kinds -
+	// added exactly the way this file's own "sixth bridge" doc comment
+	// (TransitionSpec, above) already anticipated: a new EffectKind
+	// constant, a new *Template struct, a new constructor, a new
+	// validateEffect case, and a new extractEffect call site in
+	// engine.go - no further schema change, since Effects (this file's
+	// prior refactor, triggered by Invoice as the fifth bridge) is
+	// already the open-ended shape this needed.
+	EffectKindSalesOrder    = "salesOrder"
+	EffectKindPurchaseOrder = "purchaseOrder"
 )
 
 // newEffect marshals payload (always one of this package's own template
@@ -146,6 +157,17 @@ func StockEffect(sat StockAdjustmentTemplate) TransitionEffect {
 func DeliveryEffect(dt DeliveryTemplate) TransitionEffect { return newEffect(EffectKindDelivery, dt) }
 func CustomerEffect(ct CustomerTemplate) TransitionEffect { return newEffect(EffectKindCustomer, ct) }
 func InvoiceEffect(it InvoiceTemplate) TransitionEffect   { return newEffect(EffectKindInvoice, it) }
+
+// SalesOrderEffect/PurchaseOrderEffect (sixth/seventh bridges) wrap
+// SalesOrderTemplate/PurchaseOrderTemplate into a TransitionEffect ready
+// to append to TransitionSpec.Effects - see stock_to_sale.go's
+// record_sale and purchase_order.go's send for the concrete examples.
+func SalesOrderEffect(sot SalesOrderTemplate) TransitionEffect {
+	return newEffect(EffectKindSalesOrder, sot)
+}
+func PurchaseOrderEffect(pot PurchaseOrderTemplate) TransitionEffect {
+	return newEffect(EffectKindPurchaseOrder, pot)
+}
 
 // DeliveryTemplate describes the deliveries row a transition should
 // create - the declarative shape a workflow definition carries; engine.go
@@ -234,6 +256,68 @@ type InvoiceTemplate struct {
 	// reference, not just the one well-known convention stock_to_sale
 	// happens to use.
 	CustomerField string
+}
+
+// SalesOrderTemplate describes the sales order (with one line) a
+// transition should create - the sixth bridge, same declarative shape
+// InvoiceTemplate's own doc comment describes; engine.go resolves it
+// against one specific instance's payload at ExecuteTransition time.
+// stock_to_sale's record_sale carries this alongside its existing
+// InvoiceTemplate - a sale now produces both a draft invoice AND a
+// confirmed sales order in the same transaction, each independently
+// resolved.
+type SalesOrderTemplate struct {
+	// Description becomes the created line's description, with
+	// "{{field}}" placeholders substituted from the merged payload - same
+	// interpolateTemplate mechanism InvoiceTemplate.Description uses.
+	Description string
+	// ProductField OPTIONALLY names the payload field holding the line's
+	// product ID - same "missing leaves the column NULL" contract
+	// InvoiceTemplate.ProductField's own doc comment gives.
+	ProductField string
+	// QuantityField/UnitPriceField name the payload fields holding the
+	// line's quantity and unit price. BOTH must be present (and numeric)
+	// for the whole template to apply - same Rule-6-in-spirit reasoning
+	// InvoiceTemplate.QuantityField/UnitPriceField's own doc comment
+	// gives: an existing record_sale caller with no price data must keep
+	// working, with no sales order created.
+	QuantityField  string
+	UnitPriceField string
+	// CustomerField OPTIONALLY names the payload field holding the
+	// order's customer ID - same convention InvoiceTemplate.CustomerField
+	// establishes.
+	CustomerField string
+	// ShippingAddressField OPTIONALLY names the payload field holding the
+	// order's shipping address - absent simply leaves the column NULL,
+	// the same "missing optional field means NULL column" contract every
+	// other template's optional fields share.
+	ShippingAddressField string
+}
+
+// PurchaseOrderTemplate describes the purchase order (with one line) a
+// transition should create - the seventh bridge, SalesOrderTemplate's
+// purchase-facing counterpart. purchase_order's own "send" transition
+// carries this - see purchase_order.go's own doc comment for why "send"
+// (not "receive") is the right transition for this bridge: sending is
+// when the order itself becomes a real, structured commitment to a
+// supplier, independent of the "receive" transition's own accounting
+// bridge (which fires later, when goods actually arrive).
+type PurchaseOrderTemplate struct {
+	// Description becomes the created line's description, with
+	// "{{field}}" placeholders substituted from the merged payload.
+	Description string
+	// ProductField OPTIONALLY names the payload field holding the line's
+	// product ID.
+	ProductField string
+	// QuantityField/UnitPriceField name the payload fields holding the
+	// line's quantity and unit price - BOTH must be present for the whole
+	// template to apply, same Rule-6-in-spirit reasoning
+	// SalesOrderTemplate's own doc comment gives.
+	QuantityField  string
+	UnitPriceField string
+	// SupplierField OPTIONALLY names the payload field holding the
+	// order's supplier ID.
+	SupplierField string
 }
 
 // StockAdjustmentTemplate describes the stock_levels change a transition
@@ -729,6 +813,39 @@ func validateInvoiceTemplate(defKey, actionKey string, it InvoiceTemplate) error
 	return nil
 }
 
+// validateSalesOrderTemplate checks one TransitionSpec's optional
+// SalesOrderTemplate is structurally sound: a non-empty description, a
+// quantity field name, and a unit price field name - same shape
+// validateInvoiceTemplate checks for InvoiceTemplate.
+func validateSalesOrderTemplate(defKey, actionKey string, sot SalesOrderTemplate) error {
+	if sot.Description == "" {
+		return fmt.Errorf("workflow definition %q: transition %q: sales order template description must not be empty", defKey, actionKey)
+	}
+	if sot.QuantityField == "" {
+		return fmt.Errorf("workflow definition %q: transition %q: sales order template must name a quantity field", defKey, actionKey)
+	}
+	if sot.UnitPriceField == "" {
+		return fmt.Errorf("workflow definition %q: transition %q: sales order template must name a unit price field", defKey, actionKey)
+	}
+	return nil
+}
+
+// validatePurchaseOrderTemplate checks one TransitionSpec's optional
+// PurchaseOrderTemplate is structurally sound - same shape
+// validateSalesOrderTemplate checks for SalesOrderTemplate.
+func validatePurchaseOrderTemplate(defKey, actionKey string, pot PurchaseOrderTemplate) error {
+	if pot.Description == "" {
+		return fmt.Errorf("workflow definition %q: transition %q: purchase order template description must not be empty", defKey, actionKey)
+	}
+	if pot.QuantityField == "" {
+		return fmt.Errorf("workflow definition %q: transition %q: purchase order template must name a quantity field", defKey, actionKey)
+	}
+	if pot.UnitPriceField == "" {
+		return fmt.Errorf("workflow definition %q: transition %q: purchase order template must name a unit price field", defKey, actionKey)
+	}
+	return nil
+}
+
 // validateEffect dispatches one TransitionEffect to the validator for its
 // own Kind - the Effects-refactor's counterpart to what used to be five
 // separate `if t.Journal != nil { validateJournalTemplate(...) }`-shaped
@@ -771,8 +888,20 @@ func validateEffect(defKey, actionKey string, e TransitionEffect) error {
 			return fmt.Errorf("workflow definition %q: transition %q: invalid invoice effect payload: %w", defKey, actionKey, err)
 		}
 		return validateInvoiceTemplate(defKey, actionKey, it)
+	case EffectKindSalesOrder:
+		var sot SalesOrderTemplate
+		if err := json.Unmarshal(e.Payload, &sot); err != nil {
+			return fmt.Errorf("workflow definition %q: transition %q: invalid sales order effect payload: %w", defKey, actionKey, err)
+		}
+		return validateSalesOrderTemplate(defKey, actionKey, sot)
+	case EffectKindPurchaseOrder:
+		var pot PurchaseOrderTemplate
+		if err := json.Unmarshal(e.Payload, &pot); err != nil {
+			return fmt.Errorf("workflow definition %q: transition %q: invalid purchase order effect payload: %w", defKey, actionKey, err)
+		}
+		return validatePurchaseOrderTemplate(defKey, actionKey, pot)
 	default:
-		return fmt.Errorf("workflow definition %q: transition %q: unknown effect kind %q (must be one of journal/stock/delivery/customer/invoice)", defKey, actionKey, e.Kind)
+		return fmt.Errorf("workflow definition %q: transition %q: unknown effect kind %q (must be one of journal/stock/delivery/customer/invoice/salesOrder/purchaseOrder)", defKey, actionKey, e.Kind)
 	}
 }
 

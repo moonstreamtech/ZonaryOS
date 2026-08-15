@@ -128,6 +128,106 @@ async function fetchRecentActivity(
   return page ? page.entries : null;
 }
 
+function FeatureWorkflowIcon() {
+  return (
+    <svg viewBox="0 0 20 20" className="h-6 w-6 text-zinc-500 dark:text-zinc-400" aria-hidden="true">
+      <rect x="2" y="3" width="6" height="6" rx="1" fill="none" stroke="currentColor" strokeWidth="1.4" />
+      <rect x="12" y="11" width="6" height="6" rx="1" fill="none" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M8 6 H12 V11" fill="none" stroke="currentColor" strokeWidth="1.4" />
+    </svg>
+  );
+}
+
+function FeaturePermissionIcon() {
+  return (
+    <svg viewBox="0 0 20 20" className="h-6 w-6 text-zinc-500 dark:text-zinc-400" aria-hidden="true">
+      <path
+        d="M10 2 L17 5 V10 C17 14 14 17 10 18 C6 17 3 14 3 10 V5 Z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinejoin="round"
+      />
+      <path d="M7 10 L9 12 L13 7" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function FeatureAuditIcon() {
+  return (
+    <svg viewBox="0 0 20 20" className="h-6 w-6 text-zinc-500 dark:text-zinc-400" aria-hidden="true">
+      <path d="M4 3 H14 L16 5 V17 H4 Z" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+      <path d="M7 8 H13 M7 11 H13 M7 14 H10" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+// Public landing page (unauthenticated visitors only) - see docs task
+// "Public landing page + registration flow". Dark zinc-900 hero mirrors
+// the dashboard's own dark header-strip styling above, then a light
+// features section and a plain-text footer. Every interactive element
+// carries data-permission-public="true" since none of it is
+// permission-gated (Vision §3 permission-tag rule applies to gated UI;
+// public marketing chrome is tagged explicitly so the audit doesn't flag
+// it as untagged-and-forgotten).
+async function LandingPage() {
+  const tLanding = await getTranslations("Landing");
+
+  const features = [
+    { icon: <FeatureWorkflowIcon />, title: tLanding("feature1Title"), body: tLanding("feature1Body") },
+    { icon: <FeaturePermissionIcon />, title: tLanding("feature2Title"), body: tLanding("feature2Body") },
+    { icon: <FeatureAuditIcon />, title: tLanding("feature3Title"), body: tLanding("feature3Body") },
+  ];
+
+  return (
+    <main className="flex flex-1 flex-col">
+      <section className="flex flex-col items-center gap-8 bg-zinc-900 px-6 py-24 text-center">
+        <h1 className="text-5xl font-bold tracking-tight text-white sm:text-6xl">
+          {tLanding("wordmark")}
+        </h1>
+        <p className="max-w-xl text-lg text-zinc-300 sm:text-xl">{tLanding("tagline")}</p>
+        <div className="flex flex-col gap-3 sm:flex-row">
+          {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- /api/auth/login is a route handler, not a page */}
+          <a
+            href="/api/auth/login"
+            data-permission-public="true"
+            className="rounded-full border border-zinc-500 px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-zinc-800"
+          >
+            {tLanding("signIn")}
+          </a>
+          {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- /api/auth/login is a route handler, not a page */}
+          <a
+            href="/api/auth/login?mode=register"
+            data-permission-public="true"
+            className="rounded-full bg-white px-6 py-3 text-sm font-medium text-zinc-900 transition-colors hover:bg-zinc-200"
+          >
+            {tLanding("getStarted")}
+          </a>
+        </div>
+      </section>
+
+      <section className="grid gap-8 bg-white px-6 py-16 dark:bg-zinc-950 sm:grid-cols-3 sm:gap-6">
+        {features.map((feature) => (
+          <div key={feature.title} className="flex flex-col items-center gap-3 text-center sm:items-start sm:text-left">
+            {feature.icon}
+            <h2 className="text-base font-semibold text-black dark:text-zinc-50">{feature.title}</h2>
+            <p className="text-sm text-zinc-600 dark:text-zinc-400">{feature.body}</p>
+          </div>
+        ))}
+      </section>
+
+      <footer className="flex flex-col items-center gap-2 border-t border-zinc-200 bg-zinc-50 px-6 py-8 text-center text-sm text-zinc-500 dark:border-zinc-800 dark:bg-black dark:text-zinc-500">
+        <p>
+          {tLanding("footerLicense")}{" "}
+          <Link href="/docs" data-permission-public="true" className="underline">
+            {tLanding("footerDocs")}
+          </Link>
+        </p>
+      </footer>
+    </main>
+  );
+}
+
 // Firm dashboard (item 3 of this batch, KPI-restyled): the caller's
 // firm, their role in it, and a genuine cross-workflow overview - every
 // workflow definition the firm has, each broken down by how many
@@ -149,7 +249,6 @@ export default async function Home({ params }: PageProps) {
   const { locale } = await params;
   setRequestLocale(locale);
   const t = await getTranslations("Home");
-  const tAuth = await getTranslations("Auth");
   const tDash = await getTranslations("Dashboard");
   const backendUp = await fetchBackendStatus();
 
@@ -163,30 +262,7 @@ export default async function Home({ params }: PageProps) {
   }
 
   if (!me) {
-    return (
-      <main className="flex flex-1 flex-col items-center justify-center gap-6 bg-zinc-50 px-6 py-24 text-center dark:bg-black">
-        <h1 className="text-3xl font-semibold tracking-tight text-black dark:text-zinc-50">
-          {t("title")}
-        </h1>
-        <p className="max-w-md text-lg text-zinc-600 dark:text-zinc-400">
-          {t("subtitle")}
-        </p>
-        <p className="text-sm text-zinc-500 dark:text-zinc-500">
-          {t("statusLabel")}:{" "}
-          <span className={backendUp ? "text-green-600" : "text-red-600"}>
-            {backendUp ? t("statusOk") : t("statusError")}
-          </span>
-        </p>
-        {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- /api/auth/login is a route handler, not a page */}
-        <a
-          href="/api/auth/login"
-          data-permission-public="true"
-          className="rounded-full bg-foreground px-5 py-2 text-sm font-medium text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc]"
-        >
-          {tAuth("signIn")}
-        </a>
-      </main>
-    );
+    return <LandingPage />;
   }
 
   const firm = await resolveActiveFirm(me);

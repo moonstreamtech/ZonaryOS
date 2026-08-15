@@ -13,6 +13,8 @@ export const WEBHOOK_EVENTS = [
   "invoice.created",
   "invoice.paid",
   "approval.pending",
+  "sales_order.created",
+  "purchase_order.created",
 ] as const;
 
 export type Webhook = {
