@@ -308,9 +308,22 @@ jobs:
 
       - name: build and start frontend
         working-directory: web
+        # next.config.ts sets output: "standalone" (Dockerfile's own final
+        # stage relies on it - see that file's doc comment). `npm run
+        # start` (`next start`) doesn't work correctly against a
+        # standalone build - Next.js prints its own warning to this
+        # effect at boot, and in practice serves a stale full-route cache
+        # on at least one page under this job's tight timing (a
+        # POST-then-immediate-GET E2E flow), intermittently failing the
+        # smoke test for reasons unrelated to whatever the PR under test
+        # actually changed. Start it the same way Dockerfile's runner
+        # stage does instead: the traced standalone server.js, with
+        # .next/static copied alongside it (standalone output prunes
+        # static assets out by design - see Next's own standalone docs).
         run: |
           npm run build
-          nohup npm run start > frontend.log 2>&1 &
+          cp -r .next/static .next/standalone/.next/static
+          PORT=3000 HOSTNAME=0.0.0.0 nohup node .next/standalone/server.js > frontend.log 2>&1 &
           echo $! > frontend.pid
           for _ in $(seq 1 30); do
             curl -sS -o /dev/null http://localhost:3000/ && exit 0
