@@ -28,6 +28,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/moonstreamtech/ZonaryOS/internal/asset"
+	"github.com/moonstreamtech/ZonaryOS/internal/contracts"
 	"github.com/moonstreamtech/ZonaryOS/internal/crm"
 	"github.com/moonstreamtech/ZonaryOS/internal/hr"
 	"github.com/moonstreamtech/ZonaryOS/internal/inventory"
@@ -80,6 +81,7 @@ var fieldValidators = map[FieldType]FieldValidator{
 	FieldTypeCustomer:  customerValidator{},
 	FieldTypeProject:   projectValidator{},
 	FieldTypeAsset:     assetValidator{},
+	FieldTypeContract:  contractValidator{},
 }
 
 // RegisterFieldValidator registers (or overrides) the validator used for
@@ -468,6 +470,31 @@ func (assetValidator) Validate(value any, spec FieldSpec, vctx ValidationContext
 	}
 	if !exists {
 		return fmt.Errorf("%w: field %q references a nonexistent asset in this firm", ErrPayloadValidation, spec.Name)
+	}
+	return nil
+}
+
+// contractValidator implements FieldValidator for FieldTypeContract -
+// same shape as assetValidator, against `contract_registry` instead of
+// `assets`.
+type contractValidator struct{}
+
+func (contractValidator) Validate(value any, spec FieldSpec, vctx ValidationContext) error {
+	s, ok := value.(string)
+	if !ok {
+		return fmt.Errorf("%w: field %q must be a string contract ID", ErrPayloadValidation, spec.Name)
+	}
+	contractID, err := uuid.Parse(s)
+	if err != nil {
+		return fmt.Errorf("%w: field %q must be a valid contract ID (UUID)", ErrPayloadValidation, spec.Name)
+	}
+
+	exists, err := contracts.ExistsTx(vctx.Ctx, vctx.Tx, vctx.FirmID, contractID)
+	if err != nil {
+		return fmt.Errorf("check contract field %q: %w", spec.Name, err)
+	}
+	if !exists {
+		return fmt.Errorf("%w: field %q references a nonexistent contract in this firm", ErrPayloadValidation, spec.Name)
 	}
 	return nil
 }

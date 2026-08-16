@@ -18,6 +18,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/apikey"
 	"github.com/moonstreamtech/ZonaryOS/internal/asset"
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
+	"github.com/moonstreamtech/ZonaryOS/internal/contracts"
 	"github.com/moonstreamtech/ZonaryOS/internal/crm"
 	"github.com/moonstreamtech/ZonaryOS/internal/currency"
 	"github.com/moonstreamtech/ZonaryOS/internal/discovery"
@@ -186,6 +187,14 @@ func main() {
 	// schedulerCtx/cancelScheduler so both stop together on shutdown.
 	go asset.RunMaintenanceScheduler(schedulerCtx, pool, asset.MaintenanceSchedulerPollInterval)
 
+	// contracts.RunExpiryScheduler (contracts management/document
+	// workflows/legal foundation batch): a third, dedicated background
+	// goroutine, same shape as asset.RunMaintenanceScheduler above - see
+	// internal/contracts/scheduler.go's own doc comment for why this is a
+	// new goroutine rather than reusing scheduled_rule_runs. Shares
+	// schedulerCtx/cancelScheduler so all three stop together on shutdown.
+	go contracts.RunExpiryScheduler(schedulerCtx, pool, contracts.ExpirySchedulerPollInterval)
+
 	mux := httpapi.NewMux()
 	// The well-known discovery endpoint (Open Points item 34) is
 	// unconditional - see internal/discovery.RegisterRoutes's own
@@ -217,6 +226,7 @@ func main() {
 	manufacturing.RegisterRoutes(mux, verifier, pool)
 	warehouse.RegisterRoutes(mux, verifier, pool)
 	asset.RegisterRoutes(mux, verifier, pool)
+	contracts.RegisterRoutes(mux, verifier, pool)
 	portability.RegisterRoutes(mux, verifier, pool)
 	reports.RegisterRoutes(mux, verifier, pool)
 	documents.RegisterRoutes(mux, verifier, pool)

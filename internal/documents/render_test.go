@@ -100,8 +100,33 @@ func TestRenderTemplate_DefaultInvoiceTemplate(t *testing.T) {
 	}
 }
 
+// TestRenderTemplate_DefaultContractTemplate confirms the default
+// contract (NDA-style) template's HTML output actually contains the
+// contract fields from the template - same shape
+// TestRenderTemplate_DefaultInvoiceTemplate uses above.
+func TestRenderTemplate_DefaultContractTemplate(t *testing.T) {
+	data := map[string]any{
+		"Contract": map[string]any{
+			"ReferenceNumber": "C-0042", "Title": "Non-Disclosure Agreement", "Status": "active",
+			"StartDate": "2026-01-01", "EndDate": "2027-01-01", "Value": "0", "Currency": "TRY",
+			"Notes": "Confidential information shall not be disclosed.",
+		},
+		"Counterparty": map[string]any{"Name": "Acme Corp"},
+		"Firm":         map[string]any{"Name": "ZonaryOS Demo Firm", "Address": "2 Side St"},
+	}
+	out, err := renderTemplate(defaultContractTemplate, data)
+	if err != nil {
+		t.Fatalf("renderTemplate: %v", err)
+	}
+	for _, want := range []string{"C-0042", "Non-Disclosure Agreement", "Acme Corp", "ZonaryOS Demo Firm", "Confidential information shall not be disclosed."} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected rendered output to contain %q, got:\n%s", want, out)
+		}
+	}
+}
+
 func TestValidTemplateType(t *testing.T) {
-	for _, typ := range []TemplateType{TemplateTypeInvoice, TemplateTypeDeliveryNote, TemplateTypeReport} {
+	for _, typ := range []TemplateType{TemplateTypeInvoice, TemplateTypeDeliveryNote, TemplateTypeReport, TemplateTypeContract} {
 		if !validTemplateType(typ) {
 			t.Fatalf("expected %q to be a valid template type", typ)
 		}

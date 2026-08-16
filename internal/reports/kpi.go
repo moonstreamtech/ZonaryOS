@@ -145,6 +145,16 @@ const (
 	// packages the way KPIKindOperations' own doc comment explains
 	// active_projects/overdue_tasks are.
 	KPIKindAssets KPIKind = "assets"
+	// KPIKindContracts (Contracts management/document workflows/legal
+	// foundation batch): dispatches further on ContractMetric below -
+	// both metrics query internal/contracts' own contract_registry table
+	// directly, the same "own tables live outside this package, queried
+	// the same way" reasoning KPIKindAssets' own doc comment gives. A
+	// dedicated Kind rather than folding into KPIKindOperations for the
+	// identical reasoning KPIKindAssets' own doc comment already gives:
+	// contracts is its own module with its own table, not a cross-cutting
+	// metric spanning two unrelated packages.
+	KPIKindContracts KPIKind = "contracts"
 )
 
 // InventoryMetric is KPIKindInventoryKPI's own descriptor field - which
@@ -288,6 +298,22 @@ const (
 	AssetMetricInMaintenance AssetMetric = "assets_in_maintenance"
 )
 
+// ContractMetric is KPIKindContracts' own descriptor field - which
+// contract-specific figure to compute (see computeContractKPI).
+type ContractMetric string
+
+const (
+	// ContractMetricExpiringSoon: how many active, non-auto-renewing
+	// contracts have end_date within the next 30 days, per the design
+	// brief's "contracts_expiring_soon" spec - a fixed 30-day window
+	// (unlike the scheduler's own per-contract renewal_notice_days),
+	// matching the brief's literal spec text.
+	ContractMetricExpiringSoon ContractMetric = "contracts_expiring_soon"
+	// ContractMetricActive: total count of contracts with status='active',
+	// per the design brief's "contracts_active" spec.
+	ContractMetricActive ContractMetric = "contracts_active"
+)
+
 // ReceivablesMetric is KPIKindReceivables' own descriptor field - which
 // receivables-specific aggregation to compute (see computeReceivablesKPI).
 type ReceivablesMetric string
@@ -372,6 +398,9 @@ type KPIDescriptor struct {
 
 	// AssetMetric is used by KPIKindAssets.
 	AssetMetric AssetMetric
+
+	// ContractMetric is used by KPIKindContracts.
+	ContractMetric ContractMetric
 }
 
 // kpiDescriptors is the dashboard's actual KPI list - the design brief's
@@ -471,6 +500,14 @@ var kpiDescriptors = []KPIDescriptor{
 	{
 		Key: "assetsInMaintenance", Kind: KPIKindAssets,
 		AssetMetric: AssetMetricInMaintenance,
+	},
+	{
+		Key: "contractsExpiringSoon", Kind: KPIKindContracts,
+		ContractMetric: ContractMetricExpiringSoon,
+	},
+	{
+		Key: "contractsActive", Kind: KPIKindContracts,
+		ContractMetric: ContractMetricActive,
 	},
 }
 
@@ -590,6 +627,9 @@ func computeKPI(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, d KPIDescripto
 
 	case KPIKindAssets:
 		return computeAssetKPI(ctx, tx, firmID, d)
+
+	case KPIKindContracts:
+		return computeContractKPI(ctx, tx, firmID, d)
 
 	default:
 		return KPIResult{}, fmt.Errorf("unknown KPI kind %q", d.Kind)
@@ -890,6 +930,40 @@ func computeAssetKPI(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, d KPIDesc
 
 	default:
 		return KPIResult{}, fmt.Errorf("unknown asset metric %q", d.AssetMetric)
+	}
+}
+
+// computeContractKPI dispatches on d.ContractMetric - the same role
+// computeAssetKPI's own switch plays for AssetMetric.
+//
+// ciaudit:ignore-firmid-check: internal helper called only by computeKPI,
+// itself only called by GetDashboardKPIs after permission.IsMember has
+// already run - firmID here scopes the query (defense in depth alongside
+// RLS), it is not itself an authorization decision.
+func computeContractKPI(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, d KPIDescriptor) (KPIResult, error) {
+	switch d.ContractMetric {
+	case ContractMetricExpiringSoon:
+		var count int
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM contract_registry
+			WHERE firm_id = $1 AND status = 'active' AND NOT auto_renewal
+				AND end_date IS NOT NULL AND end_date <= now() + interval '30 days'
+		`, firmID).Scan(&count); err != nil {
+			return KPIResult{}, fmt.Errorf("count contracts expiring soon: %w", err)
+		}
+		return KPIResult{Key: d.Key, Unit: unitCount, Value: fmt.Sprintf("%d", count)}, nil
+
+	case ContractMetricActive:
+		var count int
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM contract_registry WHERE firm_id = $1 AND status = 'active'
+		`, firmID).Scan(&count); err != nil {
+			return KPIResult{}, fmt.Errorf("count active contracts: %w", err)
+		}
+		return KPIResult{Key: d.Key, Unit: unitCount, Value: fmt.Sprintf("%d", count)}, nil
+
+	default:
+		return KPIResult{}, fmt.Errorf("unknown contract metric %q", d.ContractMetric)
 	}
 }
 

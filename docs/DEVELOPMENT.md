@@ -1323,6 +1323,41 @@ make migrate
 go test ./internal/asset/... -v
 ```
 
+## Contracts management, document workflows, and legal foundation
+
+Every business manages contracts with suppliers, customers, and employees. `internal/hr`'s own `contracts` table is an employment/compensation-term record scoped to one `people` row - not a general legal contract. This batch adds a new `internal/contracts` package with a separate registry.
+
+**Contract registry** (`contract_registry`/`contract_documents`, `migrations/0031_contracts_management.up.sql`): `type` (customer/supplier/employment/nda/service/other) and `status` (draft/review/active/expired/terminated/renewed) are both CHECK-constrained, `signed_by` references `users(id)` (the actor who performed the signing action - unlike `internal/asset.assets.assigned_to_person_id`, which references `people(id)`, since "who signed this" is a login-holding user, not an HR org-chart concept). Same RLS/authorization tier as `internal/asset`: owner-gated writes, member-gated reads. `GET /api/firms/{firmID}/contracts/expiring?days=N` and `internal/contracts.ListExpiringContracts` share the exact predicate the expiry scheduler (below) uses: `status = 'active' AND NOT auto_renewal AND end_date <= now() + N days`.
+
+**Expiry notification scheduler** (`internal/contracts/scheduler.go`, `contracts.RunExpiryScheduler`): a **third, dedicated background goroutine** (after `workflow.RunScheduler` and `asset.RunMaintenanceScheduler`) - same ticker-driven `RunX`/testable `ProcessX` shape, same `listAllFirmIDs`-then-per-firm-`WithFirmContext` iteration, polling daily for active, non-auto-renewing contracts whose `end_date` falls within their own `renewal_notice_days` (a per-contract value, unlike asset maintenance's fixed 7-day window - a 90-day supplier notice clause and a 15-day one each need their own lookahead). Recipient resolution is the same judgment call `internal/asset`'s own scheduler makes: `contract_registry` has no single reliable assignee (`signed_by` is nullable, only set once a contract is actually signed), so this scheduler notifies every user holding an owner role in the firm too - same `notifications.payload->>'contractId'` + `created_at::date` same-day dedup as the asset maintenance scheduler.
+
+**`FieldTypeContract`** (`internal/workflow`): the eighth cross-module reference FieldType, resolving against `internal/contracts.ExistsTx`. Useful for e.g. linking a sales order workflow instance to its governing contract, or a procurement order to a supplier contract.
+
+**Document rendering** (`internal/documents`): `document_templates.type`'s CHECK constraint was extended to include `'contract'` (not additive at the DB level - the migration drops and recreates the constraint). `RenderContract` follows `RenderInvoice`'s exact shape: resolve the entity (`contracts.GetContract`) and the template (explicit `templateID`, or `EnsureDefaultContractTemplate` + the firm's default `'contract'` template), check the template's type matches, build a `map[string]any` (`Contract`/`Counterparty`/`Firm` sections), and call the same unexported `renderTemplate` helper `RenderInvoice` itself calls - **no separate rendering engine**, this batch is purely a new call site plus a new default template constant (`defaultContractTemplate`, an NDA-style layout) on the existing `html/template` machinery. `GET /api/firms/{firmID}/contracts/{contractID}/render?templateID=` lives in `internal/documents` (not `internal/contracts`), the same "entity-specific render lives under the entity's own path, owned by the documents package" convention `GET .../invoices/{invoiceID}/render` already establishes.
+
+**No new approval mechanism**: `pending_approvals` is hard-structurally tied to `workflow_instances` (`instance_id uuid NOT NULL REFERENCES workflow_instances(id)`, and `RequestApproval` internally resolves a `(definitionKey, stateKey, actionKey)` triple against real `workflow_transitions` rows) - it is not a general-purpose approval primitive usable for an arbitrary need. Since `contract_registry` isn't itself workflow-instance-backed in this batch, wiring contract signing into `pending_approvals` would mean synthesizing a fake `workflow_instances` row for no benefit - the same judgment call `internal/asset/scheduler.go`'s own doc comment makes about *not* forcing maintenance schedules through `scheduled_rule_runs`. A firm that wants contract-signing approval today can define a real workflow (e.g. via `FieldTypeContract` linking a workflow instance to the governing contract) and get `pending_approvals` "for free" through the existing mechanism - nothing new was built.
+
+**KPI additions** (`internal/reports/kpi.go`): a new `KPIKindContracts` (own tables, not folded into `KPIKindOperations`, same reasoning `KPIKindAssets`' own doc comment gives) with `contracts_expiring_soon` (a fixed 30-day window, matching the design brief's literal spec - not the scheduler's own per-contract `renewal_notice_days`) and `contracts_active` (total `status = 'active'` count).
+
+- HTTP surface: `GET`/`POST /api/firms/{firmID}/contracts`, `GET`/`PATCH /api/firms/{firmID}/contracts/{contractID}`, `GET /api/firms/{firmID}/contracts/expiring?days=`; `GET`/`POST /api/firms/{firmID}/contracts/{contractID}/documents`; `GET /api/firms/{firmID}/contracts/{contractID}/render?templateID=`.
+- Frontend: `/contracts` (list, status filter, expiry highlights - red if < 7 days, amber if < 30 days), detail with document list.
+
+### Scope boundaries
+
+No e-signature integration (Open Points item 17). No version control for contract text (a URL to an external document, not stored content). No new approval mechanism (see above).
+
+### Running these tests
+
+`internal/contracts/contracts_integration_test.go` (expiry query subset correctness, auto-renewal skipping the scheduler, same-day notification dedup, `FieldTypeContract` cross-module validation) and `internal/documents`'s own `render_test.go`/`documents_integration_test.go` (default contract template renders real fields, `RenderContract` end-to-end) all need a real Postgres:
+
+```
+export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5433/zonaryos?sslmode=disable
+export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5433/zonaryos?sslmode=disable
+make migrate
+go test ./internal/contracts/... -v
+go test ./internal/documents/... -v
+```
+
 ## Continuous Integration
 
 `.github/workflows/ci.yml` turns most of the CI Checklist categories (CLAUDE.md's "How to Verify a Change") from manual PR-by-PR discipline into automated checks on every PR (and on push to `main`). Every job here existed as a manual step some earlier PR ran by hand - this file doesn't introduce new verification steps, it just stops trusting a human to remember to run them. **Canary/Rollback Trigger** remains the one item intentionally "Not Set Up": there is no ZonaryOS deployment target or infrastructure decided yet (see `docs/OPEN_POINTS.md` item 34) for a rollback trigger to hook into.

@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/moonstreamtech/ZonaryOS/internal/contracts"
 	"github.com/moonstreamtech/ZonaryOS/internal/documents"
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
 )
@@ -47,7 +48,7 @@ func setupTest(t *testing.T) (adminPool, appPool *pgxpool.Pool) {
 	if _, err := adminPool.Exec(ctx, `
 		TRUNCATE firms, users, roles, role_permissions, user_firm_roles,
 			document_templates, invoices, invoice_lines, invoice_sequences,
-			customers, audit_log, permissions CASCADE
+			customers, contract_registry, audit_log, permissions CASCADE
 	`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
@@ -204,6 +205,34 @@ func TestRenderInvoice_UsesDefaultTemplate(t *testing.T) {
 		t.Fatalf("RenderInvoice: %v", err)
 	}
 	for _, want := range []string{"INV-0001", "Acme Corp", "Consulting"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("expected rendered HTML to contain %q, got:\n%s", want, html)
+		}
+	}
+}
+
+// TestRenderContract_UsesDefaultTemplate confirms RenderContract's HTML
+// output actually contains the contract's real fields (reference number,
+// title, counterparty) - same end-to-end shape
+// TestRenderInvoice_UsesDefaultTemplate uses above, exercising
+// EnsureDefaultContractTemplate's lazy per-firm seeding along the way.
+func TestRenderContract_UsesDefaultTemplate(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+	firmID, userID := seedOwner(ctx, t, adminPool, appPool, "Doc Firm", "doc-contract-owner")
+
+	c, err := contracts.CreateContract(ctx, appPool, firmID, userID, contracts.CreateContractInput{
+		ReferenceNumber: "C-0099", Title: "Vendor NDA", Type: "nda", CounterpartyName: "Acme Vendor",
+	})
+	if err != nil {
+		t.Fatalf("CreateContract: %v", err)
+	}
+
+	html, err := documents.RenderContract(ctx, appPool, firmID, userID, c.ID, uuid.Nil)
+	if err != nil {
+		t.Fatalf("RenderContract: %v", err)
+	}
+	for _, want := range []string{"C-0099", "Vendor NDA", "Acme Vendor"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("expected rendered HTML to contain %q, got:\n%s", want, html)
 		}
