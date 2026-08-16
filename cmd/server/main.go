@@ -48,6 +48,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/search"
 	"github.com/moonstreamtech/ZonaryOS/internal/telemetry"
 	"github.com/moonstreamtech/ZonaryOS/internal/timetracking"
+	"github.com/moonstreamtech/ZonaryOS/internal/warehouse"
 	"github.com/moonstreamtech/ZonaryOS/internal/webhook"
 	"github.com/moonstreamtech/ZonaryOS/internal/wizard"
 	"github.com/moonstreamtech/ZonaryOS/internal/workflow"
@@ -203,6 +204,7 @@ func main() {
 	salesorders.RegisterRoutes(mux, verifier, pool)
 	procurement.RegisterRoutes(mux, verifier, pool)
 	manufacturing.RegisterRoutes(mux, verifier, pool)
+	warehouse.RegisterRoutes(mux, verifier, pool)
 	portability.RegisterRoutes(mux, verifier, pool)
 	reports.RegisterRoutes(mux, verifier, pool)
 	documents.RegisterRoutes(mux, verifier, pool)

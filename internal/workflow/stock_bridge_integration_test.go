@@ -32,12 +32,36 @@ func seedProduct(ctx context.Context, t *testing.T, adminPool *pgxpool.Pool, fir
 	return productID
 }
 
-// seedInitialStock gives productID an initial on-hand quantity at the
-// "default" location, directly via adminPool.
+// seedFirm inserts a firms row and its mandatory default warehouse
+// location (mirrors migrations/0028_warehouse_management.up.sql's own
+// backfill and internal/wizard.CreateDefaultFirm's unconditional seed) -
+// AdjustStockTx's nil-locationID resolution needs one to exist for any
+// firm it's called against.
+func seedFirm(ctx context.Context, t *testing.T, adminPool *pgxpool.Pool, name string) uuid.UUID {
+	t.Helper()
+	var firmID uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ($1) RETURNING id`, name).Scan(&firmID); err != nil {
+		t.Fatalf("seed firm: %v", err)
+	}
+	var warehouseID uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO warehouses (firm_id, name) VALUES ($1, 'Default Warehouse') RETURNING id`, firmID).Scan(&warehouseID); err != nil {
+		t.Fatalf("seed default warehouse: %v", err)
+	}
+	if _, err := adminPool.Exec(ctx, `
+		INSERT INTO warehouse_locations (firm_id, warehouse_id, code, name, is_default) VALUES ($1, $2, 'default', 'Main', true)
+	`, firmID, warehouseID); err != nil {
+		t.Fatalf("seed default location: %v", err)
+	}
+	return firmID
+}
+
+// seedInitialStock gives productID an initial on-hand quantity at
+// firmID's default location, directly via adminPool.
 func seedInitialStock(ctx context.Context, t *testing.T, adminPool *pgxpool.Pool, firmID, productID uuid.UUID, quantity string) {
 	t.Helper()
 	if _, err := adminPool.Exec(ctx, `
-		INSERT INTO stock_levels (firm_id, product_id, location, quantity) VALUES ($1, $2, 'default', $3::numeric)
+		INSERT INTO stock_levels (firm_id, product_id, location_id, quantity)
+		SELECT $1, $2, id, $3::numeric FROM warehouse_locations WHERE firm_id = $1 AND is_default
 	`, firmID, productID, quantity); err != nil {
 		t.Fatalf("seed initial stock: %v", err)
 	}
@@ -54,10 +78,7 @@ func TestExecuteTransition_RecordSaleDecreasesStock(t *testing.T) {
 	adminPool, appPool := setupTest(t)
 	ctx := context.Background()
 
-	var firmID uuid.UUID
-	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm Stock') RETURNING id`).Scan(&firmID); err != nil {
-		t.Fatalf("seed firm: %v", err)
-	}
+	firmID := seedFirm(ctx, t, adminPool, "Firm Stock")
 	// Deliberately no ledger accounts seeded: this test only cares about
 	// product_id/quantity present with no unit_price, so the Journal
 	// template skips (resolveJournalLines' own "missing field means skip"
@@ -128,10 +149,7 @@ func TestExecuteTransition_RecordSaleRejectsInsufficientStock(t *testing.T) {
 	adminPool, appPool := setupTest(t)
 	ctx := context.Background()
 
-	var firmID uuid.UUID
-	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm Stock 2') RETURNING id`).Scan(&firmID); err != nil {
-		t.Fatalf("seed firm: %v", err)
-	}
+	firmID := seedFirm(ctx, t, adminPool, "Firm Stock 2")
 
 	productID := seedProduct(ctx, t, adminPool, firmID, "WIDGET-2", "5.00")
 	seedInitialStock(ctx, t, adminPool, firmID, productID, "2")
@@ -182,10 +200,7 @@ func TestExecuteTransition_RecordSaleWithoutProductIDSkipsStockAdjustment(t *tes
 	adminPool, appPool := setupTest(t)
 	ctx := context.Background()
 
-	var firmID uuid.UUID
-	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm Stock 3') RETURNING id`).Scan(&firmID); err != nil {
-		t.Fatalf("seed firm: %v", err)
-	}
+	firmID := seedFirm(ctx, t, adminPool, "Firm Stock 3")
 
 	definitionID, err := workflow.SeedStockToSaleWorkflow(ctx, appPool, firmID)
 	if err != nil {
@@ -219,10 +234,7 @@ func TestExecuteTransition_PurchaseOrderReceiveIncreasesStock(t *testing.T) {
 	adminPool, appPool := setupTest(t)
 	ctx := context.Background()
 
-	var firmID uuid.UUID
-	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm PO Stock') RETURNING id`).Scan(&firmID); err != nil {
-		t.Fatalf("seed firm: %v", err)
-	}
+	firmID := seedFirm(ctx, t, adminPool, "Firm PO Stock")
 
 	productID := seedProduct(ctx, t, adminPool, firmID, "WIDGET-PO", "5.00")
 
@@ -280,10 +292,7 @@ func TestCreateInstance_PurchaseOrderRejectsUnknownSupplier(t *testing.T) {
 	adminPool, appPool := setupTest(t)
 	ctx := context.Background()
 
-	var firmID uuid.UUID
-	if err := adminPool.QueryRow(ctx, `INSERT INTO firms (name) VALUES ('Firm PO Bad Supplier') RETURNING id`).Scan(&firmID); err != nil {
-		t.Fatalf("seed firm: %v", err)
-	}
+	firmID := seedFirm(ctx, t, adminPool, "Firm PO Bad Supplier")
 
 	definitionID, err := workflow.SeedPurchaseOrderWorkflow(ctx, appPool, firmID)
 	if err != nil {

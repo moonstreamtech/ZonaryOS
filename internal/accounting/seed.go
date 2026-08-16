@@ -39,6 +39,14 @@ const (
 	// coreAccounts/sellsAccounts above for what's already taken).
 	WorkInProgressAccountCode = "1300"
 	FinishedGoodsAccountCode  = "1400"
+	// InventoryAdjustmentAccountCode (warehouse management/cycle counting
+	// batch): "1500" - the next free asset code after Finished Goods'
+	// "1400". internal/warehouse's cycle-count completion posts a
+	// balanced entry against this account and InventoryAccountCode for
+	// each line whose counted quantity differs from system_quantity, the
+	// same "correct the ledger, don't rewrite stock_movements in place"
+	// pattern manufacturing's own WIP/Finished Goods postings establish.
+	InventoryAdjustmentAccountCode = "1500"
 )
 
 // seedAccount is one row SeedDefaultChartOfAccountsTx inserts - a plain,
@@ -126,6 +134,21 @@ var manufacturingAccounts = []seedAccount{
 	{code: FinishedGoodsAccountCode, name: "Finished Goods", typ: AccountTypeAsset},
 }
 
+// inventoryAccounts are seeded when the firm's wizard answers say it
+// tracks physical inventory - the same precondition
+// internal/wizard.SeedSelection.TracksInventory gates, so
+// internal/warehouse's cycle-count adjustment postings (DR/CR Inventory
+// Adjustment) can always assume this account exists whenever a firm has
+// cycle counts to run at all. InventoryAccountCode is included here too
+// (same reasoning purchasesAccounts/manufacturingAccounts already give
+// for including it): a firm that tracks inventory but answered "no" to
+// selling/purchasing/manufacturing would otherwise have no Inventory
+// account for the adjustment's other leg.
+var inventoryAccounts = []seedAccount{
+	{code: InventoryAccountCode, name: "Inventory", typ: AccountTypeAsset},
+	{code: InventoryAdjustmentAccountCode, name: "Inventory Adjustment", typ: AccountTypeExpense},
+}
+
 // SeedChartOptions gates which of the parametric, wizard-answer-dependent
 // account groups SeedDefaultChartOfAccountsTx seeds beyond the always-on
 // core tier - a plain struct of booleans (not internal/wizard.SeedSelection
@@ -148,6 +171,9 @@ type SeedChartOptions struct {
 	// Progress, Finished Goods) - mirrors
 	// internal/wizard.SeedSelection.SeedManufacturing.
 	SeedManufacturing bool
+	// TracksInventory seeds inventoryAccounts (Inventory, Inventory
+	// Adjustment) - mirrors internal/wizard.SeedSelection.TracksInventory.
+	TracksInventory bool
 }
 
 // SeedDefaultChartOfAccountsTx seeds firmID's starter chart of accounts,
@@ -172,7 +198,7 @@ func SeedDefaultChartOfAccountsTx(ctx context.Context, tx pgx.Tx, firmID uuid.UU
 	// insert "1200" twice. A map keyed by code, converted to a
 	// code-sorted slice for a deterministic insert order, handles this
 	// cleanly regardless of which combination of groups is active.
-	byCode := make(map[string]seedAccount, len(coreAccounts)+len(sellsAccounts)+len(purchasesAccounts)+len(peopleAccounts)+len(manufacturingAccounts))
+	byCode := make(map[string]seedAccount, len(coreAccounts)+len(sellsAccounts)+len(purchasesAccounts)+len(peopleAccounts)+len(manufacturingAccounts)+len(inventoryAccounts))
 	for _, a := range coreAccounts {
 		byCode[a.code] = a
 	}
@@ -193,6 +219,11 @@ func SeedDefaultChartOfAccountsTx(ctx context.Context, tx pgx.Tx, firmID uuid.UU
 	}
 	if opts.SeedManufacturing {
 		for _, a := range manufacturingAccounts {
+			byCode[a.code] = a
+		}
+	}
+	if opts.TracksInventory {
+		for _, a := range inventoryAccounts {
 			byCode[a.code] = a
 		}
 	}

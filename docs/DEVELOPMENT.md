@@ -1221,6 +1221,39 @@ go test ./internal/manufacturing/... -v
 go test ./internal/wizard/... -run Manufacturing -v
 ```
 
+## Warehouse management, location tracking, and logistics depth
+
+Vision §9 names WMS as a first-class domain. `internal/inventory`'s `stock_levels`/`stock_movements` previously carried only a free-text `location` field, no real warehouse structure. This batch builds it: warehouses, a collapsible aisle -> shelf -> bin location hierarchy, inventory transfers between locations, and cycle counting - deliberately not a full WMS (no barcode scanning, that's the Edge Agent's future job; no FIFO/FEFO lot tracking; no multi-warehouse purchase order routing; no picking list generation).
+
+**`internal/warehouse`** (new package): `warehouses`, `warehouse_locations` (self-referencing `parent_id` for the tree, `type` one of `aisle`/`shelf`/`bin`/`staging`/`dispatch`, exactly one `is_default` per firm enforced by a partial unique index), `inventory_transfers`, `cycle_count_sessions`/`cycle_count_lines` (`migrations/0028_warehouse_management.up.sql`), all firm-scoped and RLS-enabled. Owner-gated writes, member-gated reads - same tier `internal/manufacturing`'s own mutations use.
+
+**The breaking schema change**: `stock_levels.location`/`stock_movements.location` (free text) became `location_id` (a real FK into `warehouse_locations`) - handled as a safe, single-transaction migration (golang-migrate runs each migration file inside one transaction): add `location_id` nullable, backfill every existing row from a real `warehouse_locations` row (a "Default Warehouse" + `is_default` "default"-coded location seeded for EVERY existing firm unconditionally, plus one additional non-default location per any OTHER distinct location text already in use, matched by code), THEN make it `NOT NULL` and drop the old text column and its `UNIQUE` constraint. `internal/inventory.AdjustStockTx` now takes a `locationID *uuid.UUID` instead of a `location string` - `nil` resolves to the firm's `is_default` location (`defaultLocationIDTx`, `stock.go`) via a plain query against `warehouse_locations` (intentionally NOT an import of `internal/warehouse` - the wrong dependency direction, since `internal/inventory` only needs to reference a location by id, not own the concept). The three existing `AdjustStockTx` callers (`internal/workflow`'s `record_sale`/`receive` bridges, `internal/manufacturing`'s material issue/completion) all previously passed `""` for "use the default location" - they now pass `nil`, same meaning. `TestMigration0028Backfill_PreservesExistingStockLevels` (`internal/warehouse/warehouse_integration_test.go`) replays the exact pre-migration scenario (runs `0028`'s own `down.sql`, seeds `stock_levels` rows the old free-text way, re-runs `up.sql`) and asserts every row survives with a resolvable, correctly-coded `location_id`.
+
+**Why the default location is seeded unconditionally, not just when `TracksInventory` is true**: `AdjustStockTx`'s `nil` resolution needs one to exist for ANY firm it's ever called against - including a manufacturing-only firm (`SeedManufacturing` true, `TracksInventory` false; the wizard doesn't couple the two, they're separate root questions). `internal/wizard.CreateDefaultFirm` seeds a warehouse named after the firm + one default "Main" location unconditionally, the same "seeded for every firm regardless of wizard answers" tier `internal/accounting.coreAccounts` already uses (`TestCreateDefaultFirm_SeedsDefaultWarehouseLocationUnconditionally`).
+
+**Inventory transfers**: `CompleteTransfer` atomically deducts `quantity` from `from_location_id` and adds it to `to_location_id` - one transaction, a lock on the transfer row (`FOR UPDATE`), a status check (`draft`/`in_transit` only), two `AdjustStockTx` calls (`transfer_out`/`transfer_in`, both tagged back to the transfer via `source_type`/`source_id`), and the status flip to `completed`. If the source location doesn't have enough stock, `AdjustStockTx`'s own `ErrInsufficientStock` propagates and the whole transaction rolls back - the transfer stays in its prior status, nothing moves (`TestCompleteTransfer_RejectsInsufficientStockAndLeavesStatusUnchanged`). `CancelTransfer` never needs to reverse anything - a `draft`/`in_transit` transfer never touched stock.
+
+**Cycle counting and the `GENERATED ALWAYS` variance column**: `cycle_count_lines.variance` is `GENERATED ALWAYS AS (counted_quantity - system_quantity) STORED` - the database computes and stores it the instant `counted_quantity` is written (`RecordCount`'s own `UPDATE`), so there is no window where Go and Postgres could compute a different variance from the same two numbers, and every reader (including a future report) sees the same value without re-deriving it. `CompleteCycleCountSession(adjust=true)` locks every line with a recorded count and non-zero variance (`FOR UPDATE`), applies each as a real `AdjustStockTx` (reason `cycle_count`), flags it `adjusted`, then posts ONE balanced journal entry for the SESSION's net value (`SUM(variance * cost_price)` across every adjusted line, not one entry per line) - a net increase (more found than expected) debits Inventory/credits Inventory Adjustment (`1500`, new account code); a net decrease (shrinkage) debits Inventory Adjustment/credits Inventory. Skipped entirely when the net value is exactly zero - the same "stock still moves, only the ledger entry is conditional on there being something to value it with" judgment call `internal/manufacturing.CompleteProductionOrder` already makes for a zero component value.
+
+- HTTP surface: `GET`/`POST /api/firms/{firmID}/warehouses`, `GET`/`PATCH /api/firms/{firmID}/warehouses/{warehouseID}`, `GET .../stock`, `GET`/`POST .../locations`, `PATCH /api/firms/{firmID}/locations/{locationID}`; `GET`/`POST /api/firms/{firmID}/inventory-transfers`, `GET /api/firms/{firmID}/inventory-transfers/{transferID}`, `POST .../complete`, `POST .../cancel`; `GET`/`POST /api/firms/{firmID}/cycle-counts`, `GET /api/firms/{firmID}/cycle-counts/{sessionID}`, `POST .../lines/{lineID}/count`, `POST .../complete`.
+- Frontend: `/inventory/warehouses` (warehouse list, collapsible location tree, per-location stock), `/inventory/transfers` (list, create form, complete/cancel actions), `/inventory/cycle-counts` (session list, count entry, adjust-on-complete).
+
+### Scope boundaries
+
+No barcode scanning (Edge Agent, future). No FIFO/FEFO lot tracking. No multi-warehouse purchase order routing. No picking list generation.
+
+### Running these tests
+
+`internal/warehouse/warehouse_integration_test.go` (warehouse/location CRUD and owner-gating, transfer atomicity and insufficient-stock rejection, cycle count variance computation and balanced journal entry posting, and the migration 0028 backfill replay) and `internal/wizard/firm_integration_test.go`'s `TestCreateDefaultFirm_SeedsDefaultWarehouseLocationUnconditionally` all need a real Postgres:
+
+```
+export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5433/zonaryos?sslmode=disable
+export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5433/zonaryos?sslmode=disable
+make migrate
+go test ./internal/warehouse/... -v
+go test ./internal/wizard/... -run DefaultWarehouseLocation -v
+```
+
 ## Continuous Integration
 
 `.github/workflows/ci.yml` turns most of the CI Checklist categories (CLAUDE.md's "How to Verify a Change") from manual PR-by-PR discipline into automated checks on every PR (and on push to `main`). Every job here existed as a manual step some earlier PR ran by hand - this file doesn't introduce new verification steps, it just stops trusting a human to remember to run them. **Canary/Rollback Trigger** remains the one item intentionally "Not Set Up": there is no ZonaryOS deployment target or infrastructure decided yet (see `docs/OPEN_POINTS.md` item 34) for a rollback trigger to hook into.

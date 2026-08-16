@@ -62,6 +62,8 @@ func writeInventoryError(w http.ResponseWriter, err error) {
 		http.Error(w, err.Error(), http.StatusForbidden)
 	case errors.Is(err, ErrInvalidProduct), errors.Is(err, ErrInvalidSupplier), errors.Is(err, ErrProductSKUExists):
 		http.Error(w, err.Error(), http.StatusBadRequest)
+	case errors.Is(err, ErrNoDefaultLocation):
+		http.Error(w, err.Error(), http.StatusConflict)
 	default:
 		http.Error(w, "internal error", http.StatusInternalServerError)
 	}
@@ -250,7 +252,8 @@ func handleUpdateProduct(pool *pgxpool.Pool) http.HandlerFunc {
 
 type stockLevelResponse struct {
 	ProductID        string `json:"productId"`
-	Location         string `json:"location"`
+	LocationID       string `json:"locationId"`
+	LocationCode     string `json:"locationCode"`
 	Quantity         string `json:"quantity"`
 	ReservedQuantity string `json:"reservedQuantity"`
 	UpdatedAt        string `json:"updatedAt"`
@@ -278,8 +281,8 @@ func handleGetStock(pool *pgxpool.Pool) http.HandlerFunc {
 		resp := make([]stockLevelResponse, 0, len(levels))
 		for _, l := range levels {
 			resp = append(resp, stockLevelResponse{
-				ProductID: l.ProductID.String(), Location: l.Location, Quantity: l.Quantity,
-				ReservedQuantity: l.ReservedQuantity, UpdatedAt: l.UpdatedAt.Format(time.RFC3339),
+				ProductID: l.ProductID.String(), LocationID: l.LocationID.String(), LocationCode: l.LocationCode,
+				Quantity: l.Quantity, ReservedQuantity: l.ReservedQuantity, UpdatedAt: l.UpdatedAt.Format(time.RFC3339),
 			})
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -290,7 +293,8 @@ func handleGetStock(pool *pgxpool.Pool) http.HandlerFunc {
 type stockMovementResponse struct {
 	ID             string  `json:"id"`
 	ProductID      string  `json:"productId"`
-	Location       string  `json:"location"`
+	LocationID     string  `json:"locationId"`
+	LocationCode   string  `json:"locationCode"`
 	QuantityChange string  `json:"quantityChange"`
 	Reason         string  `json:"reason"`
 	SourceType     string  `json:"sourceType,omitempty"`
@@ -341,7 +345,7 @@ func handleListStockMovements(pool *pgxpool.Pool) http.HandlerFunc {
 				sourceID = &s
 			}
 			resp.Movements = append(resp.Movements, stockMovementResponse{
-				ID: m.ID.String(), ProductID: m.ProductID.String(), Location: m.Location,
+				ID: m.ID.String(), ProductID: m.ProductID.String(), LocationID: m.LocationID.String(), LocationCode: m.LocationCode,
 				QuantityChange: m.QuantityChange, Reason: m.Reason, SourceType: m.SourceType,
 				SourceID: sourceID, CreatedAt: m.CreatedAt.Format(time.RFC3339),
 			})
