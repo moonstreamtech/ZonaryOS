@@ -639,7 +639,26 @@ func TestMigration0028Backfill_PreservesExistingStockLevels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read 0028 up.sql: %v", err)
 	}
+	// migration 0030 (asset management batch) added assets.location_id,
+	// a FOREIGN KEY onto warehouse_locations - a real, later migration
+	// depending on an earlier one's table, same as almost every migration
+	// in this repo depends on firms(id) from migration 0001. That means
+	// 0028's own down.sql (DROP TABLE warehouse_locations) can no longer
+	// run in isolation on a database that also has 0030 applied - the
+	// same "roll back in strict reverse order" requirement any real
+	// production rollback sequence would already need. Replaying 0030's
+	// own down/up around 0028's replay here mirrors that real ordering,
+	// rather than weakening 0030's FK to dodge this test.
+	asset0030DownSQL, err := migrations.FS.ReadFile("0030_asset_management.down.sql")
+	if err != nil {
+		t.Fatalf("read 0030 down.sql: %v", err)
+	}
+	asset0030UpSQL, err := migrations.FS.ReadFile("0030_asset_management.up.sql")
+	if err != nil {
+		t.Fatalf("read 0030 up.sql: %v", err)
+	}
 
+	execSQLFile(ctx, t, adminPool, string(asset0030DownSQL))
 	execSQLFile(ctx, t, adminPool, string(downSQL))
 
 	var firmID uuid.UUID
@@ -665,6 +684,7 @@ func TestMigration0028Backfill_PreservesExistingStockLevels(t *testing.T) {
 	}
 
 	execSQLFile(ctx, t, adminPool, string(upSQL))
+	execSQLFile(ctx, t, adminPool, string(asset0030UpSQL))
 
 	var defaultQty, overflowQty string
 	var defaultCode, overflowCode string

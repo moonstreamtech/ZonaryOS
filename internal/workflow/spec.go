@@ -450,6 +450,26 @@ const (
 	// against one specific table (projects) directly, not a choice of
 	// target - see validation.go's own projectValidator.
 	FieldTypeProject FieldType = "project"
+	// FieldTypeAsset (Asset management/maintenance/facility operations
+	// batch) is FieldTypePerson's counterpart for this batch's new
+	// cross-module entity: a value that must be a real
+	// internal/asset.Asset's ID within the same firm - e.g. a repair
+	// workflow instance referencing which asset needs repair, a delivery
+	// referencing which vehicle is used. Same reasoning as
+	// FieldTypePerson/FieldTypeProject: resolves against one specific
+	// table (assets) directly, not a choice of target - see
+	// validation.go's own assetValidator.
+	FieldTypeAsset FieldType = "asset"
+	// FieldTypeContract (Contracts management/document workflows/legal
+	// foundation batch) is FieldTypePerson's counterpart for this batch's
+	// new cross-module entity: a value that must be a real
+	// internal/contracts.Contract's ID within the same firm - e.g. a
+	// sales order workflow instance referencing its governing contract,
+	// a procurement order referencing a supplier contract. Same reasoning
+	// as FieldTypePerson/FieldTypeAsset: resolves against one specific
+	// table (contract_registry) directly, not a choice of target - see
+	// validation.go's own contractValidator.
+	FieldTypeContract FieldType = "contract"
 )
 
 // FieldSpec is one declared field in a workflow definition's instance
@@ -706,7 +726,7 @@ func validateFieldShape(defKey string, f FieldSpec) error {
 		}
 		return nil
 
-	case FieldTypePerson, FieldTypeProduct, FieldTypeSupplier, FieldTypeDelivery, FieldTypeCustomer, FieldTypeProject:
+	case FieldTypePerson, FieldTypeProduct, FieldTypeSupplier, FieldTypeDelivery, FieldTypeCustomer, FieldTypeProject, FieldTypeAsset, FieldTypeContract:
 		// No extra fields needed - same reasoning FieldTypePerson's own doc
 		// comment gives (only one target table to reference per type,
 		// unlike FieldTypeReference's choice of target workflow definition).

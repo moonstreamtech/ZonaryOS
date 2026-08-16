@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/moonstreamtech/ZonaryOS/internal/contracts"
 	"github.com/moonstreamtech/ZonaryOS/internal/crm"
 	"github.com/moonstreamtech/ZonaryOS/internal/firm"
 	"github.com/moonstreamtech/ZonaryOS/internal/invoicing"
@@ -113,6 +114,69 @@ func RenderInvoice(ctx context.Context, pool *pgxpool.Pool, firmID, userID, invo
 		},
 		"Lines":    lines,
 		"Customer": customerData,
+		"Firm": map[string]any{
+			"Name":    firmMeta.Name,
+			"Address": derefString(firmMeta.Address),
+			"TaxID":   derefString(firmMeta.TaxID),
+		},
+	}
+
+	return renderTemplate(tpl.Template, data)
+}
+
+// RenderContract renders contractID against templateID (or, if templateID
+// is uuid.Nil, against firmID's default 'contract' template) - same
+// shape as RenderInvoice above (member-gated, delegates every read to
+// its owning package's own member-gated function, missingkey=zero so a
+// bad template field reference renders empty rather than 500ing).
+//
+// ciaudit:ignore-firmid-check: this function makes no direct database
+// call of its own - every read (contracts.GetContract,
+// GetDocumentTemplate/EnsureDefaultContractTemplate, firm.Get) is
+// delegated to that package's own member-gated function, each of which
+// independently checks permission.IsMember before returning anything.
+func RenderContract(ctx context.Context, pool *pgxpool.Pool, firmID, userID, contractID, templateID uuid.UUID) (string, error) {
+	c, err := contracts.GetContract(ctx, pool, firmID, userID, contractID)
+	if err != nil {
+		return "", err
+	}
+
+	var tpl DocumentTemplate
+	if templateID == uuid.Nil {
+		if err := EnsureDefaultContractTemplate(ctx, pool, firmID, userID); err != nil {
+			return "", err
+		}
+		tpl, err = getDefaultTemplate(ctx, pool, firmID, userID, TemplateTypeContract)
+	} else {
+		tpl, err = GetDocumentTemplate(ctx, pool, firmID, userID, templateID)
+	}
+	if err != nil {
+		return "", err
+	}
+	if tpl.Type != TemplateTypeContract {
+		return "", ErrTemplateTypeMismatch
+	}
+
+	firmMeta, err := firm.Get(ctx, pool, firmID, userID)
+	if err != nil {
+		return "", err
+	}
+
+	data := map[string]any{
+		"Contract": map[string]any{
+			"ReferenceNumber": c.ReferenceNumber,
+			"Title":           c.Title,
+			"Type":            c.Type,
+			"Status":          c.Status,
+			"Value":           derefString(c.Value),
+			"Currency":        c.Currency,
+			"StartDate":       formatOptionalDate(c.StartDate),
+			"EndDate":         formatOptionalDate(c.EndDate),
+			"Notes":           derefString(c.Notes),
+		},
+		"Counterparty": map[string]any{
+			"Name": c.CounterpartyName,
+		},
 		"Firm": map[string]any{
 			"Name":    firmMeta.Name,
 			"Address": derefString(firmMeta.Address),

@@ -1291,6 +1291,73 @@ go test ./internal/crm/... -v
 go test ./internal/project/... -v
 ```
 
+## Asset management, maintenance, and facility operations
+
+Physical assets (equipment, vehicles, property, tools) are foundational to any business - Vision mentions edge/device integrations and general operational management, but nothing in the codebase tracked physical assets themselves yet. This batch adds a new `internal/asset` package.
+
+**Asset registry** (`assets`, `migrations/0030_asset_management.up.sql`): `type` (equipment/vehicle/property/tool/other) and `status` (active/maintenance/retired/disposed) are both CHECK-constrained, `location_id` optionally references `internal/warehouse`'s own `warehouse_locations`, `assigned_to_person_id` references `internal/hr`'s `people`. Same RLS/authorization tier as `internal/warehouse`: owner-gated writes, member-gated reads.
+
+**Maintenance scheduling** (`maintenance_schedules`/`maintenance_records`): `maintenance_schedules.next_due_at` is a `GENERATED ALWAYS AS (last_done_at + interval_days * INTERVAL '1 day') STORED` column - chosen over computing it at read time because the daily maintenance-due scheduler (below) queries it directly with a plain `WHERE next_due_at <= $1` against a partial index (`WHERE is_active`), which a virtual/computed column would need repeated (and separately indexed) in every caller instead of once. `CreateMaintenanceRecord` has two side effects inside the same transaction as the insert: it advances the linked schedule's `last_done_at` to the record's `performed_at` (Postgres recomputes `next_due_at` automatically - the function never computes or writes it itself), and if a non-zero `cost` was given, it posts a real journal entry: DR Maintenance Expense / CR Cash if the firm has a Cash account seeded, else CR Trade Payables (an unpaid bill still owed) - the first instance in this codebase of picking between two different credit accounts at runtime (every prior conditional-journal-line example, e.g. `internal/warehouse`'s cycle-count adjustment, only swaps DR/CR sides between the same two fixed accounts, never chooses between two different ones).
+
+**Maintenance-due scheduler** (`internal/asset/scheduler.go`): a **new, dedicated background goroutine** (`asset.RunMaintenanceScheduler`), not an extension of `internal/workflow`'s existing `scheduled_rule_runs` scheduler - that goroutine only ever fires on rows created by defining a schedule-triggered *workflow rule*, and a `maintenance_schedules` row isn't one; forcing maintenance schedules through it would mean synthesizing a fake rule per schedule for no benefit. What IS reused is the *shape*: the same ticker-driven `RunX(ctx, pool, pollInterval)` + testable `ProcessX(ctx, pool)` split, the same `listAllFirmIDs`-then-per-firm-`WithFirmContext` iteration `internal/workflow/scheduler.go` established, polling daily (`MaintenanceSchedulerPollInterval = 24h`) for active schedules with `next_due_at <= now() + 7 days`. Recipient resolution is the one real design wrinkle: `assigned_to_person_id` references `people(id)`, not `users(id)` - an `internal/hr` person has no guaranteed linked user account at all (a contractor might never be invited to log in) - so `internal/notification.CreateForRecipientsTx` (which needs real `users.id` values) can't target the assigned person directly. The scheduler instead notifies every user holding an owner role in the firm (the same recipient set `internal/permission.IsOwner` checks against); the assigned person still appears by name in the notification body. A `notifications.payload->>'scheduleId'` + `created_at::date = now()::date` existence check keeps a poll interval shorter than a day (as tests use) from creating duplicate notifications for the same schedule on the same calendar day.
+
+**`FieldTypeAsset`** (`internal/workflow`): the seventh cross-module reference FieldType after person/product/supplier/delivery/customer/project, same shape as `FieldTypeProject` - resolves against `internal/asset.AssetExistsTx` directly (one target table, not a choice the way `FieldTypeReference` has). Useful for e.g. a repair workflow instance referencing which asset needs repair, or a delivery referencing which vehicle is used.
+
+**KPI additions** (`internal/reports/kpi.go`): a new `KPIKindAssets` (not folded into `KPIKindOperations` - assets/maintenance is its own module with its own tables, not a cross-cutting metric spanning two unrelated packages the way `KPIKindOperations`' `active_projects`/`overdue_tasks` pairing is) with two metrics: `assets_due_maintenance` (active schedules with `next_due_at <= now() + 7 days` - the exact same lookahead window the scheduler itself uses, so the dashboard tile and the notification scheduler always agree on what counts as "coming due") and `assets_in_maintenance` (count of `assets` with `status = 'maintenance'`).
+
+- HTTP surface: `GET`/`POST /api/firms/{firmID}/assets`, `GET`/`PATCH /api/firms/{firmID}/assets/{assetID}`; `GET`/`POST /api/firms/{firmID}/assets/{assetID}/maintenance-schedules`, `PATCH /api/firms/{firmID}/maintenance-schedules/{scheduleID}`; `GET`/`POST /api/firms/{firmID}/assets/{assetID}/maintenance-records`.
+- Frontend: `/assets` (list with status badges), `/assets/{assetId}` (detail, maintenance schedule list, maintenance record history, log-new-maintenance form).
+
+### Scope boundaries
+
+No depreciation calculation schedule (`current_value`/`depreciation_rate` are data fields only, no automatic recalculation). No insurance tracking. No IoT sensor integration (Edge Agent, future). No QR/barcode asset tagging.
+
+### Running these tests
+
+`internal/asset/asset_integration_test.go` (schedule `last_done_at`/`next_due_at` recompute on a new record, journal entry posted only when cost is provided, scheduler notification + same-day dedup via `ProcessDueMaintenanceSchedules` directly rather than waiting on a real ticker, `FieldTypeAsset` cross-module validation) needs a real Postgres:
+
+```
+export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5433/zonaryos?sslmode=disable
+export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5433/zonaryos?sslmode=disable
+make migrate
+go test ./internal/asset/... -v
+```
+
+## Contracts management, document workflows, and legal foundation
+
+Every business manages contracts with suppliers, customers, and employees. `internal/hr`'s own `contracts` table is an employment/compensation-term record scoped to one `people` row - not a general legal contract. This batch adds a new `internal/contracts` package with a separate registry.
+
+**Contract registry** (`contract_registry`/`contract_documents`, `migrations/0031_contracts_management.up.sql`): `type` (customer/supplier/employment/nda/service/other) and `status` (draft/review/active/expired/terminated/renewed) are both CHECK-constrained, `signed_by` references `users(id)` (the actor who performed the signing action - unlike `internal/asset.assets.assigned_to_person_id`, which references `people(id)`, since "who signed this" is a login-holding user, not an HR org-chart concept). Same RLS/authorization tier as `internal/asset`: owner-gated writes, member-gated reads. `GET /api/firms/{firmID}/contracts/expiring?days=N` and `internal/contracts.ListExpiringContracts` share the exact predicate the expiry scheduler (below) uses: `status = 'active' AND NOT auto_renewal AND end_date <= now() + N days`.
+
+**Expiry notification scheduler** (`internal/contracts/scheduler.go`, `contracts.RunExpiryScheduler`): a **third, dedicated background goroutine** (after `workflow.RunScheduler` and `asset.RunMaintenanceScheduler`) - same ticker-driven `RunX`/testable `ProcessX` shape, same `listAllFirmIDs`-then-per-firm-`WithFirmContext` iteration, polling daily for active, non-auto-renewing contracts whose `end_date` falls within their own `renewal_notice_days` (a per-contract value, unlike asset maintenance's fixed 7-day window - a 90-day supplier notice clause and a 15-day one each need their own lookahead). Recipient resolution is the same judgment call `internal/asset`'s own scheduler makes: `contract_registry` has no single reliable assignee (`signed_by` is nullable, only set once a contract is actually signed), so this scheduler notifies every user holding an owner role in the firm too - same `notifications.payload->>'contractId'` + `created_at::date` same-day dedup as the asset maintenance scheduler.
+
+**`FieldTypeContract`** (`internal/workflow`): the eighth cross-module reference FieldType, resolving against `internal/contracts.ExistsTx`. Useful for e.g. linking a sales order workflow instance to its governing contract, or a procurement order to a supplier contract.
+
+**Document rendering** (`internal/documents`): `document_templates.type`'s CHECK constraint was extended to include `'contract'` (not additive at the DB level - the migration drops and recreates the constraint). `RenderContract` follows `RenderInvoice`'s exact shape: resolve the entity (`contracts.GetContract`) and the template (explicit `templateID`, or `EnsureDefaultContractTemplate` + the firm's default `'contract'` template), check the template's type matches, build a `map[string]any` (`Contract`/`Counterparty`/`Firm` sections), and call the same unexported `renderTemplate` helper `RenderInvoice` itself calls - **no separate rendering engine**, this batch is purely a new call site plus a new default template constant (`defaultContractTemplate`, an NDA-style layout) on the existing `html/template` machinery. `GET /api/firms/{firmID}/contracts/{contractID}/render?templateID=` lives in `internal/documents` (not `internal/contracts`), the same "entity-specific render lives under the entity's own path, owned by the documents package" convention `GET .../invoices/{invoiceID}/render` already establishes.
+
+**No new approval mechanism**: `pending_approvals` is hard-structurally tied to `workflow_instances` (`instance_id uuid NOT NULL REFERENCES workflow_instances(id)`, and `RequestApproval` internally resolves a `(definitionKey, stateKey, actionKey)` triple against real `workflow_transitions` rows) - it is not a general-purpose approval primitive usable for an arbitrary need. Since `contract_registry` isn't itself workflow-instance-backed in this batch, wiring contract signing into `pending_approvals` would mean synthesizing a fake `workflow_instances` row for no benefit - the same judgment call `internal/asset/scheduler.go`'s own doc comment makes about *not* forcing maintenance schedules through `scheduled_rule_runs`. A firm that wants contract-signing approval today can define a real workflow (e.g. via `FieldTypeContract` linking a workflow instance to the governing contract) and get `pending_approvals` "for free" through the existing mechanism - nothing new was built.
+
+**KPI additions** (`internal/reports/kpi.go`): a new `KPIKindContracts` (own tables, not folded into `KPIKindOperations`, same reasoning `KPIKindAssets`' own doc comment gives) with `contracts_expiring_soon` (a fixed 30-day window, matching the design brief's literal spec - not the scheduler's own per-contract `renewal_notice_days`) and `contracts_active` (total `status = 'active'` count).
+
+- HTTP surface: `GET`/`POST /api/firms/{firmID}/contracts`, `GET`/`PATCH /api/firms/{firmID}/contracts/{contractID}`, `GET /api/firms/{firmID}/contracts/expiring?days=`; `GET`/`POST /api/firms/{firmID}/contracts/{contractID}/documents`; `GET /api/firms/{firmID}/contracts/{contractID}/render?templateID=`.
+- Frontend: `/contracts` (list, status filter, expiry highlights - red if < 7 days, amber if < 30 days), detail with document list.
+
+### Scope boundaries
+
+No e-signature integration (Open Points item 17). No version control for contract text (a URL to an external document, not stored content). No new approval mechanism (see above).
+
+### Running these tests
+
+`internal/contracts/contracts_integration_test.go` (expiry query subset correctness, auto-renewal skipping the scheduler, same-day notification dedup, `FieldTypeContract` cross-module validation) and `internal/documents`'s own `render_test.go`/`documents_integration_test.go` (default contract template renders real fields, `RenderContract` end-to-end) all need a real Postgres:
+
+```
+export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5433/zonaryos?sslmode=disable
+export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5433/zonaryos?sslmode=disable
+make migrate
+go test ./internal/contracts/... -v
+go test ./internal/documents/... -v
+```
+
 ## Continuous Integration
 
 `.github/workflows/ci.yml` turns most of the CI Checklist categories (CLAUDE.md's "How to Verify a Change") from manual PR-by-PR discipline into automated checks on every PR (and on push to `main`). Every job here existed as a manual step some earlier PR ran by hand - this file doesn't introduce new verification steps, it just stops trusting a human to remember to run them. **Canary/Rollback Trigger** remains the one item intentionally "Not Set Up": there is no ZonaryOS deployment target or infrastructure decided yet (see `docs/OPEN_POINTS.md` item 34) for a rollback trigger to hook into.

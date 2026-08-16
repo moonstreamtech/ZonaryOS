@@ -47,6 +47,13 @@ const (
 	// same "correct the ledger, don't rewrite stock_movements in place"
 	// pattern manufacturing's own WIP/Finished Goods postings establish.
 	InventoryAdjustmentAccountCode = "1500"
+	// MaintenanceExpenseAccountCode (asset management/maintenance batch):
+	// "5300" - the next free expense code after Salary Expense's "5200".
+	// Seeded unconditionally in coreAccounts (not gated by any wizard
+	// answer): assets/maintenance apply to any firm regardless of what it
+	// sells, purchases, manufactures, or staffs, so there is no wizard
+	// flag whose absence would make this account inapplicable.
+	MaintenanceExpenseAccountCode = "5300"
 )
 
 // seedAccount is one row SeedDefaultChartOfAccountsTx inserts - a plain,
@@ -68,6 +75,7 @@ var coreAccounts = []seedAccount{
 	{code: TradePayablesAccountCode, name: "Trade Payables", typ: AccountTypeLiability},
 	{code: "3000", name: "Owner Equity", typ: AccountTypeEquity},
 	{code: "3100", name: "Retained Earnings", typ: AccountTypeEquity},
+	{code: MaintenanceExpenseAccountCode, name: "Maintenance Expense", typ: AccountTypeExpense},
 }
 
 // sellsAccounts are seeded when the firm's wizard answers say it sells

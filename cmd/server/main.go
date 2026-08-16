@@ -16,7 +16,9 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/absence"
 	"github.com/moonstreamtech/ZonaryOS/internal/accounting"
 	"github.com/moonstreamtech/ZonaryOS/internal/apikey"
+	"github.com/moonstreamtech/ZonaryOS/internal/asset"
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
+	"github.com/moonstreamtech/ZonaryOS/internal/contracts"
 	"github.com/moonstreamtech/ZonaryOS/internal/crm"
 	"github.com/moonstreamtech/ZonaryOS/internal/currency"
 	"github.com/moonstreamtech/ZonaryOS/internal/discovery"
@@ -177,6 +179,22 @@ func main() {
 	defer cancelScheduler()
 	go workflow.RunScheduler(schedulerCtx, pool, workflow.SchedulerPollInterval)
 
+	// asset.RunMaintenanceScheduler (asset management/maintenance/facility
+	// operations batch): a second, dedicated background goroutine, same
+	// shape as workflow.RunScheduler above but its own file/package - see
+	// internal/asset/scheduler.go's own doc comment for why this is a new
+	// goroutine rather than an extension of scheduled_rule_runs. Shares
+	// schedulerCtx/cancelScheduler so both stop together on shutdown.
+	go asset.RunMaintenanceScheduler(schedulerCtx, pool, asset.MaintenanceSchedulerPollInterval)
+
+	// contracts.RunExpiryScheduler (contracts management/document
+	// workflows/legal foundation batch): a third, dedicated background
+	// goroutine, same shape as asset.RunMaintenanceScheduler above - see
+	// internal/contracts/scheduler.go's own doc comment for why this is a
+	// new goroutine rather than reusing scheduled_rule_runs. Shares
+	// schedulerCtx/cancelScheduler so all three stop together on shutdown.
+	go contracts.RunExpiryScheduler(schedulerCtx, pool, contracts.ExpirySchedulerPollInterval)
+
 	mux := httpapi.NewMux()
 	// The well-known discovery endpoint (Open Points item 34) is
 	// unconditional - see internal/discovery.RegisterRoutes's own
@@ -207,6 +225,8 @@ func main() {
 	procurement.RegisterRoutes(mux, verifier, pool)
 	manufacturing.RegisterRoutes(mux, verifier, pool)
 	warehouse.RegisterRoutes(mux, verifier, pool)
+	asset.RegisterRoutes(mux, verifier, pool)
+	contracts.RegisterRoutes(mux, verifier, pool)
 	portability.RegisterRoutes(mux, verifier, pool)
 	reports.RegisterRoutes(mux, verifier, pool)
 	documents.RegisterRoutes(mux, verifier, pool)

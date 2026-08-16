@@ -61,11 +61,17 @@ const (
 	TemplateTypeInvoice      TemplateType = "invoice"
 	TemplateTypeDeliveryNote TemplateType = "delivery_note"
 	TemplateTypeReport       TemplateType = "report"
+	// TemplateTypeContract (contracts management/document workflows/legal
+	// foundation batch): document_templates.type's CHECK constraint was
+	// extended to include 'contract' (migrations/0031_contracts_management.up.sql)
+	// so a firm can author its own contract templates the same way it
+	// already authors invoice templates.
+	TemplateTypeContract TemplateType = "contract"
 )
 
 func validTemplateType(t TemplateType) bool {
 	switch t {
-	case TemplateTypeInvoice, TemplateTypeDeliveryNote, TemplateTypeReport:
+	case TemplateTypeInvoice, TemplateTypeDeliveryNote, TemplateTypeReport, TemplateTypeContract:
 		return true
 	}
 	return false
@@ -344,6 +350,61 @@ func EnsureDefaultInvoiceTemplate(ctx context.Context, pool *pgxpool.Pool, firmI
 			VALUES ($1, 'Default Invoice', $2, $3, true)
 		`, firmID, TemplateTypeInvoice, defaultInvoiceTemplate); err != nil {
 			return fmt.Errorf("seed default invoice template: %w", err)
+		}
+		return nil
+	})
+}
+
+// defaultContractTemplate is the minimal default contract template
+// seeded for every firm on first use (see EnsureDefaultContractTemplate) -
+// an NDA-style layout, per this batch's own brief, exercising every
+// top-level section RenderContract's own data map provides (contract
+// fields, Counterparty, Firm).
+const defaultContractTemplate = `<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>{{.Contract.Title}}</title></head>
+<body>
+  <h1>{{.Contract.Title}}</h1>
+  <p>Reference: {{.Contract.ReferenceNumber}}<br>Status: {{.Contract.Status}}</p>
+  <p>Between:<br>{{.Firm.Name}}<br>{{.Firm.Address}}</p>
+  <p>And:<br>{{.Counterparty.Name}}</p>
+  <p>Effective: {{.Contract.StartDate}} &middot; Expires: {{.Contract.EndDate}}</p>
+  <h2>Confidentiality</h2>
+  <p>The parties agree to keep confidential all non-public information disclosed in connection with this agreement, for the term stated above.</p>
+  <h2>Terms</h2>
+  <p>{{.Contract.Notes}}</p>
+  <p>Value: {{.Contract.Value}} {{.Contract.Currency}}</p>
+</body>
+</html>
+`
+
+// EnsureDefaultContractTemplate inserts defaultContractTemplate for
+// firmID if that firm has no 'contract'-type document template yet -
+// same lazy per-firm bootstrap EnsureDefaultInvoiceTemplate's own doc
+// comment explains.
+func EnsureDefaultContractTemplate(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.UUID) error {
+	return zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		isMember, err := permission.IsMember(ctx, tx, firmID, userID)
+		if err != nil {
+			return err
+		}
+		if !isMember {
+			return ErrFirmNotFound
+		}
+
+		var count int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM document_templates WHERE firm_id = $1 AND type = $2`, firmID, TemplateTypeContract).Scan(&count); err != nil {
+			return fmt.Errorf("count contract templates: %w", err)
+		}
+		if count > 0 {
+			return nil
+		}
+
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO document_templates (firm_id, name, type, template, is_default)
+			VALUES ($1, 'Default NDA', $2, $3, true)
+		`, firmID, TemplateTypeContract, defaultContractTemplate); err != nil {
+			return fmt.Errorf("seed default contract template: %w", err)
 		}
 		return nil
 	})

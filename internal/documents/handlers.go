@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/moonstreamtech/ZonaryOS/internal/contracts"
 	"github.com/moonstreamtech/ZonaryOS/internal/identity"
 	"github.com/moonstreamtech/ZonaryOS/internal/invoicing"
 )
@@ -43,12 +44,21 @@ func RegisterRoutes(mux *http.ServeMux, verifier *identity.Verifier, pool *pgxpo
 	mux.Handle("PUT /api/firms/{firmID}/document-templates/{id}", auth(http.HandlerFunc(handleUpdateDocumentTemplate(pool))))
 
 	mux.Handle("GET /api/firms/{firmID}/invoices/{invoiceID}/render", auth(http.HandlerFunc(handleRenderInvoice(pool))))
+	// The contract render endpoint lives under contracts' own path
+	// (/contracts/{contractID}/render), same "entity-specific render
+	// lives under the entity's own path" convention the invoice route
+	// above already establishes - no path collision with
+	// internal/contracts.RegisterRoutes's own GET .../contracts/{contractID}
+	// (a distinct pattern, the extra /render suffix), the same way this
+	// package and internal/invoicing already coexist on sibling paths.
+	mux.Handle("GET /api/firms/{firmID}/contracts/{contractID}/render", auth(http.HandlerFunc(handleRenderContract(pool))))
 }
 
 func writeDocumentsError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrFirmNotFound), errors.Is(err, ErrTemplateNotFound),
-		errors.Is(err, invoicing.ErrFirmNotFound), errors.Is(err, invoicing.ErrInvoiceNotFound):
+		errors.Is(err, invoicing.ErrFirmNotFound), errors.Is(err, invoicing.ErrInvoiceNotFound),
+		errors.Is(err, contracts.ErrFirmNotFound), errors.Is(err, contracts.ErrContractNotFound):
 		http.Error(w, err.Error(), http.StatusNotFound)
 	case errors.Is(err, ErrNotOwner):
 		http.Error(w, err.Error(), http.StatusForbidden)
@@ -235,6 +245,41 @@ func handleRenderInvoice(pool *pgxpool.Pool) http.HandlerFunc {
 		// markup is unescaped raw HTML, by design, the same way any
 		// template-authoring tool (an email builder, a CMS) treats its
 		// own authors' markup as trusted output, not untrusted input.
+		_, _ = w.Write([]byte(html))
+	}
+}
+
+// handleRenderContract serves GET /api/firms/{firmID}/contracts/{contractID}/render?templateID=
+// - same shape as handleRenderInvoice above.
+func handleRenderContract(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		firmID, userID, ok, status, msg := resolveIdentity(r, pool)
+		if !ok {
+			http.Error(w, msg, status)
+			return
+		}
+		contractID, err := uuid.Parse(r.PathValue("contractID"))
+		if err != nil {
+			http.Error(w, "invalid contract id", http.StatusBadRequest)
+			return
+		}
+		var templateID uuid.UUID
+		if raw := r.URL.Query().Get("templateID"); raw != "" {
+			templateID, err = uuid.Parse(raw)
+			if err != nil {
+				http.Error(w, "invalid template id", http.StatusBadRequest)
+				return
+			}
+		}
+
+		html, err := RenderContract(r.Context(), pool, firmID, userID, contractID, templateID)
+		if err != nil {
+			writeDocumentsError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		// #nosec G705 -- same reasoning handleRenderInvoice's own comment
+		// above gives: this IS the feature, auto-escaped by html/template.
 		_, _ = w.Write([]byte(html))
 	}
 }
