@@ -134,6 +134,17 @@ const (
 	// ago" - a genuinely different query shape) or active_projects into
 	// a brand new single-metric Kind of its own.
 	KPIKindOperations KPIKind = "operations"
+	// KPIKindAssets (Asset management/maintenance/facility operations
+	// batch): dispatches further on AssetMetric below - both metrics query
+	// internal/asset's own assets/maintenance_schedules tables directly,
+	// the same "own tables live outside this package, queried the same
+	// way" reasoning KPIKindManufacturing/KPIKindSalesOrders/
+	// KPIKindOperations already give. A dedicated Kind rather than folding
+	// into KPIKindOperations: assets/maintenance is its own module with
+	// its own tables, not a cross-cutting metric spanning two unrelated
+	// packages the way KPIKindOperations' own doc comment explains
+	// active_projects/overdue_tasks are.
+	KPIKindAssets KPIKind = "assets"
 )
 
 // InventoryMetric is KPIKindInventoryKPI's own descriptor field - which
@@ -259,6 +270,24 @@ const (
 	OperationsMetricOverdueTasks OperationsMetric = "overdue_tasks"
 )
 
+// AssetMetric is KPIKindAssets' own descriptor field - which
+// asset/maintenance-specific figure to compute (see computeAssetKPI).
+type AssetMetric string
+
+const (
+	// AssetMetricDueMaintenance: how many active maintenance_schedules
+	// rows have next_due_at <= now() + 7 days, per the design brief's
+	// "assets_due_maintenance" spec - the exact same lookahead window
+	// internal/asset's own background scheduler (maintenanceDueLookaheadDays)
+	// uses to decide when to notify, so this tile and that scheduler always
+	// agree on what counts as "coming due."
+	AssetMetricDueMaintenance AssetMetric = "assets_due_maintenance"
+	// AssetMetricInMaintenance: how many assets rows currently have
+	// status='maintenance', per the design brief's "assets_in_maintenance"
+	// spec.
+	AssetMetricInMaintenance AssetMetric = "assets_in_maintenance"
+)
+
 // ReceivablesMetric is KPIKindReceivables' own descriptor field - which
 // receivables-specific aggregation to compute (see computeReceivablesKPI).
 type ReceivablesMetric string
@@ -340,6 +369,9 @@ type KPIDescriptor struct {
 
 	// OperationsMetric is used by KPIKindOperations.
 	OperationsMetric OperationsMetric
+
+	// AssetMetric is used by KPIKindAssets.
+	AssetMetric AssetMetric
 }
 
 // kpiDescriptors is the dashboard's actual KPI list - the design brief's
@@ -431,6 +463,14 @@ var kpiDescriptors = []KPIDescriptor{
 	{
 		Key: "overdueTasks", Kind: KPIKindOperations,
 		OperationsMetric: OperationsMetricOverdueTasks,
+	},
+	{
+		Key: "assetsDueMaintenance", Kind: KPIKindAssets,
+		AssetMetric: AssetMetricDueMaintenance,
+	},
+	{
+		Key: "assetsInMaintenance", Kind: KPIKindAssets,
+		AssetMetric: AssetMetricInMaintenance,
 	},
 }
 
@@ -547,6 +587,9 @@ func computeKPI(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, d KPIDescripto
 
 	case KPIKindOperations:
 		return computeOperationsKPI(ctx, tx, firmID, d)
+
+	case KPIKindAssets:
+		return computeAssetKPI(ctx, tx, firmID, d)
 
 	default:
 		return KPIResult{}, fmt.Errorf("unknown KPI kind %q", d.Kind)
@@ -814,6 +857,39 @@ func computeOperationsKPI(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, d KP
 
 	default:
 		return KPIResult{}, fmt.Errorf("unknown operations metric %q", d.OperationsMetric)
+	}
+}
+
+// computeAssetKPI dispatches on d.AssetMetric - the same role
+// computeOperationsKPI's own switch plays for OperationsMetric.
+//
+// ciaudit:ignore-firmid-check: internal helper called only by computeKPI,
+// itself only called by GetDashboardKPIs after permission.IsMember has
+// already run - firmID here scopes the query (defense in depth alongside
+// RLS), it is not itself an authorization decision.
+func computeAssetKPI(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, d KPIDescriptor) (KPIResult, error) {
+	switch d.AssetMetric {
+	case AssetMetricDueMaintenance:
+		var count int
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM maintenance_schedules
+			WHERE firm_id = $1 AND is_active AND next_due_at IS NOT NULL AND next_due_at <= now() + interval '7 days'
+		`, firmID).Scan(&count); err != nil {
+			return KPIResult{}, fmt.Errorf("count assets due maintenance: %w", err)
+		}
+		return KPIResult{Key: d.Key, Unit: unitCount, Value: fmt.Sprintf("%d", count)}, nil
+
+	case AssetMetricInMaintenance:
+		var count int
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM assets WHERE firm_id = $1 AND status = 'maintenance'
+		`, firmID).Scan(&count); err != nil {
+			return KPIResult{}, fmt.Errorf("count assets in maintenance: %w", err)
+		}
+		return KPIResult{Key: d.Key, Unit: unitCount, Value: fmt.Sprintf("%d", count)}, nil
+
+	default:
+		return KPIResult{}, fmt.Errorf("unknown asset metric %q", d.AssetMetric)
 	}
 }
 
