@@ -121,6 +121,19 @@ const (
 	// KPIKindReceivables/KPIKindSalesOrders already query their own
 	// tables" reasoning those Kinds' own doc comments give.
 	KPIKindManufacturing KPIKind = "manufacturing"
+	// KPIKindOperations (Multi-location CRM/project management batch):
+	// dispatches further on OperationsMetric below - active_projects
+	// queries internal/project's own projects table, overdue_tasks
+	// queries workflow_instances/workflow_states directly (task_approval
+	// instances, not a project-specific shape) - the two don't share an
+	// owning package the way KPIKindManufacturing/KPIKindSalesOrders do,
+	// but both answer "what needs attention operationally right now,"
+	// deliberately grouped under one cross-cutting Kind rather than
+	// forcing overdue_tasks into KPIKindWorkflowStateCount (which counts
+	// instances currently in given States, with no notion of "how long
+	// ago" - a genuinely different query shape) or active_projects into
+	// a brand new single-metric Kind of its own.
+	KPIKindOperations KPIKind = "operations"
 )
 
 // InventoryMetric is KPIKindInventoryKPI's own descriptor field - which
@@ -172,6 +185,20 @@ const (
 	// migrations/0013_logistics_crm_core.up.sql's own doc comment on this
 	// distinction).
 	CRMMetricActiveCustomers CRMMetric = "active_customers"
+	// CRMMetricPipelineValue (Multi-location CRM/project management
+	// batch): SUM(crm_opportunities.value) WHERE stage NOT IN
+	// ('won', 'lost') - the total value of deals still open, per the
+	// design brief's "pipeline_value" spec. Folded into KPIKindCRM (not a
+	// new Kind) since crm_opportunities is squarely the same CRM domain
+	// customers already occupies here.
+	CRMMetricPipelineValue CRMMetric = "pipeline_value"
+	// CRMMetricWonThisMonth: COUNT(crm_opportunities) WHERE stage='won'
+	// AND updated_at falls in the current calendar month - updated_at,
+	// not created_at, since "won this month" means the deal CLOSED this
+	// month (UpdateOpportunityStage bumps updated_at on every stage
+	// change, including the one that sets stage='won'), regardless of
+	// when the opportunity was first created.
+	CRMMetricWonThisMonth CRMMetric = "won_this_month"
 )
 
 // SalesOrdersMetric is KPIKindSalesOrders' own descriptor field - which
@@ -208,6 +235,28 @@ const (
 	// KPIKindAccountBalanceNow already knows how to sum; no new query
 	// shape was needed for it.)
 	ManufacturingMetricActiveProductionOrders ManufacturingMetric = "active_production_orders"
+)
+
+// OperationsMetric is KPIKindOperations' own descriptor field - which
+// cross-cutting operational figure to compute, the same "room to grow
+// without a new Kind" pattern InventoryMetric/CRMMetric/ManufacturingMetric
+// already establish.
+type OperationsMetric string
+
+const (
+	// OperationsMetricActiveProjects: how many projects rows have
+	// status='active', per the design brief's "active_projects" spec.
+	OperationsMetricActiveProjects OperationsMetric = "active_projects"
+	// OperationsMetricOverdueTasks: how many task_approval instances sit
+	// in a non-terminal state AND were created more than 30 days ago.
+	// This is a heuristic, not a real due-date check: task_approval has
+	// no due_date field (see TaskApprovalSpec, task_approval.go - its
+	// payload only carries assignee_person_id/project_id), so "overdue"
+	// here means "still open a long time after creation," a proxy for
+	// "probably stale," not "past an actual deadline the requester set."
+	// Document this on the frontend tile too (a tooltip, not just this
+	// comment) so a firm doesn't read it as a precise SLA breach count.
+	OperationsMetricOverdueTasks OperationsMetric = "overdue_tasks"
 )
 
 // ReceivablesMetric is KPIKindReceivables' own descriptor field - which
@@ -288,6 +337,9 @@ type KPIDescriptor struct {
 
 	// ManufacturingMetric is used by KPIKindManufacturing.
 	ManufacturingMetric ManufacturingMetric
+
+	// OperationsMetric is used by KPIKindOperations.
+	OperationsMetric OperationsMetric
 }
 
 // kpiDescriptors is the dashboard's actual KPI list - the design brief's
@@ -363,6 +415,22 @@ var kpiDescriptors = []KPIDescriptor{
 	{
 		Key: "productionWipValue", Kind: KPIKindAccountBalanceNow,
 		AccountCodes: []string{accounting.WorkInProgressAccountCode}, NormalDebit: true,
+	},
+	{
+		Key: "pipelineValue", Kind: KPIKindCRM,
+		CRMMetric: CRMMetricPipelineValue,
+	},
+	{
+		Key: "wonThisMonth", Kind: KPIKindCRM,
+		CRMMetric: CRMMetricWonThisMonth,
+	},
+	{
+		Key: "activeProjects", Kind: KPIKindOperations,
+		OperationsMetric: OperationsMetricActiveProjects,
+	},
+	{
+		Key: "overdueTasks", Kind: KPIKindOperations,
+		OperationsMetric: OperationsMetricOverdueTasks,
 	},
 }
 
@@ -477,6 +545,9 @@ func computeKPI(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, d KPIDescripto
 	case KPIKindManufacturing:
 		return computeManufacturingKPI(ctx, tx, firmID, d)
 
+	case KPIKindOperations:
+		return computeOperationsKPI(ctx, tx, firmID, d)
+
 	default:
 		return KPIResult{}, fmt.Errorf("unknown KPI kind %q", d.Kind)
 	}
@@ -570,6 +641,25 @@ func computeCRMKPI(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, d KPIDescri
 			SELECT count(*) FROM customers WHERE firm_id = $1 AND source_workflow_instance IS NOT NULL
 		`, firmID).Scan(&count); err != nil {
 			return KPIResult{}, fmt.Errorf("count active customers: %w", err)
+		}
+		return KPIResult{Key: d.Key, Unit: unitCount, Value: fmt.Sprintf("%d", count)}, nil
+
+	case CRMMetricPipelineValue:
+		var value string
+		if err := tx.QueryRow(ctx, `
+			SELECT COALESCE(SUM(value), 0)::text FROM crm_opportunities WHERE firm_id = $1 AND stage NOT IN ('won', 'lost')
+		`, firmID).Scan(&value); err != nil {
+			return KPIResult{}, fmt.Errorf("sum pipeline value: %w", err)
+		}
+		return KPIResult{Key: d.Key, Unit: unitCurrency, Value: value}, nil
+
+	case CRMMetricWonThisMonth:
+		var count int
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM crm_opportunities
+			WHERE firm_id = $1 AND stage = 'won' AND date_trunc('month', updated_at) = date_trunc('month', now())
+		`, firmID).Scan(&count); err != nil {
+			return KPIResult{}, fmt.Errorf("count won this month: %w", err)
 		}
 		return KPIResult{Key: d.Key, Unit: unitCount, Value: fmt.Sprintf("%d", count)}, nil
 
@@ -687,6 +777,43 @@ func computeManufacturingKPI(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, d
 
 	default:
 		return KPIResult{}, fmt.Errorf("unknown manufacturing metric %q", d.ManufacturingMetric)
+	}
+}
+
+// computeOperationsKPI dispatches on d.OperationsMetric - the same role
+// computeManufacturingKPI's own switch plays for ManufacturingMetric.
+//
+// ciaudit:ignore-firmid-check: internal helper called only by computeKPI,
+// itself only called by GetDashboardKPIs after permission.IsMember has
+// already run - firmID here scopes the query (defense in depth alongside
+// RLS), it is not itself an authorization decision.
+func computeOperationsKPI(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, d KPIDescriptor) (KPIResult, error) {
+	switch d.OperationsMetric {
+	case OperationsMetricActiveProjects:
+		var count int
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM projects WHERE firm_id = $1 AND status = 'active'
+		`, firmID).Scan(&count); err != nil {
+			return KPIResult{}, fmt.Errorf("count active projects: %w", err)
+		}
+		return KPIResult{Key: d.Key, Unit: unitCount, Value: fmt.Sprintf("%d", count)}, nil
+
+	case OperationsMetricOverdueTasks:
+		var count int
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*)
+			FROM workflow_instances wi
+			JOIN workflow_definitions wd ON wd.id = wi.workflow_definition_id
+			JOIN workflow_states ws ON ws.id = wi.current_state_id
+			WHERE wi.firm_id = $1 AND wd.key = 'task_approval' AND NOT ws.is_terminal
+			  AND wi.created_at < now() - interval '30 days'
+		`, firmID).Scan(&count); err != nil {
+			return KPIResult{}, fmt.Errorf("count overdue tasks: %w", err)
+		}
+		return KPIResult{Key: d.Key, Unit: unitCount, Value: fmt.Sprintf("%d", count)}, nil
+
+	default:
+		return KPIResult{}, fmt.Errorf("unknown operations metric %q", d.OperationsMetric)
 	}
 }
 

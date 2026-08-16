@@ -25,4 +25,26 @@ var (
 	// was given a structurally invalid customer (empty name, malformed
 	// credit limit).
 	ErrInvalidCustomer = errors.New("invalid customer")
+
+	// ErrInteractionNotFound means no crm_interactions row with the given
+	// id is visible in the caller's firm context.
+	ErrInteractionNotFound = errors.New("interaction not found")
+
+	// ErrInvalidInteraction means CreateInteraction was given a
+	// structurally invalid interaction (empty summary, unknown type).
+	ErrInvalidInteraction = errors.New("invalid interaction")
+
+	// ErrOpportunityNotFound means no crm_opportunities row with the
+	// given id is visible in the caller's firm context.
+	ErrOpportunityNotFound = errors.New("opportunity not found")
+
+	// ErrInvalidOpportunity means CreateOpportunity/UpdateOpportunity was
+	// given a structurally invalid opportunity (empty name, malformed
+	// value, out-of-range probability, unknown stage).
+	ErrInvalidOpportunity = errors.New("invalid opportunity")
+
+	// ErrInvalidOpportunityTransition means UpdateOpportunityStage was
+	// called on an opportunity already in a terminal stage (won/lost) -
+	// a closed deal doesn't reopen.
+	ErrInvalidOpportunityTransition = errors.New("invalid opportunity stage transition")
 )

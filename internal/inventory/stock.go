@@ -48,7 +48,7 @@ const postgresCheckViolation = "23514"
 
 // StockLevel is one product's on-hand quantity at one location.
 type StockLevel struct {
-	ProductID uuid.UUID
+	ProductID  uuid.UUID
 	LocationID uuid.UUID
 	// LocationCode is warehouse_locations.code, joined in for display -
 	// StockLevel/StockMovement's own reader doesn't need a second round

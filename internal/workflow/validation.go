@@ -31,6 +31,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/hr"
 	"github.com/moonstreamtech/ZonaryOS/internal/inventory"
 	"github.com/moonstreamtech/ZonaryOS/internal/logistics"
+	"github.com/moonstreamtech/ZonaryOS/internal/project"
 )
 
 // ValidationContext is everything a FieldValidator needs beyond the raw
@@ -76,6 +77,7 @@ var fieldValidators = map[FieldType]FieldValidator{
 	FieldTypeSupplier:  supplierValidator{},
 	FieldTypeDelivery:  deliveryValidator{},
 	FieldTypeCustomer:  customerValidator{},
+	FieldTypeProject:   projectValidator{},
 }
 
 // RegisterFieldValidator registers (or overrides) the validator used for
@@ -416,6 +418,30 @@ func (customerValidator) Validate(value any, spec FieldSpec, vctx ValidationCont
 	}
 	if !exists {
 		return fmt.Errorf("%w: field %q references a nonexistent customer in this firm", ErrPayloadValidation, spec.Name)
+	}
+	return nil
+}
+
+// projectValidator implements FieldValidator for FieldTypeProject - same
+// shape as productValidator, against `projects` instead of `products`.
+type projectValidator struct{}
+
+func (projectValidator) Validate(value any, spec FieldSpec, vctx ValidationContext) error {
+	s, ok := value.(string)
+	if !ok {
+		return fmt.Errorf("%w: field %q must be a string project ID", ErrPayloadValidation, spec.Name)
+	}
+	projectID, err := uuid.Parse(s)
+	if err != nil {
+		return fmt.Errorf("%w: field %q must be a valid project ID (UUID)", ErrPayloadValidation, spec.Name)
+	}
+
+	exists, err := project.ProjectExistsTx(vctx.Ctx, vctx.Tx, vctx.FirmID, projectID)
+	if err != nil {
+		return fmt.Errorf("check project field %q: %w", spec.Name, err)
+	}
+	if !exists {
+		return fmt.Errorf("%w: field %q references a nonexistent project in this firm", ErrPayloadValidation, spec.Name)
 	}
 	return nil
 }

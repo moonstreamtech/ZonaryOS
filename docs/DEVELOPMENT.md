@@ -1254,6 +1254,43 @@ go test ./internal/warehouse/... -v
 go test ./internal/wizard/... -run DefaultWarehouseLocation -v
 ```
 
+## Multi-location CRM depth, project management, and operational KPIs
+
+`customer_pipeline` only gives leads and customers, with no interaction history or sales pipeline; `task_approval` is a minimal generic task with no project structure behind it. This batch adds both, plus four dashboard KPIs.
+
+**CRM depth** (`internal/crm`, extended): `crm_interactions` (call/email/meeting/note/demo/proposal, optionally linked to an opportunity) and `crm_opportunities` (a real sales pipeline: prospect -> qualified -> proposal -> negotiation -> won/lost, `migrations/0029_crm_projects_depth.up.sql`) sit alongside the existing `customers` table, same firm-scoped RLS, owner-gated writes / member-gated reads.
+
+**Opportunity stage transitions**: `UpdateOpportunityStage` refuses to move an opportunity OUT of a terminal stage (`won`/`lost`) - a closed deal doesn't reopen. There's no real workflow-engine state machine behind an opportunity's stage (it's a plain column, not a `workflow_instances` row) - a second, parallel workflow for opportunity stages would duplicate the mechanism `customer_pipeline` already provides for the lead-to-customer conversion itself, for no benefit here.
+
+**`GetCustomerTimeline`'s merge design** (`timeline.go`): interactions and opportunities are fetched with two independent, plain SELECTs - each in its own natural column shape - then merged into one `[]TimelineEntry` slice and sorted by date with a single `sort.Slice` call in Go. A `crm_interactions ... UNION ALL SELECT ... FROM crm_opportunities` was deliberately rejected: PostgreSQL's `UNION ALL` requires both branches to project the same column count/types, so the two genuinely different shapes (interactions' `type`/`summary`/`outcome`/`next_action` vs. opportunities' `value`/`stage`/`probability`/`assigned_to_person_id`) would each need padding out to the union of both column sets, NULL in whichever branch doesn't have that column - a query that grows a new NULL-padded column every time either table gains a field, and forces callers to distinguish "genuinely NULL" from "not applicable to this row's kind." Two typed queries plus an in-memory sort sidesteps all of that.
+
+**`internal/project`** (new package): `projects` (`migrations/0029_crm_projects_depth.up.sql`), same RLS/authorization tier. `task_approval` instances link to a project via an OPTIONAL `project_id` payload field (`FieldTypeProject`, `internal/workflow`'s sixth cross-module reference FieldType after person/product/supplier/delivery/customer) - not a real foreign key column on `workflow_instances` (payload stays the freeform jsonb bag it already is for every other reference field, e.g. `assignee_person_id`). `internal/project` cannot import `internal/workflow` (workflow already imports project, for the validator) - it references `task_approval` by its literal key string instead, the same "reference a well-known key by value across a would-be import cycle" judgment call this codebase already makes elsewhere.
+
+**`GetProjectSummary`**: tasks-by-state comes from `workflow_instances` JOIN `workflow_definitions`/`workflow_states`, filtered by `wd.key = 'task_approval' AND wi.payload->>'project_id' = $projectID`. Hours logged comes from `time_entries.workflow_instance_id` (an existing real FK from the payroll/time-tracking batch) restricted to that same instance-id set. `EstimatedCost` is `TotalHoursLogged * AVG(contracts.amount WHERE type='hourly')` for the firm - `nil` (not zero) when the firm has no hourly contracts to derive an average from, the "if available" the design brief asks for; `Budget` vs. `EstimatedCost` is left for the frontend to compare, not computed as a delta here.
+
+**KPI additions** (`internal/reports/kpi.go`): `pipelineValue`/`wonThisMonth` extend the existing `KPIKindCRM` (querying `crm_opportunities`, the same domain `activeCustomers` already occupies there) rather than a new Kind. `activeProjects`/`overdueTasks` get a new `KPIKindOperations`: the two don't share an owning package the way most paired metrics do (`active_projects` queries `internal/project`'s own table, `overdue_tasks` queries `workflow_instances` directly), but both answer "what needs attention operationally right now" and neither fits an existing Kind's query shape (`overdue_tasks` needs "non-terminal state AND older than N days," which `KPIKindWorkflowStateCount`'s plain state-membership check can't express).
+
+**`overdue_tasks` is a heuristic, not a due-date check**: `task_approval` has no `due_date` field (its payload only carries `assignee_person_id`/`project_id`) - "overdue" here means "still open more than 30 days after creation," a proxy for "probably stale," not "past an actual deadline." The frontend KPI tile carries a tooltip saying so, not just this comment.
+
+- HTTP surface: `GET`/`POST /api/firms/{firmID}/customers/{customerID}/interactions`, `GET /api/firms/{firmID}/customers/{customerID}/timeline`; `GET`/`POST /api/firms/{firmID}/opportunities`, `GET`/`PATCH /api/firms/{firmID}/opportunities/{opportunityID}`, `POST .../stage`; `GET`/`POST /api/firms/{firmID}/projects`, `GET`/`PATCH /api/firms/{firmID}/projects/{projectID}`, `GET .../summary`.
+- Frontend: the customer detail page gets a Timeline tab; `/crm/opportunities` (kanban-by-stage or list view, the choice persisted in `localStorage`, pipeline value aggregated per stage at the top - CSS columns, no drag-and-drop library); `/projects` (list, detail with linked tasks/time sheet/progress bar).
+
+### Scope boundaries
+
+No email integration (Open Points item 17). No calendar sync. No lead scoring (ML). No Gantt charts.
+
+### Running these tests
+
+`internal/crm/crm_depth_integration_test.go` (timeline merge/sort, opportunity terminal-stage transition rejection) and `internal/project/project_integration_test.go` (task-by-state counts, logged hours, budget/estimated-cost, `FieldTypeProject` cross-module validation) all need a real Postgres:
+
+```
+export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5433/zonaryos?sslmode=disable
+export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5433/zonaryos?sslmode=disable
+make migrate
+go test ./internal/crm/... -v
+go test ./internal/project/... -v
+```
+
 ## Continuous Integration
 
 `.github/workflows/ci.yml` turns most of the CI Checklist categories (CLAUDE.md's "How to Verify a Change") from manual PR-by-PR discipline into automated checks on every PR (and on push to `main`). Every job here existed as a manual step some earlier PR ran by hand - this file doesn't introduce new verification steps, it just stops trusting a human to remember to run them. **Canary/Rollback Trigger** remains the one item intentionally "Not Set Up": there is no ZonaryOS deployment target or infrastructure decided yet (see `docs/OPEN_POINTS.md` item 34) for a rollback trigger to hook into.
