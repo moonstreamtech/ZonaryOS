@@ -71,7 +71,8 @@
     "cycleCounts": "Sayım Oturumları",
     "assets": "Varlıklar",
     "opportunities": "Fırsatlar",
-    "projects": "Projeler"
+    "projects": "Projeler",
+    "contracts": "Sözleşmeler"
   },
   "Dashboard": {
     "welcome": "Tekrar hoş geldiniz, {name}.",
@@ -1470,5 +1471,80 @@
     "nextServiceDate": "Sonraki servis tarihi",
     "recordCreateRequired": "Lütfen yapıldığı tarihi ve bir açıklama girin.",
     "recordCreateError": "Bu bakım kaydedilemedi. Lütfen tekrar deneyin."
+  },
+  "Contracts": {
+    "listTitle": "Sözleşmeler",
+    "loadError": "Bu veriler yüklenemedi. Lütfen tekrar deneyin.",
+    "newContract": "+ Yeni sözleşme",
+    "cancel": "İptal",
+    "create": "Oluştur",
+    "createRequired": "Lütfen bir referans numarası, başlık ve karşı taraf adı girin.",
+    "createError": "Bu sözleşme oluşturulamadı. Lütfen tekrar deneyin.",
+    "contractsEmpty": "Henüz sözleşme yok.",
+    "filterByStatus": "Durum",
+    "allStatuses": "Tüm durumlar",
+    "referenceNumber": "Referans numarası",
+    "title": "Başlık",
+    "type": "Tür",
+    "counterpartyName": "Karşı taraf adı",
+    "counterpartyType": "Karşı taraf türü",
+    "counterpartyTypeUnset": "Belirtilmedi",
+    "status": "Durum",
+    "value": "Değer",
+    "currency": "Para birimi",
+    "startDate": "Başlangıç tarihi",
+    "endDate": "Bitiş tarihi",
+    "autoRenewal": "Otomatik yenileme",
+    "renewalNoticeDays": "Yenileme bildirimi (gün)",
+    "notes": "Notlar",
+    "yes": "Evet",
+    "no": "Hayır",
+    "signedAt": "İmza tarihi",
+    "preview": "Önizle",
+    "columnReferenceNumber": "Referans numarası",
+    "columnTitle": "Başlık",
+    "columnCounterparty": "Karşı taraf",
+    "columnType": "Tür",
+    "columnStatus": "Durum",
+    "columnEndDate": "Bitiş tarihi",
+    "expirySoon": "Yakında sona eriyor",
+    "expiryUpcoming": "Sona eriyor",
+    "types": {
+      "customer": "Müşteri",
+      "supplier": "Tedarikçi",
+      "employment": "İstihdam",
+      "nda": "Gizlilik sözleşmesi",
+      "service": "Hizmet",
+      "other": "Diğer"
+    },
+    "counterpartyTypes": {
+      "customer": "Müşteri",
+      "supplier": "Tedarikçi",
+      "person": "Kişi",
+      "other": "Diğer"
+    },
+    "statuses": {
+      "draft": "Taslak",
+      "review": "İncelemede",
+      "active": "Aktif",
+      "expired": "Süresi doldu",
+      "terminated": "Feshedildi",
+      "renewed": "Yenilendi"
+    },
+    "documentsTitle": "Belgeler",
+    "documentsEmpty": "Henüz belge yok.",
+    "addDocument": "+ Belge ekle",
+    "documentName": "Belge adı",
+    "documentUrl": "Belge URL'si",
+    "documentType": "Belge türü",
+    "uploadedAt": "Yüklenme",
+    "documentCreateRequired": "Lütfen bir belge adı girin.",
+    "documentCreateError": "Bu belge eklenemedi. Lütfen tekrar deneyin.",
+    "documentTypes": {
+      "original": "Orijinal",
+      "amendment": "Değişiklik",
+      "annex": "Ek",
+      "correspondence": "Yazışma"
+    }
   }
 }

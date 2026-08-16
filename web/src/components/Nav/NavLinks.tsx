@@ -49,6 +49,7 @@ const GROUPS: NavGroup[] = [
       { href: "/inventory/transfers", labelKey: "inventoryTransfers" },
       { href: "/inventory/cycle-counts", labelKey: "cycleCounts" },
       { href: "/assets", labelKey: "assets" },
+      { href: "/contracts", labelKey: "contracts" },
       { href: "/suppliers", labelKey: "suppliers" },
       { href: "/logistics", labelKey: "logistics" },
       { href: "/sales-orders", labelKey: "salesOrders" },

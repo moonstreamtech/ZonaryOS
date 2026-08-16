@@ -71,7 +71,8 @@
     "cycleCounts": "Cycle Counts",
     "assets": "Assets",
     "opportunities": "Opportunities",
-    "projects": "Projects"
+    "projects": "Projects",
+    "contracts": "Contracts"
   },
   "Dashboard": {
     "welcome": "Welcome back, {name}.",
@@ -1470,5 +1471,80 @@
     "nextServiceDate": "Next service date",
     "recordCreateRequired": "Please enter the date performed and a description.",
     "recordCreateError": "Couldn't log this maintenance. Please try again."
+  },
+  "Contracts": {
+    "listTitle": "Contracts",
+    "loadError": "Couldn't load this data. Please try again.",
+    "newContract": "+ New contract",
+    "cancel": "Cancel",
+    "create": "Create",
+    "createRequired": "Please enter a reference number, title, and counterparty name.",
+    "createError": "Couldn't create this contract. Please try again.",
+    "contractsEmpty": "No contracts yet.",
+    "filterByStatus": "Status",
+    "allStatuses": "All statuses",
+    "referenceNumber": "Reference number",
+    "title": "Title",
+    "type": "Type",
+    "counterpartyName": "Counterparty name",
+    "counterpartyType": "Counterparty type",
+    "counterpartyTypeUnset": "Not specified",
+    "status": "Status",
+    "value": "Value",
+    "currency": "Currency",
+    "startDate": "Start date",
+    "endDate": "End date",
+    "autoRenewal": "Auto-renewal",
+    "renewalNoticeDays": "Renewal notice (days)",
+    "notes": "Notes",
+    "yes": "Yes",
+    "no": "No",
+    "signedAt": "Signed at",
+    "preview": "Preview",
+    "columnReferenceNumber": "Reference number",
+    "columnTitle": "Title",
+    "columnCounterparty": "Counterparty",
+    "columnType": "Type",
+    "columnStatus": "Status",
+    "columnEndDate": "End date",
+    "expirySoon": "Expiring soon",
+    "expiryUpcoming": "Expiring",
+    "types": {
+      "customer": "Customer",
+      "supplier": "Supplier",
+      "employment": "Employment",
+      "nda": "NDA",
+      "service": "Service",
+      "other": "Other"
+    },
+    "counterpartyTypes": {
+      "customer": "Customer",
+      "supplier": "Supplier",
+      "person": "Person",
+      "other": "Other"
+    },
+    "statuses": {
+      "draft": "Draft",
+      "review": "In review",
+      "active": "Active",
+      "expired": "Expired",
+      "terminated": "Terminated",
+      "renewed": "Renewed"
+    },
+    "documentsTitle": "Documents",
+    "documentsEmpty": "No documents yet.",
+    "addDocument": "+ Add document",
+    "documentName": "Document name",
+    "documentUrl": "Document URL",
+    "documentType": "Document type",
+    "uploadedAt": "Uploaded",
+    "documentCreateRequired": "Please enter a document name.",
+    "documentCreateError": "Couldn't add this document. Please try again.",
+    "documentTypes": {
+      "original": "Original",
+      "amendment": "Amendment",
+      "annex": "Annex",
+      "correspondence": "Correspondence"
+    }
   }
 }
