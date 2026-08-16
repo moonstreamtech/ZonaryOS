@@ -94,6 +94,21 @@ func seedOwner(ctx context.Context, t *testing.T, adminPool, appPool *pgxpool.Po
 	if err != nil {
 		t.Fatalf("seed owner role/membership: %v", err)
 	}
+
+	// Default warehouse location - StartProductionOrder/CompleteProductionOrder
+	// call AdjustStockTx with a nil locationID, which requires firmID to
+	// have a warehouse_locations row flagged is_default (mirrors
+	// migrations/0028_warehouse_management.up.sql's own backfill/
+	// internal/wizard.CreateDefaultFirm's unconditional seed).
+	var warehouseID uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO warehouses (firm_id, name) VALUES ($1, 'Default Warehouse') RETURNING id`, firmID).Scan(&warehouseID); err != nil {
+		t.Fatalf("seed default warehouse: %v", err)
+	}
+	if _, err := adminPool.Exec(ctx, `
+		INSERT INTO warehouse_locations (firm_id, warehouse_id, code, name, is_default) VALUES ($1, $2, 'default', 'Main', true)
+	`, firmID, warehouseID); err != nil {
+		t.Fatalf("seed default location: %v", err)
+	}
 	return firmID, userID
 }
 
@@ -109,7 +124,7 @@ func seedProduct(ctx context.Context, t *testing.T, appPool *pgxpool.Pool, firmI
 func seedStock(ctx context.Context, t *testing.T, appPool *pgxpool.Pool, firmID, productID uuid.UUID, quantity string) {
 	t.Helper()
 	err := zdb.WithFirmContext(ctx, appPool, firmID, func(ctx context.Context, tx pgx.Tx) error {
-		return inventory.AdjustStockTx(ctx, tx, firmID, productID, "", quantity, "purchase", "test", nil)
+		return inventory.AdjustStockTx(ctx, tx, firmID, productID, nil, quantity, "purchase", "test", nil)
 	})
 	if err != nil {
 		t.Fatalf("seed stock: %v", err)

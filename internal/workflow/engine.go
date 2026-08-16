@@ -1388,7 +1388,7 @@ func executeTransitionTx(ctx context.Context, tx pgx.Tx, firmID, userID, instanc
 			return "", "", nil, err
 		}
 		if ok {
-			if err := inventory.AdjustStockTx(ctx, tx, firmID, productID, "", quantityChange, stockAdjustment.Reason, journalEntitySourceType, &instanceID); err != nil {
+			if err := inventory.AdjustStockTx(ctx, tx, firmID, productID, nil, quantityChange, stockAdjustment.Reason, journalEntitySourceType, &instanceID); err != nil {
 				return "", "", nil, err
 			}
 		}

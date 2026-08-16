@@ -84,7 +84,38 @@ func seedOwner(ctx context.Context, t *testing.T, adminPool, appPool *pgxpool.Po
 	if err != nil {
 		t.Fatalf("seed owner role/membership: %v", err)
 	}
+
+	// Default warehouse location - mirrors migrations/0028_warehouse_management.up.sql's
+	// own backfill/internal/wizard.CreateDefaultFirm's unconditional seed;
+	// stock_levels.location_id (NOT NULL) needs a real row to reference.
+	var warehouseID uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO warehouses (firm_id, name) VALUES ($1, 'Default Warehouse') RETURNING id`, firmID).Scan(&warehouseID); err != nil {
+		t.Fatalf("seed default warehouse: %v", err)
+	}
+	if _, err := adminPool.Exec(ctx, `
+		INSERT INTO warehouse_locations (firm_id, warehouse_id, code, name, is_default) VALUES ($1, $2, 'default', 'Main', true)
+	`, firmID, warehouseID); err != nil {
+		t.Fatalf("seed default location: %v", err)
+	}
 	return firmID, userID, roleID
+}
+
+// seedLocation inserts a second, non-default warehouse_locations row
+// under firmID's default warehouse - for KPI tests that need stock split
+// across more than one location.
+func seedLocation(ctx context.Context, t *testing.T, adminPool *pgxpool.Pool, firmID uuid.UUID, code string) uuid.UUID {
+	t.Helper()
+	var warehouseID uuid.UUID
+	if err := adminPool.QueryRow(ctx, `SELECT warehouse_id FROM warehouse_locations WHERE firm_id = $1 AND is_default`, firmID).Scan(&warehouseID); err != nil {
+		t.Fatalf("look up default warehouse: %v", err)
+	}
+	var locationID uuid.UUID
+	if err := adminPool.QueryRow(ctx, `
+		INSERT INTO warehouse_locations (firm_id, warehouse_id, code, name) VALUES ($1, $2, $3, $3) RETURNING id
+	`, firmID, warehouseID, code).Scan(&locationID); err != nil {
+		t.Fatalf("seed location: %v", err)
+	}
+	return locationID
 }
 
 func kpiValue(t *testing.T, results []reports.KPIResult, key string) string {
@@ -230,20 +261,36 @@ func TestGetDashboardKPIs_InventoryMetrics(t *testing.T) {
 		t.Fatalf("seed product (no threshold): %v", err)
 	}
 
+	warehouse2ID := seedLocation(ctx, t, adminPool, firmID, "warehouse-2")
+
 	// lowStockWithStockID: 3 below its threshold of 10.
-	if _, err := adminPool.Exec(ctx, `INSERT INTO stock_levels (firm_id, product_id, location, quantity) VALUES ($1, $2, 'default', 3)`, firmID, lowStockWithStockID); err != nil {
+	if _, err := adminPool.Exec(ctx, `
+		INSERT INTO stock_levels (firm_id, product_id, location_id, quantity)
+		SELECT $1, $2, id, 3 FROM warehouse_locations WHERE firm_id = $1 AND is_default
+	`, firmID, lowStockWithStockID); err != nil {
 		t.Fatalf("seed stock (low, with stock): %v", err)
 	}
 	// healthyStockID: 5 total across two locations, exactly at its
 	// threshold of 5 - "at" the threshold is NOT low (strict <), so this
 	// must not count toward lowStockProducts.
-	if _, err := adminPool.Exec(ctx, `INSERT INTO stock_levels (firm_id, product_id, location, quantity) VALUES ($1, $2, 'default', 3), ($1, $2, 'warehouse-2', 2)`, firmID, healthyStockID); err != nil {
-		t.Fatalf("seed stock (healthy): %v", err)
+	if _, err := adminPool.Exec(ctx, `
+		INSERT INTO stock_levels (firm_id, product_id, location_id, quantity)
+		SELECT $1, $2, id, 3 FROM warehouse_locations WHERE firm_id = $1 AND is_default
+	`, firmID, healthyStockID); err != nil {
+		t.Fatalf("seed stock (healthy, default location): %v", err)
+	}
+	if _, err := adminPool.Exec(ctx, `
+		INSERT INTO stock_levels (firm_id, product_id, location_id, quantity) VALUES ($1, $2, $3, 2)
+	`, firmID, healthyStockID, warehouse2ID); err != nil {
+		t.Fatalf("seed stock (healthy, warehouse-2): %v", err)
 	}
 	// noThresholdID: has some stock, but min_quantity is 0 - never flagged
 	// low regardless of on-hand quantity (products.min_quantity's own
 	// documented default, migrations/0011_inventory_core.up.sql).
-	if _, err := adminPool.Exec(ctx, `INSERT INTO stock_levels (firm_id, product_id, location, quantity) VALUES ($1, $2, 'default', 0)`, firmID, noThresholdID); err != nil {
+	if _, err := adminPool.Exec(ctx, `
+		INSERT INTO stock_levels (firm_id, product_id, location_id, quantity)
+		SELECT $1, $2, id, 0 FROM warehouse_locations WHERE firm_id = $1 AND is_default
+	`, firmID, noThresholdID); err != nil {
 		t.Fatalf("seed stock (no threshold): %v", err)
 	}
 	// lowStockNoStockID gets NO stock_levels row at all - on-hand
@@ -436,8 +483,8 @@ func TestGetDashboardKPIs_EmptyFirmReadsZeros(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetDashboardKPIs: %v", err)
 	}
-	if len(results) != 16 {
-		t.Fatalf("expected 16 KPI results, got %d: %+v", len(results), results)
+	if len(results) != 20 {
+		t.Fatalf("expected 20 KPI results, got %d: %+v", len(results), results)
 	}
 	for _, r := range results {
 		// A plain "0" or a zero-valued decimal string ("0.0000") both mean

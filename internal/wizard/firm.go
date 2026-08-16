@@ -135,6 +135,28 @@ func CreateDefaultFirm(ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID
 		return CreateDefaultFirmResult{}, fmt.Errorf("register audit log read permission: %w", err)
 	}
 
+	// A default warehouse + one default ("Main") location, named after
+	// the firm - seeded unconditionally, not just when sel.TracksInventory
+	// is true: internal/inventory.AdjustStockTx's nil-locationID
+	// resolution (used by the stock_to_sale/purchase_order/manufacturing
+	// bridges, none of which carry a location of their own) needs a
+	// resolvable default location for ANY firm it's ever called against -
+	// including a manufacturing-only firm (sel.SeedManufacturing true,
+	// sel.TracksInventory false; the wizard doesn't couple the two). The
+	// same unconditional-seed judgment call internal/accounting.coreAccounts
+	// already makes for the chart of accounts.
+	var warehouseID uuid.UUID
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO warehouses (firm_id, name) VALUES ($1, $2) RETURNING id
+	`, result.FirmID, firmName+" Warehouse").Scan(&warehouseID); err != nil {
+		return CreateDefaultFirmResult{}, fmt.Errorf("seed default warehouse: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO warehouse_locations (firm_id, warehouse_id, code, name, is_default) VALUES ($1, $2, 'default', 'Main', true)
+	`, result.FirmID, warehouseID); err != nil {
+		return CreateDefaultFirmResult{}, fmt.Errorf("seed default warehouse location: %w", err)
+	}
+
 	// Vision §3's financial management core: seed a minimal but real
 	// starter chart of accounts, parametrically, from the same wizard
 	// answers that gate which starter workflows get seeded below - see
@@ -152,6 +174,7 @@ func CreateDefaultFirm(ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID
 		PurchasesFromSuppliers: sel.PurchasesFromSuppliers,
 		ManagesPeople:          sel.ManagesPeople,
 		SeedManufacturing:      sel.SeedManufacturing,
+		TracksInventory:        sel.TracksInventory,
 	}); err != nil {
 		return CreateDefaultFirmResult{}, fmt.Errorf("seed default chart of accounts: %w", err)
 	}

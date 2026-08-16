@@ -35,18 +35,24 @@ const (
 // task/approval workflow: a task or approval request is opened, started,
 // then either completed or rejected.
 //
-// Fields adds one OPTIONAL payload field (HR core batch): assignee_person_id,
-// a FieldTypePerson reference to internal/hr's `people` table - "who this
-// task is assigned to." Deliberately OPTIONAL (Required: false), not
-// required: every CreateInstance call for this workflow that predates
-// this batch (this package's own integration tests, the earlier E2E
-// smoke test coverage) creates instances with no assignee at all, and
-// Required: true here would break every one of them (Never-Violate Rule
-// 6) - an unassigned task/approval request remains a fully valid state,
-// same as before this field existed. When present, CreateInstance
-// validates it against a real `people` row in this firm
-// (checkPersonField, engine.go) the same way a FieldTypeReference field
-// is validated against a real workflow instance.
+// Fields adds two OPTIONAL payload fields. assignee_person_id (HR core
+// batch): a FieldTypePerson reference to internal/hr's `people` table -
+// "who this task is assigned to." project_id (Multi-location CRM/project
+// management batch): a FieldTypeProject reference to
+// internal/project's `projects` table - "which project this task belongs
+// to," internal/project.GetProjectSummary's own source of truth for a
+// project's linked tasks (it filters workflow_instances by
+// payload->>'project_id', not a real foreign key column). Both are
+// deliberately OPTIONAL (Required: false), not required: every
+// CreateInstance call for this workflow that predates each field (this
+// package's own integration tests, the earlier E2E smoke test coverage)
+// creates instances without them, and Required: true here would break
+// every one of them (Never-Violate Rule 6) - an unassigned/unlinked
+// task/approval request remains a fully valid state, same as before
+// either field existed. When present, CreateInstance validates each
+// against a real row in this firm (personValidator/projectValidator,
+// validation.go) the same way a FieldTypeReference field is validated
+// against a real workflow instance.
 var TaskApprovalSpec = DefinitionSpec{
 	Key:  TaskApprovalKey,
 	Name: "Task / Approval",
@@ -56,6 +62,7 @@ var TaskApprovalSpec = DefinitionSpec{
 	},
 	Fields: []FieldSpec{
 		{Name: "assignee_person_id", Type: FieldTypePerson, Required: false},
+		{Name: "project_id", Type: FieldTypeProject, Required: false},
 	},
 	States: []StateSpec{
 		{Key: "open", Name: "Open", IsInitial: true},

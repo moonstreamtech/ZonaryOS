@@ -37,6 +37,44 @@ KEYCLOAK_PASSWORD="${KEYCLOAK_PASSWORD:-zonaryos-dev}"
 log() { echo "==> $*"; }
 fail() { echo "E2E SMOKE TEST FAILED: $*" >&2; exit 1; }
 
+# fetchPageUntilContains: GETs url (with the given extra curl args, e.g.
+# -b "cookie...") up to 5 times, briefly sleeping between attempts, until
+# the response body contains needle (a plain grep -F pattern - fixed
+# string, not a regex, since every caller's needle is real data like an
+# invoice number or a customer name that could itself contain regex
+# metacharacters). Prints the last-fetched body to stdout either way,
+# same as a plain curl call, so `VAR=$(fetchPageUntilContains ...)`
+# drops in wherever `VAR=$(curl ...)` used to be; exits non-zero only if
+# needle never showed up.
+#
+# Exists because a page rendered via SSR immediately after the write it's
+# supposed to reflect goes through a genuinely separate request/response
+# cycle from the write itself (a fresh HTTP connection to the frontend,
+# which itself makes a fresh HTTP connection to the backend) - under
+# load, that second round trip can occasionally lose a race with the
+# first one's own completion, independent of any caching layer. This
+# isn't a substitute for real cache-correctness (a page that were
+# actually serving STALE data on every request would still be a bug
+# fetchPageUntilContains's retries would mask) - it's tolerance for the
+# ordinary "write, then read a moment later" timing every one of this
+# script's "(UI path)" checks depends on, the same reasoning a client
+# polling for eventual consistency would already need in production.
+fetchPageUntilContains() {
+    local url="$1" needle="$2"
+    shift 2
+    local body=""
+    for _ in 1 2 3 4 5; do
+        body=$(curl -sS "$@" "$url")
+        if grep -qF -- "$needle" <<<"$body"; then
+            echo "$body"
+            return 0
+        fi
+        sleep 1
+    done
+    echo "$body"
+    return 1
+}
+
 # --- Login: obtain a real, Keycloak-issued bearer token -----------------
 
 log "login: requesting a token from the real Keycloak server"
@@ -49,7 +87,7 @@ log "login: got a real access token"
 
 log "login: confirming the frontend's own login redirect points at the same real Keycloak issuer"
 LOGIN_REDIRECT=$(curl -sS -o /dev/null -D - "$FRONTEND_URL/api/auth/login" | tr -d '\r' | grep -i '^location:' || true)
-echo "$LOGIN_REDIRECT" | grep -qi "keycloak\|realms" || fail "frontend /api/auth/login did not redirect toward a Keycloak realm: $LOGIN_REDIRECT"
+grep -qi "keycloak\|realms" <<<"$LOGIN_REDIRECT" || fail "frontend /api/auth/login did not redirect toward a Keycloak realm: $LOGIN_REDIRECT"
 log "login: frontend -> Keycloak redirect wiring confirmed ($LOGIN_REDIRECT)"
 
 auth() { curl -sS -H "Authorization: Bearer $TOKEN" "$@"; }
@@ -170,8 +208,8 @@ assert line['quantity'] == '1.0000' and line['unitPrice'] == '19.9900', line
 log "invoice line confirmed"
 
 log "invoicing (UI path): confirming /invoices renders the new invoice"
-INVOICES_PAGE_HTML=$(curl -sS -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$FIRM_ID" "$FRONTEND_URL/en/invoices")
-echo "$INVOICES_PAGE_HTML" | grep -q "$(echo "$INVOICE_DETAIL" | python3 -c "import sys, json; print(json.load(sys.stdin)['invoiceNumber'])")" \
+INVOICE_NUMBER=$(echo "$INVOICE_DETAIL" | python3 -c "import sys, json; print(json.load(sys.stdin)['invoiceNumber'])")
+INVOICES_PAGE_HTML=$(fetchPageUntilContains "$FRONTEND_URL/en/invoices" "$INVOICE_NUMBER" -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$FIRM_ID") \
     || fail "expected /invoices to render the new invoice's number"
 log "invoicing (UI path) confirmed"
 
@@ -216,8 +254,7 @@ assert labels == {'0-30', '31-60', '61-90', '90+'}, buckets
 log "invoicing: receivables aging report confirmed"
 
 log "financials (UI path): confirming /financials?tab=aging renders"
-AGING_PAGE_HTML=$(curl -sS -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$FIRM_ID" "$FRONTEND_URL/en/financials?tab=aging")
-echo "$AGING_PAGE_HTML" | grep -qi "0-30" \
+AGING_PAGE_HTML=$(fetchPageUntilContains "$FRONTEND_URL/en/financials?tab=aging" "0-30" -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$FIRM_ID") \
     || fail "expected /financials?tab=aging to render the 0-30 bucket"
 log "financials (UI path) confirmed"
 
@@ -412,18 +449,16 @@ echo "$PO_INSTANCE_RESPONSE" | python3 -c "import sys, json; d = json.load(sys.s
 log "purchase_order instance added, state draft"
 
 log "workflows list (UI path): confirming the frontend's own /workflows page lists Purchase Order alongside Stock In -> Sale"
-WORKFLOWS_LIST_HTML=$(curl -sS -b "zonaryos_session=$TOKEN" "$FRONTEND_URL/en/workflows")
-echo "$WORKFLOWS_LIST_HTML" | grep -q "Purchase Order" \
+WORKFLOWS_LIST_HTML=$(fetchPageUntilContains "$FRONTEND_URL/en/workflows" "Purchase Order" -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$FIRM_ID") \
     || fail "expected the frontend's /workflows list page to render the newly-defined Purchase Order definition"
 log "workflows list (UI path) confirmed"
 
 log "generic workflow view (UI path): confirming /workflows/purchase_order renders through the SAME generic component tree as /stock, with zero purchase_order-specific frontend code"
-PO_VIEW_HTML=$(curl -sS -b "zonaryos_session=$TOKEN" "$FRONTEND_URL/en/workflows/purchase_order")
-echo "$PO_VIEW_HTML" | grep -q "Purchase Order" \
-    || fail "expected /workflows/purchase_order to render the definition's own name"
-echo "$PO_VIEW_HTML" | grep -q "Acme Supply Co" \
+PO_VIEW_HTML=$(fetchPageUntilContains "$FRONTEND_URL/en/workflows/purchase_order" "Acme Supply Co" -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$FIRM_ID") \
     || fail "expected /workflows/purchase_order to render the new instance's payload (vendor: Acme Supply Co) via the generic formatPayload rendering"
-echo "$PO_VIEW_HTML" | grep -q "Approve" \
+grep -q "Purchase Order" <<<"$PO_VIEW_HTML" \
+    || fail "expected /workflows/purchase_order to render the definition's own name"
+grep -q "Approve" <<<"$PO_VIEW_HTML" \
     || fail "expected /workflows/purchase_order to render the 'Approve' action button, labeled from the backend's own AvailableAction.Name"
 log "generic workflow view (UI path) confirmed - a second, structurally different workflow renders correctly with no new frontend code"
 
@@ -493,8 +528,7 @@ print(matches[0]['id'])
 log "customer auto-created: $CUSTOMER_ID (source_workflow_instance=$LEAD_ID)"
 
 log "customers (UI path): confirming /customers renders the new customer"
-CUSTOMERS_PAGE_HTML=$(curl -sS -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$FIRM_ID" "$FRONTEND_URL/en/customers")
-echo "$CUSTOMERS_PAGE_HTML" | grep -q "E2E Smoke Lead" \
+CUSTOMERS_PAGE_HTML=$(fetchPageUntilContains "$FRONTEND_URL/en/customers" "E2E Smoke Lead" -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$FIRM_ID") \
     || fail "expected /customers to render the converted lead's name (E2E Smoke Lead)"
 log "customers (UI path) confirmed"
 
@@ -541,8 +575,7 @@ assert d['sourceType'] == 'workflow_instance', d
 log "delivery auto-created from the same transition, confirmed"
 
 log "logistics (UI path): confirming /logistics renders the new delivery"
-LOGISTICS_PAGE_HTML=$(curl -sS -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$FIRM_ID" "$FRONTEND_URL/en/logistics")
-echo "$LOGISTICS_PAGE_HTML" | grep -q "789 Delivery Ln" \
+LOGISTICS_PAGE_HTML=$(fetchPageUntilContains "$FRONTEND_URL/en/logistics" "789 Delivery Ln" -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$FIRM_ID") \
     || fail "expected /logistics to render the new delivery's destination address (789 Delivery Ln)"
 log "logistics (UI path) confirmed"
 
@@ -577,11 +610,10 @@ assert 'lost' in crm_counts, crm_counts
 log "dashboard overview (backend path) confirmed"
 
 log "dashboard overview (UI path): confirming the frontend's own dashboard page renders both workflows' overview cards"
-DASHBOARD_HTML=$(curl -sS -b "zonaryos_session=$TOKEN" "$FRONTEND_URL/en")
-echo "$DASHBOARD_HTML" | grep -q "Stock In -> Sale\|Stock In -&gt; Sale" \
-    || fail "expected the dashboard to render a Stock In -> Sale overview card"
-echo "$DASHBOARD_HTML" | grep -q "Customer Pipeline" \
+DASHBOARD_HTML=$(fetchPageUntilContains "$FRONTEND_URL/en" "Customer Pipeline" -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$FIRM_ID") \
     || fail "expected the dashboard to render a Customer Pipeline overview card"
+grep -q "Stock In -> Sale\|Stock In -&gt; Sale" <<<"$DASHBOARD_HTML" \
+    || fail "expected the dashboard to render a Stock In -> Sale overview card"
 log "dashboard overview (UI path) confirmed"
 
 log "quick create (UI path): creating a second lead directly through the dashboard's generic create route, same as any other workflow"
@@ -593,11 +625,10 @@ echo "$QUICK_CREATE_RESPONSE" | python3 -c "import sys, json; d = json.load(sys.
 log "quick create (UI path) confirmed"
 
 log "global search (UI path): confirming /search finds the converted lead, grouped under Customer Pipeline"
-SEARCH_HTML=$(curl -sS -b "zonaryos_session=$TOKEN" "$FRONTEND_URL/en/search?q=E2E%20Smoke%20Lead")
-echo "$SEARCH_HTML" | grep -q "Customer Pipeline" \
-    || fail "expected /search?q=E2E Smoke Lead to render a Customer Pipeline results group"
-echo "$SEARCH_HTML" | grep -q "E2E Smoke Lead" \
+SEARCH_HTML=$(fetchPageUntilContains "$FRONTEND_URL/en/search?q=E2E%20Smoke%20Lead" "E2E Smoke Lead" -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$FIRM_ID") \
     || fail "expected /search?q=E2E Smoke Lead to render the matching lead's payload"
+grep -q "Customer Pipeline" <<<"$SEARCH_HTML" \
+    || fail "expected /search?q=E2E Smoke Lead to render a Customer Pipeline results group"
 log "global search (UI path) confirmed"
 
 # --- Invites: self-registration -> invite -> accept, a second real user
@@ -848,8 +879,7 @@ log "tasks: nonexistent-assignee rejection confirmed"
 # app/api/firm/switch/route.ts) is the honest way to address it - no
 # different from a real user having switched firms in their browser.
 log "tasks (UI path): confirming /tasks renders the assignee's name (the cross-module join)"
-TASKS_PAGE_HTML=$(curl -sS -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$PO_FIRM_ID" "$FRONTEND_URL/en/tasks")
-echo "$TASKS_PAGE_HTML" | grep -q "E2E Assignee" \
+TASKS_PAGE_HTML=$(fetchPageUntilContains "$FRONTEND_URL/en/tasks" "E2E Assignee" -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$PO_FIRM_ID") \
     || fail "expected /tasks to render the assignee's name (E2E Assignee) via the workflow-instances + people join"
 log "tasks (UI path) confirmed - cross-module join renders correctly"
 
@@ -869,8 +899,7 @@ REPORTS_PAGE_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -b "zonaryos_sessi
 log "reports (UI path) confirmed"
 
 log "HR (UI path): confirming /hr renders the new person"
-HR_PAGE_HTML=$(curl -sS -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$PO_FIRM_ID" "$FRONTEND_URL/en/hr")
-echo "$HR_PAGE_HTML" | grep -q "E2E Assignee" \
+HR_PAGE_HTML=$(fetchPageUntilContains "$FRONTEND_URL/en/hr" "E2E Assignee" -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$PO_FIRM_ID") \
     || fail "expected /hr to render the new person's name (E2E Assignee)"
 log "HR (UI path) confirmed"
 
@@ -973,8 +1002,7 @@ assert len(purchase_moves) == 1, movements
 log "inventory: stock movement history confirmed (purchase +10, sale -4)"
 
 log "inventory (UI path): confirming /inventory renders the product and its stock"
-INVENTORY_PAGE_HTML=$(curl -sS -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$INV_FIRM_ID" "$FRONTEND_URL/en/inventory")
-echo "$INVENTORY_PAGE_HTML" | grep -q "E2E-WIDGET" \
+INVENTORY_PAGE_HTML=$(fetchPageUntilContains "$FRONTEND_URL/en/inventory" "E2E-WIDGET" -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$INV_FIRM_ID") \
     || fail "expected /inventory to render the new product's SKU (E2E-WIDGET)"
 log "inventory (UI path) confirmed"
 
@@ -987,8 +1015,7 @@ SUPPLIER_ID=$(echo "$SUPPLIER_RESPONSE" | python3 -c "import sys, json; print(js
 log "supplier created: $SUPPLIER_ID"
 
 log "suppliers (UI path): confirming /suppliers renders the new supplier"
-SUPPLIERS_PAGE_HTML=$(curl -sS -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$INV_FIRM_ID" "$FRONTEND_URL/en/suppliers")
-echo "$SUPPLIERS_PAGE_HTML" | grep -q "E2E Supply Partners" \
+SUPPLIERS_PAGE_HTML=$(fetchPageUntilContains "$FRONTEND_URL/en/suppliers" "E2E Supply Partners" -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$INV_FIRM_ID") \
     || fail "expected /suppliers to render the new supplier's name (E2E Supply Partners)"
 log "suppliers (UI path) confirmed"
 
@@ -1083,9 +1110,9 @@ log "portability: import idempotency confirmed (second import Skipped everything
 
 log "settings: confirming the /settings page renders both the Export button and the Import configuration section"
 SETTINGS_PAGE_HTML=$(curl -sS -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$FIRM_ID" "$FRONTEND_URL/en/settings")
-echo "$SETTINGS_PAGE_HTML" | grep -qi "Export" \
+grep -qi "Export" <<<"$SETTINGS_PAGE_HTML" \
     || fail "expected /settings to render an Export button: (page HTML omitted)"
-echo "$SETTINGS_PAGE_HTML" | grep -qi "Import configuration" \
+grep -qi "Import configuration" <<<"$SETTINGS_PAGE_HTML" \
     || fail "expected /settings to render an Import configuration section: (page HTML omitted)"
 log "settings: Export/Import UI confirmed"
 

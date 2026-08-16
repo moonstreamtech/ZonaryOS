@@ -48,6 +48,14 @@ var (
 
 	// ErrInvalidStockAdjustment means AdjustStockTx was given a
 	// structurally invalid quantityChange (not a well-formed decimal) or
-	// an empty reason/location.
+	// an empty reason.
 	ErrInvalidStockAdjustment = errors.New("invalid stock adjustment")
+
+	// ErrNoDefaultLocation means AdjustStockTx was called with a nil
+	// locationID for a firm that has no warehouse_locations row flagged
+	// is_default - shouldn't happen for any firm created through the
+	// normal paths (internal/wizard.CreateDefaultFirm, or the
+	// migrations/0028_warehouse_management.up.sql backfill for firms that
+	// predate it), both of which unconditionally seed one.
+	ErrNoDefaultLocation = errors.New("firm has no default warehouse location")
 )

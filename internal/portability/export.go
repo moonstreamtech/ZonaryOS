@@ -94,9 +94,13 @@ type ExportWorkflowInstance struct {
 // ExportStockLevel is one stock_levels row in the export, identified by
 // the owning product's SKU (not its ID, for the same "survives a round
 // trip" reasoning ExportWorkflowInstance's own doc comment gives).
+// LocationCode is warehouse_locations.code (also not the id, same
+// reasoning) - a plain human-readable string, not yet reconstructed into
+// a real warehouse_locations row on import (this format doesn't import
+// stock levels at all yet, see ExportFirm's caller).
 type ExportStockLevel struct {
 	ProductSKU       string `json:"productSku"`
-	Location         string `json:"location"`
+	LocationCode     string `json:"locationCode"`
 	Quantity         string `json:"quantity"`
 	ReservedQuantity string `json:"reservedQuantity"`
 }
@@ -171,7 +175,7 @@ func ExportFirm(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.UUI
 	}
 	for _, l := range allLevels {
 		doc.StockLevels = append(doc.StockLevels, ExportStockLevel{
-			ProductSKU: skuByProductID[l.ProductID], Location: l.Location, Quantity: l.Quantity, ReservedQuantity: l.ReservedQuantity,
+			ProductSKU: skuByProductID[l.ProductID], LocationCode: l.LocationCode, Quantity: l.Quantity, ReservedQuantity: l.ReservedQuantity,
 		})
 	}
 

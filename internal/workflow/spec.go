@@ -442,6 +442,14 @@ const (
 	// checkCustomerField.
 	FieldTypeDelivery FieldType = "delivery"
 	FieldTypeCustomer FieldType = "customer"
+	// FieldTypeProject (Multi-location CRM/project management batch) is
+	// FieldTypePerson's counterpart for this batch's new cross-module
+	// entity: a value that must be a real internal/project.Project's ID
+	// within the same firm - e.g. TaskApprovalSpec's optional project_id.
+	// Same reasoning as FieldTypePerson/FieldTypeCustomer: resolves
+	// against one specific table (projects) directly, not a choice of
+	// target - see validation.go's own projectValidator.
+	FieldTypeProject FieldType = "project"
 )
 
 // FieldSpec is one declared field in a workflow definition's instance
@@ -698,7 +706,7 @@ func validateFieldShape(defKey string, f FieldSpec) error {
 		}
 		return nil
 
-	case FieldTypePerson, FieldTypeProduct, FieldTypeSupplier, FieldTypeDelivery, FieldTypeCustomer:
+	case FieldTypePerson, FieldTypeProduct, FieldTypeSupplier, FieldTypeDelivery, FieldTypeCustomer, FieldTypeProject:
 		// No extra fields needed - same reasoning FieldTypePerson's own doc
 		// comment gives (only one target table to reference per type,
 		// unlike FieldTypeReference's choice of target workflow definition).

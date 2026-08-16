@@ -459,7 +459,7 @@ func StartProductionOrder(ctx context.Context, pool *pgxpool.Pool, firmID, userI
 				return fmt.Errorf("compute component quantity needed: %w", err)
 			}
 
-			if err := inventory.AdjustStockTx(ctx, tx, firmID, n.productID, "", "-"+needed, materialIssueReason, productionOrderSourceType, &orderID); err != nil {
+			if err := inventory.AdjustStockTx(ctx, tx, firmID, n.productID, nil, "-"+needed, materialIssueReason, productionOrderSourceType, &orderID); err != nil {
 				return err
 			}
 			if _, err := tx.Exec(ctx, `
@@ -560,7 +560,7 @@ func CompleteProductionOrder(ctx context.Context, pool *pgxpool.Pool, firmID, us
 			return fmt.Errorf("%w: cannot complete a production order in status %q", ErrInvalidProductionOrderTransition, currentStatus)
 		}
 
-		if err := inventory.AdjustStockTx(ctx, tx, firmID, productID, "", quantityProduced, finishedGoodsReason, productionOrderSourceType, &orderID); err != nil {
+		if err := inventory.AdjustStockTx(ctx, tx, firmID, productID, nil, quantityProduced, finishedGoodsReason, productionOrderSourceType, &orderID); err != nil {
 			return err
 		}
 

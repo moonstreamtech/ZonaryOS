@@ -48,15 +48,54 @@ const postgresCheckViolation = "23514"
 
 // StockLevel is one product's on-hand quantity at one location.
 type StockLevel struct {
-	ProductID        uuid.UUID
-	Location         string
+	ProductID  uuid.UUID
+	LocationID uuid.UUID
+	// LocationCode is warehouse_locations.code, joined in for display -
+	// StockLevel/StockMovement's own reader doesn't need a second round
+	// trip to internal/warehouse just to show which location a row
+	// belongs to.
+	LocationCode     string
 	Quantity         string
 	ReservedQuantity string
 	UpdatedAt        time.Time
 }
 
+// defaultLocationIDTx resolves firmID's default warehouse location
+// (warehouse_locations.is_default) - what AdjustStockTx falls back to
+// when a caller (internal/workflow's record_sale/receive hooks,
+// internal/manufacturing's material issue/completion) has no specific
+// location of its own to pass. Every firm has exactly one (the
+// migrations/0028_warehouse_management.up.sql backfill seeds one for
+// every existing firm unconditionally, and internal/wizard.CreateDefaultFirm
+// does the same for every new firm), so ErrNoDefaultLocation should never
+// actually surface outside a firm created by some path that skipped that
+// seeding step.
+//
+// internal/inventory intentionally does NOT import internal/warehouse
+// here (that would be the wrong direction: warehouse locations are a
+// structural concept AdjustStockTx merely references by id, the same way
+// this package already references products/firms by id without owning
+// them) - this is a plain query against warehouse_locations, not a call
+// into that package's API.
+//
+// ciaudit:ignore-firmid-check: internal helper, only called by
+// AdjustStockTx, which makes no authorization decision of its own either
+// (see AdjustStockTx's own doc comment) - every caller has already run
+// its own permission check before either function is reached.
+func defaultLocationIDTx(ctx context.Context, tx pgx.Tx, firmID uuid.UUID) (uuid.UUID, error) {
+	var id uuid.UUID
+	err := tx.QueryRow(ctx, `SELECT id FROM warehouse_locations WHERE firm_id = $1 AND is_default LIMIT 1`, firmID).Scan(&id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return uuid.UUID{}, ErrNoDefaultLocation
+		}
+		return uuid.UUID{}, fmt.Errorf("resolve default location: %w", err)
+	}
+	return id, nil
+}
+
 // AdjustStockTx applies quantityChange (a signed decimal string - see
-// signedDecimalPattern) to productID's stock_levels row at location
+// signedDecimalPattern) to productID's stock_levels row at locationID
 // within firmID, upserting the row if it doesn't exist yet, and appends
 // one immutable stock_movements row recording exactly this change - both
 // in the same already-open transaction, so a caller (internal/workflow's
@@ -64,6 +103,11 @@ type StockLevel struct {
 // its own state change, the same "WithFirmContext-scoped function called
 // from ExecuteTransition" pattern internal/accounting.PostJournalEntryTx
 // already establishes for the ledger bridge - not a new mechanism.
+//
+// locationID may be nil - resolved to firmID's default warehouse
+// location (defaultLocationIDTx) - for callers with no specific location
+// of their own in context, the same role the old empty-string "location"
+// parameter played before warehouse_locations existed.
 //
 // If quantityChange would take quantity below zero, this returns
 // ErrInsufficientStock and applies nothing - the caller's own transaction
@@ -86,11 +130,7 @@ type StockLevel struct {
 // ciaudit:ignore-firmid-check: shared stock-adjustment primitive; every
 // caller (internal/workflow's record_sale/receive hooks) has already run
 // its own authorization check before calling this.
-func AdjustStockTx(ctx context.Context, tx pgx.Tx, firmID, productID uuid.UUID, location, quantityChange, reason, sourceType string, sourceID *uuid.UUID) error {
-	location = strings.TrimSpace(location)
-	if location == "" {
-		location = "default"
-	}
+func AdjustStockTx(ctx context.Context, tx pgx.Tx, firmID, productID uuid.UUID, locationID *uuid.UUID, quantityChange, reason, sourceType string, sourceID *uuid.UUID) error {
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
 		return fmt.Errorf("%w: reason must not be empty", ErrInvalidStockAdjustment)
@@ -99,17 +139,28 @@ func AdjustStockTx(ctx context.Context, tx pgx.Tx, firmID, productID uuid.UUID, 
 		return fmt.Errorf("%w: quantityChange %q must be a decimal with at most 4 fraction digits", ErrInvalidStockAdjustment, quantityChange)
 	}
 
+	var resolvedLocationID uuid.UUID
+	if locationID != nil {
+		resolvedLocationID = *locationID
+	} else {
+		var err error
+		resolvedLocationID, err = defaultLocationIDTx(ctx, tx, firmID)
+		if err != nil {
+			return err
+		}
+	}
+
 	// Lock (or create) the target row first, then check what the
 	// resulting quantity would be, all before writing it - avoids a
 	// race where two concurrent sales of the same product could both
 	// read a sufficient quantity before either writes.
 	var currentQuantity string
 	err := tx.QueryRow(ctx, `
-		INSERT INTO stock_levels (firm_id, product_id, location, quantity)
+		INSERT INTO stock_levels (firm_id, product_id, location_id, quantity)
 		VALUES ($1, $2, $3, 0)
-		ON CONFLICT (firm_id, product_id, location) DO UPDATE SET location = stock_levels.location
+		ON CONFLICT (firm_id, product_id, location_id) DO UPDATE SET location_id = stock_levels.location_id
 		RETURNING quantity::text
-	`, firmID, productID, location).Scan(&currentQuantity)
+	`, firmID, productID, resolvedLocationID).Scan(&currentQuantity)
 	if err != nil {
 		return fmt.Errorf("lock stock level row: %w", err)
 	}
@@ -124,8 +175,8 @@ func AdjustStockTx(ctx context.Context, tx pgx.Tx, firmID, productID uuid.UUID, 
 
 	if _, err := tx.Exec(ctx, `
 		UPDATE stock_levels SET quantity = $1::numeric, updated_at = now()
-		WHERE firm_id = $2 AND product_id = $3 AND location = $4
-	`, resultingQuantity, firmID, productID, location); err != nil {
+		WHERE firm_id = $2 AND product_id = $3 AND location_id = $4
+	`, resultingQuantity, firmID, productID, resolvedLocationID); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == postgresCheckViolation {
 			return fmt.Errorf("%w: current %s, change %s", ErrInsufficientStock, currentQuantity, quantityChange)
@@ -134,9 +185,9 @@ func AdjustStockTx(ctx context.Context, tx pgx.Tx, firmID, productID uuid.UUID, 
 	}
 
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO stock_movements (firm_id, product_id, location, quantity_change, reason, source_type, source_id)
+		INSERT INTO stock_movements (firm_id, product_id, location_id, quantity_change, reason, source_type, source_id)
 		VALUES ($1, $2, $3, $4::numeric, $5, NULLIF($6, ''), $7)
-	`, firmID, productID, location, quantityChange, reason, sourceType, sourceID); err != nil {
+	`, firmID, productID, resolvedLocationID, quantityChange, reason, sourceType, sourceID); err != nil {
 		return fmt.Errorf("insert stock movement: %w", err)
 	}
 
@@ -157,9 +208,11 @@ func GetStock(ctx context.Context, pool *pgxpool.Pool, firmID, userID, productID
 		}
 
 		rows, err := tx.Query(ctx, `
-			SELECT product_id, location, quantity::text, reserved_quantity::text, updated_at
-			FROM stock_levels WHERE product_id = $1
-			ORDER BY location
+			SELECT sl.product_id, sl.location_id, wl.code, sl.quantity::text, sl.reserved_quantity::text, sl.updated_at
+			FROM stock_levels sl
+			JOIN warehouse_locations wl ON wl.id = sl.location_id
+			WHERE sl.product_id = $1
+			ORDER BY wl.code
 		`, productID)
 		if err != nil {
 			return fmt.Errorf("get stock: %w", err)
@@ -167,7 +220,7 @@ func GetStock(ctx context.Context, pool *pgxpool.Pool, firmID, userID, productID
 		defer rows.Close()
 		for rows.Next() {
 			var l StockLevel
-			if err := rows.Scan(&l.ProductID, &l.Location, &l.Quantity, &l.ReservedQuantity, &l.UpdatedAt); err != nil {
+			if err := rows.Scan(&l.ProductID, &l.LocationID, &l.LocationCode, &l.Quantity, &l.ReservedQuantity, &l.UpdatedAt); err != nil {
 				return err
 			}
 			levels = append(levels, l)
@@ -198,9 +251,11 @@ func ListStockForFirm(ctx context.Context, pool *pgxpool.Pool, firmID, userID uu
 		}
 
 		rows, err := tx.Query(ctx, `
-			SELECT product_id, location, quantity::text, reserved_quantity::text, updated_at
-			FROM stock_levels WHERE firm_id = $1
-			ORDER BY product_id, location
+			SELECT sl.product_id, sl.location_id, wl.code, sl.quantity::text, sl.reserved_quantity::text, sl.updated_at
+			FROM stock_levels sl
+			JOIN warehouse_locations wl ON wl.id = sl.location_id
+			WHERE sl.firm_id = $1
+			ORDER BY sl.product_id, wl.code
 		`, firmID)
 		if err != nil {
 			return fmt.Errorf("list stock for firm: %w", err)
@@ -208,7 +263,7 @@ func ListStockForFirm(ctx context.Context, pool *pgxpool.Pool, firmID, userID uu
 		defer rows.Close()
 		for rows.Next() {
 			var l StockLevel
-			if err := rows.Scan(&l.ProductID, &l.Location, &l.Quantity, &l.ReservedQuantity, &l.UpdatedAt); err != nil {
+			if err := rows.Scan(&l.ProductID, &l.LocationID, &l.LocationCode, &l.Quantity, &l.ReservedQuantity, &l.UpdatedAt); err != nil {
 				return err
 			}
 			levels = append(levels, l)
@@ -223,9 +278,11 @@ func ListStockForFirm(ctx context.Context, pool *pgxpool.Pool, firmID, userID uu
 
 // StockMovement is one immutable stock_movements row.
 type StockMovement struct {
-	ID             uuid.UUID
-	ProductID      uuid.UUID
-	Location       string
+	ID         uuid.UUID
+	ProductID  uuid.UUID
+	LocationID uuid.UUID
+	// LocationCode - see StockLevel.LocationCode's own doc comment.
+	LocationCode   string
 	QuantityChange string
 	Reason         string
 	SourceType     string
@@ -263,10 +320,11 @@ func ListStockMovements(ctx context.Context, pool *pgxpool.Pool, firmID, userID 
 		}
 
 		rows, err := tx.Query(ctx, `
-			SELECT id, product_id, location, quantity_change::text, reason, COALESCE(source_type, ''), source_id, created_at, COUNT(*) OVER()
-			FROM stock_movements
-			WHERE ($1::uuid IS NULL OR product_id = $1)
-			ORDER BY created_at DESC, id DESC
+			SELECT sm.id, sm.product_id, sm.location_id, wl.code, sm.quantity_change::text, sm.reason, COALESCE(sm.source_type, ''), sm.source_id, sm.created_at, COUNT(*) OVER()
+			FROM stock_movements sm
+			JOIN warehouse_locations wl ON wl.id = sm.location_id
+			WHERE ($1::uuid IS NULL OR sm.product_id = $1)
+			ORDER BY sm.created_at DESC, sm.id DESC
 			LIMIT NULLIF($2, 0) OFFSET $3
 		`, opts.ProductID, opts.Limit, opts.Offset)
 		if err != nil {
@@ -277,7 +335,7 @@ func ListStockMovements(ctx context.Context, pool *pgxpool.Pool, firmID, userID 
 		for rows.Next() {
 			var m StockMovement
 			var total int
-			if err := rows.Scan(&m.ID, &m.ProductID, &m.Location, &m.QuantityChange, &m.Reason, &m.SourceType, &m.SourceID, &m.CreatedAt, &total); err != nil {
+			if err := rows.Scan(&m.ID, &m.ProductID, &m.LocationID, &m.LocationCode, &m.QuantityChange, &m.Reason, &m.SourceType, &m.SourceID, &m.CreatedAt, &total); err != nil {
 				return err
 			}
 			movements = append(movements, m)

@@ -93,6 +93,20 @@ func seedOwner(ctx context.Context, t *testing.T, adminPool, appPool *pgxpool.Po
 	if err != nil {
 		t.Fatalf("seed owner role/membership: %v", err)
 	}
+
+	// Default warehouse location - AdjustStockTx's nil-locationID
+	// resolution needs one to exist for any firm it's called against
+	// (mirrors migrations/0028_warehouse_management.up.sql's own
+	// backfill/internal/wizard.CreateDefaultFirm's unconditional seed).
+	var warehouseID uuid.UUID
+	if err := adminPool.QueryRow(ctx, `INSERT INTO warehouses (firm_id, name) VALUES ($1, 'Default Warehouse') RETURNING id`, firmID).Scan(&warehouseID); err != nil {
+		t.Fatalf("seed default warehouse: %v", err)
+	}
+	if _, err := adminPool.Exec(ctx, `
+		INSERT INTO warehouse_locations (firm_id, warehouse_id, code, name, is_default) VALUES ($1, $2, 'default', 'Main', true)
+	`, firmID, warehouseID); err != nil {
+		t.Fatalf("seed default location: %v", err)
+	}
 	return firmID, userID
 }
 
@@ -221,14 +235,14 @@ func TestAdjustStockTx_DecreasesAndAppendsMovement(t *testing.T) {
 	}
 
 	err = zdb.WithFirmContext(ctx, appPool, firmID, func(ctx context.Context, tx pgx.Tx) error {
-		return inventory.AdjustStockTx(ctx, tx, firmID, product.ID, "", "10", "purchase", "test", nil)
+		return inventory.AdjustStockTx(ctx, tx, firmID, product.ID, nil, "10", "purchase", "test", nil)
 	})
 	if err != nil {
 		t.Fatalf("AdjustStockTx (initial increase): %v", err)
 	}
 
 	err = zdb.WithFirmContext(ctx, appPool, firmID, func(ctx context.Context, tx pgx.Tx) error {
-		return inventory.AdjustStockTx(ctx, tx, firmID, product.ID, "", "-4", "sale", "test", nil)
+		return inventory.AdjustStockTx(ctx, tx, firmID, product.ID, nil, "-4", "sale", "test", nil)
 	})
 	if err != nil {
 		t.Fatalf("AdjustStockTx (decrease): %v", err)
@@ -266,14 +280,14 @@ func TestAdjustStockTx_RejectsInsufficientStock(t *testing.T) {
 	}
 
 	err = zdb.WithFirmContext(ctx, appPool, firmID, func(ctx context.Context, tx pgx.Tx) error {
-		return inventory.AdjustStockTx(ctx, tx, firmID, product.ID, "", "2", "purchase", "test", nil)
+		return inventory.AdjustStockTx(ctx, tx, firmID, product.ID, nil, "2", "purchase", "test", nil)
 	})
 	if err != nil {
 		t.Fatalf("AdjustStockTx (initial increase): %v", err)
 	}
 
 	err = zdb.WithFirmContext(ctx, appPool, firmID, func(ctx context.Context, tx pgx.Tx) error {
-		return inventory.AdjustStockTx(ctx, tx, firmID, product.ID, "", "-5", "sale", "test", nil)
+		return inventory.AdjustStockTx(ctx, tx, firmID, product.ID, nil, "-5", "sale", "test", nil)
 	})
 	if !errors.Is(err, inventory.ErrInsufficientStock) {
 		t.Fatalf("expected ErrInsufficientStock, got %v", err)
@@ -342,7 +356,7 @@ func TestGetProduct_StockQuantityReflectsMovement(t *testing.T) {
 	}
 
 	err = zdb.WithFirmContext(ctx, appPool, firmID, func(ctx context.Context, tx pgx.Tx) error {
-		return inventory.AdjustStockTx(ctx, tx, firmID, product.ID, "", "15", "purchase", "test", nil)
+		return inventory.AdjustStockTx(ctx, tx, firmID, product.ID, nil, "15", "purchase", "test", nil)
 	})
 	if err != nil {
 		t.Fatalf("AdjustStockTx: %v", err)

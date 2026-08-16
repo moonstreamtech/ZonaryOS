@@ -538,3 +538,42 @@ func TestCreateDefaultFirm_SeedManufacturingSeedsExpectedAccountsAndWorkflow(t *
 		t.Fatalf("verify manufacturing accounts absent: %v", err)
 	}
 }
+
+// TestCreateDefaultFirm_SeedsDefaultWarehouseLocationUnconditionally
+// confirms every firm - not just ones that answered "yes" to
+// TracksInventory - gets a default warehouse + one default location:
+// internal/inventory.AdjustStockTx's nil-locationID resolution needs one
+// for ANY firm it's ever called against, including a manufacturing-only
+// firm (SeedManufacturing true, TracksInventory false - the wizard
+// doesn't couple the two, see migrations/0028_warehouse_management.up.sql's
+// own doc comment for the full reasoning).
+func TestCreateDefaultFirm_SeedsDefaultWarehouseLocationUnconditionally(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+
+	userID := seedUser(ctx, t, adminPool, "wizard-default-warehouse")
+	result, err := wizard.CreateDefaultFirm(ctx, appPool, userID, "No Answers Firm", wizard.SeedSelection{})
+	if err != nil {
+		t.Fatalf("CreateDefaultFirm: %v", err)
+	}
+
+	err = zdb.WithFirmContext(ctx, appPool, result.FirmID, func(ctx context.Context, tx pgx.Tx) error {
+		var warehouseCount, defaultLocationCount int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM warehouses WHERE firm_id = $1`, result.FirmID).Scan(&warehouseCount); err != nil {
+			return err
+		}
+		if warehouseCount != 1 {
+			t.Errorf("expected exactly 1 warehouse, got %d", warehouseCount)
+		}
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM warehouse_locations WHERE firm_id = $1 AND is_default`, result.FirmID).Scan(&defaultLocationCount); err != nil {
+			return err
+		}
+		if defaultLocationCount != 1 {
+			t.Errorf("expected exactly 1 default location, got %d", defaultLocationCount)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("verify default warehouse location: %v", err)
+	}
+}
