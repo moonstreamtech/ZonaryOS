@@ -65,7 +65,7 @@ fetchPageUntilContains() {
     local body=""
     for _ in 1 2 3 4 5; do
         body=$(curl -sS "$@" "$url")
-        if echo "$body" | grep -qF -- "$needle"; then
+        if grep -qF -- "$needle" <<<"$body"; then
             echo "$body"
             return 0
         fi
@@ -87,7 +87,7 @@ log "login: got a real access token"
 
 log "login: confirming the frontend's own login redirect points at the same real Keycloak issuer"
 LOGIN_REDIRECT=$(curl -sS -o /dev/null -D - "$FRONTEND_URL/api/auth/login" | tr -d '\r' | grep -i '^location:' || true)
-echo "$LOGIN_REDIRECT" | grep -qi "keycloak\|realms" || fail "frontend /api/auth/login did not redirect toward a Keycloak realm: $LOGIN_REDIRECT"
+grep -qi "keycloak\|realms" <<<"$LOGIN_REDIRECT" || fail "frontend /api/auth/login did not redirect toward a Keycloak realm: $LOGIN_REDIRECT"
 log "login: frontend -> Keycloak redirect wiring confirmed ($LOGIN_REDIRECT)"
 
 auth() { curl -sS -H "Authorization: Bearer $TOKEN" "$@"; }
@@ -456,9 +456,9 @@ log "workflows list (UI path) confirmed"
 log "generic workflow view (UI path): confirming /workflows/purchase_order renders through the SAME generic component tree as /stock, with zero purchase_order-specific frontend code"
 PO_VIEW_HTML=$(fetchPageUntilContains "$FRONTEND_URL/en/workflows/purchase_order" "Acme Supply Co" -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$FIRM_ID") \
     || fail "expected /workflows/purchase_order to render the new instance's payload (vendor: Acme Supply Co) via the generic formatPayload rendering"
-echo "$PO_VIEW_HTML" | grep -q "Purchase Order" \
+grep -q "Purchase Order" <<<"$PO_VIEW_HTML" \
     || fail "expected /workflows/purchase_order to render the definition's own name"
-echo "$PO_VIEW_HTML" | grep -q "Approve" \
+grep -q "Approve" <<<"$PO_VIEW_HTML" \
     || fail "expected /workflows/purchase_order to render the 'Approve' action button, labeled from the backend's own AvailableAction.Name"
 log "generic workflow view (UI path) confirmed - a second, structurally different workflow renders correctly with no new frontend code"
 
@@ -612,7 +612,7 @@ log "dashboard overview (backend path) confirmed"
 log "dashboard overview (UI path): confirming the frontend's own dashboard page renders both workflows' overview cards"
 DASHBOARD_HTML=$(fetchPageUntilContains "$FRONTEND_URL/en" "Customer Pipeline" -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$FIRM_ID") \
     || fail "expected the dashboard to render a Customer Pipeline overview card"
-echo "$DASHBOARD_HTML" | grep -q "Stock In -> Sale\|Stock In -&gt; Sale" \
+grep -q "Stock In -> Sale\|Stock In -&gt; Sale" <<<"$DASHBOARD_HTML" \
     || fail "expected the dashboard to render a Stock In -> Sale overview card"
 log "dashboard overview (UI path) confirmed"
 
@@ -627,7 +627,7 @@ log "quick create (UI path) confirmed"
 log "global search (UI path): confirming /search finds the converted lead, grouped under Customer Pipeline"
 SEARCH_HTML=$(fetchPageUntilContains "$FRONTEND_URL/en/search?q=E2E%20Smoke%20Lead" "E2E Smoke Lead" -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$FIRM_ID") \
     || fail "expected /search?q=E2E Smoke Lead to render the matching lead's payload"
-echo "$SEARCH_HTML" | grep -q "Customer Pipeline" \
+grep -q "Customer Pipeline" <<<"$SEARCH_HTML" \
     || fail "expected /search?q=E2E Smoke Lead to render a Customer Pipeline results group"
 log "global search (UI path) confirmed"
 
@@ -1110,9 +1110,9 @@ log "portability: import idempotency confirmed (second import Skipped everything
 
 log "settings: confirming the /settings page renders both the Export button and the Import configuration section"
 SETTINGS_PAGE_HTML=$(curl -sS -b "zonaryos_session=$TOKEN; zonaryos_active_firm=$FIRM_ID" "$FRONTEND_URL/en/settings")
-echo "$SETTINGS_PAGE_HTML" | grep -qi "Export" \
+grep -qi "Export" <<<"$SETTINGS_PAGE_HTML" \
     || fail "expected /settings to render an Export button: (page HTML omitted)"
-echo "$SETTINGS_PAGE_HTML" | grep -qi "Import configuration" \
+grep -qi "Import configuration" <<<"$SETTINGS_PAGE_HTML" \
     || fail "expected /settings to render an Import configuration section: (page HTML omitted)"
 log "settings: Export/Import UI confirmed"
 
