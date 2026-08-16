@@ -86,6 +86,13 @@ async function DashboardTab({ sessionToken, firmId }: { sessionToken: string; fi
           <span className="text-2xl font-semibold text-black dark:text-zinc-50">
             {kpi.unit === "currency" ? `${kpi.value} TRY` : kpi.value}
           </span>
+          {/* overdueTasks is a heuristic (task_approval instances open
+              >30 days), not a real due-date check - this caveat has to
+              be visible on the tile itself, not just implied by the
+              label, per the batch brief. */}
+          {kpi.key === "overdueTasks" && (
+            <span className="text-xs text-zinc-500 dark:text-zinc-500">{t("overdueTasksCaveat")}</span>
+          )}
         </div>
       ))}
     </div>

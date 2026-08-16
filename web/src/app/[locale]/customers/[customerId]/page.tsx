@@ -6,8 +6,10 @@
 import { setRequestLocale, getTranslations } from "next-intl/server";
 import { Link } from "@/i18n/navigation";
 import { requireFirmContext } from "@/lib/firmContext";
-import { fetchCustomer } from "@/lib/crm";
+import { fetchCustomer, fetchTimeline, fetchOpportunities } from "@/lib/crm";
 import { fetchInstancesByCustomer } from "@/lib/workflow";
+import { fetchRoleInFirm } from "@/lib/me";
+import CustomerTimeline from "@/components/Crm/CustomerTimeline";
 
 type PageProps = {
   params: Promise<{ locale: string; customerId: string }>;
@@ -29,10 +31,14 @@ export default async function CustomerDetailPage({ params }: PageProps) {
   const t = await getTranslations("CustomerDetail");
 
   const { sessionToken, firm } = await requireFirmContext(locale);
+  const role = await fetchRoleInFirm(sessionToken, firm.firmId);
+  const isOwner = role?.isOwner ?? false;
 
-  const [customer, sales] = await Promise.all([
+  const [customer, sales, timeline, opportunities] = await Promise.all([
     fetchCustomer(sessionToken, firm.firmId, customerId),
     fetchInstancesByCustomer(sessionToken, firm.firmId, customerId),
+    fetchTimeline(sessionToken, firm.firmId, customerId),
+    fetchOpportunities(sessionToken, firm.firmId, { customerId }),
   ]);
 
   return (
@@ -95,6 +101,14 @@ export default async function CustomerDetailPage({ params }: PageProps) {
               </ul>
             )}
           </div>
+
+          <CustomerTimeline
+            firmId={firm.firmId}
+            customerId={customerId}
+            timeline={timeline}
+            opportunities={opportunities ?? []}
+            isOwner={isOwner}
+          />
         </div>
       )}
     </main>

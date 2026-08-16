@@ -68,7 +68,9 @@
     "bottomNavLabel": "Ana",
     "warehouses": "Depolar",
     "inventoryTransfers": "Envanter Transferleri",
-    "cycleCounts": "Sayım Oturumları"
+    "cycleCounts": "Sayım Oturumları",
+    "opportunities": "Fırsatlar",
+    "projects": "Projeler"
   },
   "Dashboard": {
     "welcome": "Tekrar hoş geldiniz, {name}.",
@@ -682,7 +684,11 @@
       "openSalesOrders": "Açık satış siparişleri",
       "salesThisMonth": "Bu ayki satışlar",
       "activeProductionOrders": "Aktif üretim emirleri",
-      "productionWipValue": "Yarı mamul değeri"
+      "productionWipValue": "Yarı mamul değeri",
+      "pipelineValue": "Fırsat hattı değeri",
+      "wonThisMonth": "Bu ay kazanılan",
+      "activeProjects": "Aktif projeler",
+      "overdueTasks": "Gecikmiş görevler"
     },
     "tabDashboard": "Panel",
     "tabMyReports": "Raporlarım",
@@ -710,7 +716,8 @@
     "builderSaveAndRun": "Kaydet ve Çalıştır",
     "builderSaveError": "Bu rapor kaydedilemedi. Lütfen tekrar deneyin.",
     "fromLabel": "Başlangıç",
-    "toLabel": "Bitiş"
+    "toLabel": "Bitiş",
+    "overdueTasksCaveat": "Sezgisel değer: gerçek bir vade tarihi kontrolü değil, 30 günden uzun süredir açık olan görevleri sayar."
   },
   "DocumentTemplatesSettings": {
     "title": "Belge Şablonları",
@@ -1070,7 +1077,43 @@
     "sourceLead": "Kaynak potansiyel müşteri",
     "sourceLeadLink": "Kaynak iş akışı örneğini görüntüle",
     "salesTitle": "Satışlar",
-    "noSales": "Bu müşteriye bağlı satış yok."
+    "noSales": "Bu müşteriye bağlı satış yok.",
+    "timelineTitle": "Zaman Çizelgesi",
+    "timelineLogInteraction": "+ Etkileşim kaydet",
+    "timelineCancel": "İptal",
+    "timelineCreate": "Etkileşimi kaydet",
+    "timelineCreateRequired": "Lütfen bir tür, tarih seçin ve bir özet girin.",
+    "timelineCreateError": "Bu etkileşim kaydedilemedi. Lütfen tekrar deneyin.",
+    "timelineType": "Tür",
+    "timelineDate": "Tarih",
+    "timelineSummary": "Özet",
+    "timelineOutcome": "Sonuç",
+    "timelineNextAction": "Sonraki adım",
+    "timelineNextActionDate": "Sonraki adım tarihi",
+    "timelineOpportunity": "İlgili fırsat",
+    "timelineNoOpportunity": "Yok",
+    "timelineEmpty": "Henüz kaydedilmiş etkileşim veya fırsat yok.",
+    "timelineOpportunitySummary": "{name} — {stage}",
+    "timelineKind": {
+      "interaction": "Etkileşim",
+      "opportunity": "Fırsat"
+    },
+    "interactionType": {
+      "call": "Arama",
+      "email": "E-posta",
+      "meeting": "Toplantı",
+      "note": "Not",
+      "demo": "Demo",
+      "proposal": "Teklif"
+    },
+    "opportunityStage": {
+      "prospect": "Aday",
+      "qualified": "Nitelikli",
+      "proposal": "Teklif",
+      "negotiation": "Müzakere",
+      "won": "Kazanıldı",
+      "lost": "Kaybedildi"
+    }
   },
   "Invoices": {
     "title": "Faturalar",
@@ -1293,5 +1336,74 @@
     "completeSession": "Oturumu tamamla",
     "adjustStock": "Sayılan farklar için stoğu düzelt",
     "sessionCompleteError": "Bu oturum tamamlanamadı. Lütfen tekrar deneyin."
+  },
+  "Crm": {
+    "opportunitiesTitle": "Fırsatlar",
+    "loadError": "Bu veri yüklenemedi. Lütfen tekrar deneyin.",
+    "viewKanban": "Kanban",
+    "viewList": "Liste",
+    "newOpportunity": "+ Yeni fırsat",
+    "cancel": "İptal",
+    "create": "Oluştur",
+    "createRequired": "Lütfen bir müşteri seçin ve bir ad girin.",
+    "createError": "Bu fırsat oluşturulamadı. Lütfen tekrar deneyin.",
+    "opportunitiesEmpty": "Henüz fırsat yok.",
+    "customer": "Müşteri",
+    "selectCustomer": "Bir müşteri seçin",
+    "opportunityName": "Fırsat adı",
+    "value": "Değer",
+    "probability": "Olasılık (%)",
+    "expectedCloseDate": "Beklenen kapanış tarihi",
+    "columnName": "Ad",
+    "columnStage": "Aşama",
+    "actionsTitle": "İşlemler",
+    "stageChangeError": "Bu fırsatın aşaması değiştirilemedi. Lütfen tekrar deneyin.",
+    "stage": {
+      "prospect": "Aday",
+      "qualified": "Nitelikli",
+      "proposal": "Teklif",
+      "negotiation": "Müzakere",
+      "won": "Kazanıldı",
+      "lost": "Kaybedildi"
+    }
+  },
+  "Project": {
+    "listTitle": "Projeler",
+    "loadError": "Bu veri yüklenemedi. Lütfen tekrar deneyin.",
+    "newProject": "+ Yeni proje",
+    "cancel": "İptal",
+    "create": "Oluştur",
+    "createRequired": "Lütfen bir proje adı girin.",
+    "createError": "Bu proje oluşturulamadı. Lütfen tekrar deneyin.",
+    "projectsEmpty": "Henüz proje yok.",
+    "projectName": "Proje adı",
+    "description": "Açıklama",
+    "startDate": "Başlangıç tarihi",
+    "endDate": "Bitiş tarihi",
+    "budget": "Bütçe",
+    "currency": "Para birimi",
+    "manager": "Yönetici",
+    "selectManager": "Bir yönetici seçin",
+    "columnName": "Ad",
+    "columnStatus": "Durum",
+    "summaryTitle": "Özet",
+    "tasksProgress": "Tamamlanan görevler",
+    "tasksByStateTitle": "Duruma göre görevler",
+    "noTasks": "Bu projeye henüz bağlı görev yok.",
+    "totalHoursLogged": "Toplam kayıtlı saat",
+    "estimatedCost": "Tahmini maliyet",
+    "estimatedCostUnavailable": "Kullanılamıyor — oran hesaplanacak saatlik sözleşme yok",
+    "status": {
+      "active": "Aktif",
+      "on_hold": "Beklemede",
+      "completed": "Tamamlandı",
+      "cancelled": "İptal edildi"
+    },
+    "taskState": {
+      "open": "Açık",
+      "in_progress": "Devam ediyor",
+      "done": "Tamamlandı",
+      "rejected": "Reddedildi"
+    }
   }
 }
