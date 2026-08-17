@@ -69,6 +69,7 @@ const GROUPS: NavGroup[] = [
     icon: IconFinance,
     items: [
       { href: "/financials", labelKey: "financials" },
+      { href: "/financials/budgets", labelKey: "budgets" },
       { href: "/invoices", labelKey: "invoices" },
       { href: "/reports", labelKey: "reports" },
       { href: "/hr/payroll", labelKey: "payroll" },
@@ -90,6 +91,7 @@ const GROUPS: NavGroup[] = [
     icon: IconSettings,
     items: [
       { href: "/settings/accounts", labelKey: "accounts", ownerOnly: true },
+      { href: "/settings/cost-centers", labelKey: "costCenters", ownerOnly: true },
       { href: "/settings/addresses", labelKey: "addresses", ownerOnly: true },
       { href: "/settings/tax-rates", labelKey: "taxRates", ownerOnly: true },
       { href: "/settings/document-templates", labelKey: "documentTemplates", ownerOnly: true },

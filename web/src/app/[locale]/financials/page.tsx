@@ -14,13 +14,14 @@ import {
   type ReportLine,
 } from "@/lib/accounting";
 import { fetchReceivablesAging } from "@/lib/invoicing";
+import { fetchCostCenterPnL } from "@/lib/costcenter";
 
 type PageProps = {
   params: Promise<{ locale: string }>;
   searchParams: Promise<{ tab?: string; from?: string; to?: string; asOf?: string }>;
 };
 
-type Tab = "balances" | "pnl" | "balance-sheet" | "aging";
+type Tab = "balances" | "pnl" | "balance-sheet" | "aging" | "cost-center-pnl";
 
 // The date `<input type="date">` fields below submit a plain "YYYY-MM-DD"
 // via a real GET navigation (see this file's own doc comment on why),
@@ -60,7 +61,15 @@ export default async function FinancialsPage({ params, searchParams }: PageProps
   const t = await getTranslations("Financials");
   const sp = await searchParams;
   const tab: Tab =
-    sp.tab === "pnl" ? "pnl" : sp.tab === "balance-sheet" ? "balance-sheet" : sp.tab === "aging" ? "aging" : "balances";
+    sp.tab === "pnl"
+      ? "pnl"
+      : sp.tab === "balance-sheet"
+        ? "balance-sheet"
+        : sp.tab === "aging"
+          ? "aging"
+          : sp.tab === "cost-center-pnl"
+            ? "cost-center-pnl"
+            : "balances";
 
   const { sessionToken, firm } = await requireFirmContext(locale);
 
@@ -80,6 +89,12 @@ export default async function FinancialsPage({ params, searchParams }: PageProps
             label={t("tabBalanceSheet")}
           />
           <TabLink locale={locale} tab="aging" active={tab === "aging"} label={t("tabAging")} />
+          <TabLink
+            locale={locale}
+            tab="cost-center-pnl"
+            active={tab === "cost-center-pnl"}
+            label={t("tabCostCenterPnL")}
+          />
         </nav>
       </div>
 
@@ -93,6 +108,9 @@ export default async function FinancialsPage({ params, searchParams }: PageProps
         <BalanceSheetTab sessionToken={sessionToken} firmId={firm.firmId} asOf={sp.asOf} />
       )}
       {tab === "aging" && <AgingTab sessionToken={sessionToken} firmId={firm.firmId} />}
+      {tab === "cost-center-pnl" && (
+        <CostCenterPnLTab sessionToken={sessionToken} firmId={firm.firmId} from={sp.from} to={sp.to} />
+      )}
     </main>
   );
 }
@@ -520,6 +538,106 @@ async function BalanceSheetTab({
 // boundaries are fixed and the report is always "as of right now" (see
 // ReceivablesAging's own doc comment on why age is computed in SQL
 // against CURRENT_DATE, not a caller-supplied instant).
+// Cost centers module (internal/costcenter): the cost-center P&L report,
+// grouped by cost center (plus the "Unassigned" bucket for journal
+// entries with no cost center on them - costCenterId absent/null, see
+// lib/costcenter.ts's own doc comment). Same from/to date-filter shape
+// as PnLTab above (a real GET navigation, not client-side state).
+async function CostCenterPnLTab({
+  sessionToken,
+  firmId,
+  from,
+  to,
+}: {
+  sessionToken: string;
+  firmId: string;
+  from?: string;
+  to?: string;
+}) {
+  const t = await getTranslations("Financials");
+  const lines = await fetchCostCenterPnL(sessionToken, firmId, {
+    from: startOfDayUTC(from),
+    to: endOfDayUTC(to),
+  });
+
+  return (
+    <div className="flex w-full max-w-4xl flex-col gap-4">
+      <h2 className="text-xl font-semibold tracking-tight text-black dark:text-zinc-50">
+        {t("costCenterPnlTitle")}
+      </h2>
+
+      <form method="get" className="flex flex-wrap items-end gap-3">
+        <input type="hidden" name="tab" value="cost-center-pnl" />
+        <label className="flex flex-col gap-1 text-xs text-zinc-600 dark:text-zinc-400">
+          {t("fromLabel")}
+          <input
+            type="date"
+            name="from"
+            defaultValue={from ?? ""}
+            className="rounded-md border border-zinc-300 px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-black dark:text-zinc-50"
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-zinc-600 dark:text-zinc-400">
+          {t("toLabel")}
+          <input
+            type="date"
+            name="to"
+            defaultValue={to ?? ""}
+            className="rounded-md border border-zinc-300 px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-black dark:text-zinc-50"
+          />
+        </label>
+        <button
+          type="submit"
+          data-permission-public="true"
+          className="rounded-md bg-black px-3 py-1.5 text-sm font-medium text-white dark:bg-zinc-50 dark:text-black"
+        >
+          {t("applyButton")}
+        </button>
+      </form>
+
+      {lines === null ? (
+        <p className="text-red-600 dark:text-red-400">{t("loadError")}</p>
+      ) : lines.length === 0 ? (
+        <p className="text-zinc-600 dark:text-zinc-400">{t("noAccounts")}</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-left text-sm">
+            <thead>
+              <tr className="border-b border-zinc-300 text-zinc-600 dark:border-zinc-700 dark:text-zinc-400">
+                <th className="py-2 pr-4 font-medium">{t("costCenterPnlName")}</th>
+                <th className="py-2 pr-4 font-medium">{t("costCenterPnlRevenue")}</th>
+                <th className="py-2 pr-4 font-medium">{t("costCenterPnlExpenses")}</th>
+                <th className="py-2 font-medium">{t("costCenterPnlNet")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {lines.map((l) => (
+                <tr
+                  key={l.costCenterId ?? "unassigned"}
+                  className="border-b border-zinc-200 text-black last:border-0 dark:border-zinc-800 dark:text-zinc-50"
+                >
+                  <td className="py-2 pr-4">
+                    {/* l.name is server-set data (internal/costcenter.GetCostCenterPnL
+                        literally returns "Unassigned" for the null-cost-center
+                        bucket, see COALESCE(cc.name, 'Unassigned') in report.go) -
+                        displayed as-is, not routed through next-intl, same
+                        treatment as an account code or currency code elsewhere
+                        on this page. */}
+                    {l.name}
+                  </td>
+                  <td className="py-2 pr-4 font-mono">{l.revenue}</td>
+                  <td className="py-2 pr-4 font-mono">{l.expenses}</td>
+                  <td className="py-2 font-mono">{l.net}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 async function AgingTab({ sessionToken, firmId }: { sessionToken: string; firmId: string }) {
   const t = await getTranslations("Financials");
   const buckets = await fetchReceivablesAging(sessionToken, firmId);

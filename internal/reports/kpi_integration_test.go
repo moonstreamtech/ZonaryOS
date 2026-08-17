@@ -483,10 +483,24 @@ func TestGetDashboardKPIs_EmptyFirmReadsZeros(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetDashboardKPIs: %v", err)
 	}
-	if len(results) != 24 {
-		t.Fatalf("expected 24 KPI results, got %d: %+v", len(results), results)
+	if len(results) != 26 {
+		t.Fatalf("expected 26 KPI results, got %d: %+v", len(results), results)
 	}
+	// budgetUtilization/largestCostCenterSpend (budget management/cost
+	// centers/financial planning batch) are the one legitimate exception
+	// to "every empty-firm KPI reads a real zero": with no active budget
+	// and no cost-center-tagged spend at all, there is genuinely nothing
+	// to report - an empty string, not a fake "0%"/"0.00" that would
+	// misleadingly imply a budget or cost center actually exists with
+	// zero activity. See computeFinancialPlanningKPI's own doc comment.
+	emptyValueOK := map[string]bool{"budgetUtilization": true, "largestCostCenterSpend": true}
 	for _, r := range results {
+		if emptyValueOK[r.Key] {
+			if r.Value != "" {
+				t.Errorf("expected KPI %q to be empty (no data) for an empty firm, got %q", r.Key, r.Value)
+			}
+			continue
+		}
 		// A plain "0" or a zero-valued decimal string ("0.0000") both mean
 		// "zero" here - which one a given Kind's query produces depends on
 		// whether it casts its SUM to a fixed scale (e.g.

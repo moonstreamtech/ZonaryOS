@@ -93,6 +93,18 @@ type LineInput struct {
 	// database.
 	Amount   string
 	Currency string
+	// CostCenterID (budget management/cost centers/financial planning
+	// batch) optionally tags this line with a cost center - nil for
+	// every call site that doesn't set it (every journal-posting path
+	// predating this batch keeps working unchanged). Not validated
+	// against internal/costcenter here - this package stays a leaf
+	// dependency (see this file's own import list); the FK constraint on
+	// journal_lines.cost_center_id is the actual guarantee, and
+	// internal/workflow's own costCenterValidator is what checks a
+	// caller-supplied cost center actually belongs to the firm before a
+	// bridged transition ever reaches this function - see engine.go's
+	// resolveJournalLines.
+	CostCenterID *uuid.UUID
 }
 
 // JournalLine is one posted line, as read back by ListJournalEntries.
@@ -236,9 +248,9 @@ func PostJournalEntryTx(ctx context.Context, tx pgx.Tx, firmID, userID uuid.UUID
 		}
 
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO journal_lines (firm_id, entry_id, account_id, amount, side, currency)
-			VALUES ($1, $2, $3, $4::numeric, $5, $6)
-		`, firmID, entryID, accountID, amount, string(l.Side), currency); err != nil {
+			INSERT INTO journal_lines (firm_id, entry_id, account_id, amount, side, currency, cost_center_id)
+			VALUES ($1, $2, $3, $4::numeric, $5, $6, $7)
+		`, firmID, entryID, accountID, amount, string(l.Side), currency, l.CostCenterID); err != nil {
 			return uuid.UUID{}, fmt.Errorf("insert journal line for account %q: %w", l.AccountCode, err)
 		}
 		lineSummaries = append(lineSummaries, map[string]any{

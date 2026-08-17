@@ -430,18 +430,27 @@ func handlePostJournalEntry(pool *pgxpool.Pool) http.HandlerFunc {
 	}
 }
 
-// reportLineResponse is ReportLine's JSON wire shape.
+// reportLineResponse is ReportLine's JSON wire shape. BudgetedAmount/
+// Variance/VariancePercent (budget management/cost centers/financial
+// planning batch) are omitted entirely (not just null) when no active
+// budget covers the report's period - see ReportLine's own doc comment.
 type reportLineResponse struct {
-	AccountID string `json:"accountId"`
-	Code      string `json:"code"`
-	Name      string `json:"name"`
-	Amount    string `json:"amount"`
+	AccountID       string  `json:"accountId"`
+	Code            string  `json:"code"`
+	Name            string  `json:"name"`
+	Amount          string  `json:"amount"`
+	BudgetedAmount  *string `json:"budgetedAmount,omitempty"`
+	Variance        *string `json:"variance,omitempty"`
+	VariancePercent *string `json:"variancePercent,omitempty"`
 }
 
 func toReportLineResponses(lines []ReportLine) []reportLineResponse {
 	resp := make([]reportLineResponse, 0, len(lines))
 	for _, l := range lines {
-		resp = append(resp, reportLineResponse{AccountID: l.AccountID.String(), Code: l.Code, Name: l.Name, Amount: l.Amount})
+		resp = append(resp, reportLineResponse{
+			AccountID: l.AccountID.String(), Code: l.Code, Name: l.Name, Amount: l.Amount,
+			BudgetedAmount: l.BudgetedAmount, Variance: l.Variance, VariancePercent: l.VariancePercent,
+		})
 	}
 	return resp
 }

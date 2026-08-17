@@ -29,6 +29,7 @@ import (
 
 	"github.com/moonstreamtech/ZonaryOS/internal/asset"
 	"github.com/moonstreamtech/ZonaryOS/internal/contracts"
+	"github.com/moonstreamtech/ZonaryOS/internal/costcenter"
 	"github.com/moonstreamtech/ZonaryOS/internal/crm"
 	"github.com/moonstreamtech/ZonaryOS/internal/hr"
 	"github.com/moonstreamtech/ZonaryOS/internal/inventory"
@@ -67,21 +68,22 @@ type FieldValidator interface {
 // own tests registering a mock validator, or a future FieldType addition
 // needing only one call here instead of a new switch arm in two places).
 var fieldValidators = map[FieldType]FieldValidator{
-	FieldTypeString:    scalarValidator{FieldTypeString},
-	FieldTypeNumber:    scalarValidator{FieldTypeNumber},
-	FieldTypeBoolean:   scalarValidator{FieldTypeBoolean},
-	FieldTypeDate:      scalarValidator{FieldTypeDate},
-	FieldTypeEnum:      enumValidator{},
-	FieldTypeArray:     arrayValidator{},
-	FieldTypeReference: referenceValidator{},
-	FieldTypePerson:    personValidator{},
-	FieldTypeProduct:   productValidator{},
-	FieldTypeSupplier:  supplierValidator{},
-	FieldTypeDelivery:  deliveryValidator{},
-	FieldTypeCustomer:  customerValidator{},
-	FieldTypeProject:   projectValidator{},
-	FieldTypeAsset:     assetValidator{},
-	FieldTypeContract:  contractValidator{},
+	FieldTypeString:     scalarValidator{FieldTypeString},
+	FieldTypeNumber:     scalarValidator{FieldTypeNumber},
+	FieldTypeBoolean:    scalarValidator{FieldTypeBoolean},
+	FieldTypeDate:       scalarValidator{FieldTypeDate},
+	FieldTypeEnum:       enumValidator{},
+	FieldTypeArray:      arrayValidator{},
+	FieldTypeReference:  referenceValidator{},
+	FieldTypePerson:     personValidator{},
+	FieldTypeProduct:    productValidator{},
+	FieldTypeSupplier:   supplierValidator{},
+	FieldTypeDelivery:   deliveryValidator{},
+	FieldTypeCustomer:   customerValidator{},
+	FieldTypeProject:    projectValidator{},
+	FieldTypeAsset:      assetValidator{},
+	FieldTypeContract:   contractValidator{},
+	FieldTypeCostCenter: costCenterValidator{},
 }
 
 // RegisterFieldValidator registers (or overrides) the validator used for
@@ -495,6 +497,31 @@ func (contractValidator) Validate(value any, spec FieldSpec, vctx ValidationCont
 	}
 	if !exists {
 		return fmt.Errorf("%w: field %q references a nonexistent contract in this firm", ErrPayloadValidation, spec.Name)
+	}
+	return nil
+}
+
+// costCenterValidator implements FieldValidator for FieldTypeCostCenter -
+// same shape as contractValidator, against `cost_centers` instead of
+// `contract_registry`.
+type costCenterValidator struct{}
+
+func (costCenterValidator) Validate(value any, spec FieldSpec, vctx ValidationContext) error {
+	s, ok := value.(string)
+	if !ok {
+		return fmt.Errorf("%w: field %q must be a string cost center ID", ErrPayloadValidation, spec.Name)
+	}
+	costCenterID, err := uuid.Parse(s)
+	if err != nil {
+		return fmt.Errorf("%w: field %q must be a valid cost center ID (UUID)", ErrPayloadValidation, spec.Name)
+	}
+
+	exists, err := costcenter.ExistsTx(vctx.Ctx, vctx.Tx, vctx.FirmID, costCenterID)
+	if err != nil {
+		return fmt.Errorf("check cost center field %q: %w", spec.Name, err)
+	}
+	if !exists {
+		return fmt.Errorf("%w: field %q references a nonexistent cost center in this firm", ErrPayloadValidation, spec.Name)
 	}
 	return nil
 }
