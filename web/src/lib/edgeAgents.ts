@@ -7,8 +7,10 @@
 // mirrors lib/logistics.ts's own "types + fetch helpers, one file per
 // backend package" convention. Only the Keycloak-authenticated
 // browser-facing surface lives here: registering agents, issuing/listing
-// tokens, listing events. The token-authenticated device path
-// (/api/edge/heartbeat, /api/edge/events) has no frontend caller.
+// tokens, listing events, sending/listing commands. The token-
+// authenticated device path (/api/edge/heartbeat, /api/edge/events,
+// /api/edge/commands, /api/edge/commands/{id}/ack) has no frontend
+// caller - the agent binary hits those directly, not through this app.
 
 export type AgentStatus = "offline" | "online" | "error";
 
@@ -39,6 +41,19 @@ export type EdgeEvent = {
   eventType: string;
   payload: Record<string, unknown>;
   receivedAt: string;
+};
+
+export type CommandStatus = "pending" | "delivered" | "acknowledged" | "failed";
+
+export type EdgeCommand = {
+  id: string;
+  agentId: string;
+  commandType: string;
+  payload: Record<string, unknown>;
+  status: CommandStatus;
+  createdAt: string;
+  deliveredAt?: string;
+  acknowledgedAt?: string;
 };
 
 function apiBase(): string {
@@ -164,6 +179,62 @@ export async function fetchEdgeAgentEvents(
     );
     if (!res.ok) return null;
     return (await res.json()) as EdgeEvent[];
+  } catch {
+    return null;
+  }
+}
+
+export type CreateEdgeCommandInput = {
+  commandType: string;
+  payload?: Record<string, unknown>;
+};
+
+/**
+ * Calls the Go backend's `POST /api/firms/{firmId}/edge-agents/{agentId}/commands`
+ * (owner-only). Enqueues a new 'pending' command for the agent to pick up
+ * on its next poll of `GET /api/edge/commands` (see internal/edgeagent/
+ * commands.go's own doc comment on the poll-based, not push, delivery
+ * model).
+ */
+export async function createEdgeAgentCommand(
+  token: string,
+  firmId: string,
+  agentId: string,
+  input: CreateEdgeCommandInput,
+): Promise<{ ok: true; command: EdgeCommand } | { ok: false; error: string; status: number }> {
+  try {
+    const res = await fetch(
+      `${apiBase()}/api/firms/${encodeURIComponent(firmId)}/edge-agents/${encodeURIComponent(agentId)}/commands`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+        cache: "no-store",
+      },
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      return { ok: false, error: text || `Request failed (${res.status})`, status: res.status };
+    }
+    return { ok: true, command: (await res.json()) as EdgeCommand };
+  } catch {
+    return { ok: false, error: "network error", status: 0 };
+  }
+}
+
+/** Calls the Go backend's `GET /api/firms/{firmId}/edge-agents/{agentId}/commands` (most recent first, capped at 200). */
+export async function fetchEdgeAgentCommands(
+  token: string,
+  firmId: string,
+  agentId: string,
+): Promise<EdgeCommand[] | null> {
+  try {
+    const res = await fetch(
+      `${apiBase()}/api/firms/${encodeURIComponent(firmId)}/edge-agents/${encodeURIComponent(agentId)}/commands`,
+      { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" },
+    );
+    if (!res.ok) return null;
+    return (await res.json()) as EdgeCommand[];
   } catch {
     return null;
   }

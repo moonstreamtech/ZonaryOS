@@ -130,6 +130,65 @@ func TestEvaluate_StateCondition_NonUUIDReferenceFailsClosed(t *testing.T) {
 	}
 }
 
+func TestEvaluate_EdgeEventCondition_MissingFieldsFailClosed(t *testing.T) {
+	ctx := context.Background()
+	ec := workflow.EvalContext{FirmID: uuid.New(), Payload: map[string]any{}}
+
+	cases := []workflow.ExpressionNode{
+		{Type: workflow.ConditionEdgeEvent, EventType: "door_opened", EdgeEventWithinMinutes: 5},                        // missing AgentID
+		{Type: workflow.ConditionEdgeEvent, AgentID: uuid.New().String(), EdgeEventWithinMinutes: 5},                    // missing EventType
+		{Type: workflow.ConditionEdgeEvent, AgentID: uuid.New().String(), EventType: "door_opened"},                     // missing/zero EdgeEventWithinMinutes
+		{Type: workflow.ConditionEdgeEvent, AgentID: "not-a-uuid", EventType: "door_opened", EdgeEventWithinMinutes: 5}, // malformed AgentID
+	}
+	for i, node := range cases {
+		if _, err := workflow.Evaluate(ctx, node, ec); !errors.Is(err, workflow.ErrInvalidRule) && !errors.Is(err, workflow.ErrConditionEvaluation) {
+			t.Errorf("case %d: expected ErrInvalidRule or ErrConditionEvaluation, got %v", i, err)
+		}
+	}
+}
+
+func TestEvaluate_EdgeEventCondition_NoPoolFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	ec := workflow.EvalContext{FirmID: uuid.New(), Payload: map[string]any{}}
+	node := workflow.ExpressionNode{
+		Type: workflow.ConditionEdgeEvent, AgentID: uuid.New().String(), EventType: "door_opened", EdgeEventWithinMinutes: 5,
+	}
+	if _, err := workflow.Evaluate(ctx, node, ec); !errors.Is(err, workflow.ErrConditionEvaluation) {
+		t.Fatalf("expected ErrConditionEvaluation, got %v", err)
+	}
+}
+
+func TestValidateExpressionTree_RejectsMalformedEdgeEventLeaf(t *testing.T) {
+	cases := []workflow.ExpressionNode{
+		{Type: workflow.ConditionEdgeEvent, EventType: "door_opened", EdgeEventWithinMinutes: 5},
+		{Type: workflow.ConditionEdgeEvent, AgentID: "not-a-uuid", EventType: "door_opened", EdgeEventWithinMinutes: 5},
+	}
+	for i, node := range cases {
+		if err := workflow.ValidateExpressionTree(node); !errors.Is(err, workflow.ErrInvalidRule) {
+			t.Errorf("case %d: expected ErrInvalidRule, got %v", i, err)
+		}
+	}
+
+	valid := workflow.ExpressionNode{Type: workflow.ConditionEdgeEvent, AgentID: uuid.New().String(), EventType: "door_opened", EdgeEventWithinMinutes: 5}
+	if err := workflow.ValidateExpressionTree(valid); err != nil {
+		t.Errorf("expected a well-formed edge_event leaf to validate, got %v", err)
+	}
+}
+
+func TestValidateRuleShape_OnEdgeEventRejectsNonNotifyActions(t *testing.T) {
+	rule := workflow.Rule{
+		Name: "test", DefinitionKey: "sensor_watch", Trigger: workflow.TriggerOnEdgeEvent,
+		ConditionTree: workflow.ExpressionNode{Type: workflow.ConditionField, Field: "tempC", Op: string(workflow.OpGt), Value: 30.0},
+		Actions:       []workflow.Action{{Type: workflow.ActionTransition, ActionKey: "close"}},
+	}
+	// validateRuleShape runs before any database access - passing a nil
+	// pool is safe here since a rejected rule never reaches it (see
+	// CreateRule's own doc comment).
+	if _, err := workflow.CreateRule(context.Background(), nil, rule); !errors.Is(err, workflow.ErrInvalidRule) {
+		t.Fatalf("expected an on_edge_event rule with a transition action to be rejected, got %v", err)
+	}
+}
+
 func TestEvaluate_And(t *testing.T) {
 	ctx := context.Background()
 	ec := workflow.EvalContext{Payload: map[string]any{"a": float64(1), "b": float64(2)}}

@@ -9,6 +9,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -104,6 +105,38 @@ type Config struct {
 	// cross-reference) - an operator must explicitly opt in, never
 	// discover after the fact that telemetry was silently on.
 	TelemetryEnabled bool
+
+	// NATSURL (ZONARYOS_NATS_URL, NATS JetStream/Edge Agent completion
+	// batch) is internal/edgeagent.NATSBridge's single default-disabled
+	// switch, mirroring LicenseEnforced/TelemetryEnabled's exact
+	// convention: empty (the default) means NATSBridge is nil and the
+	// system behaves exactly as before this batch - direct HTTP push to
+	// POST /api/edge/events. Only when set does the server also connect
+	// to this NATS server and run a durable JetStream consumer alongside
+	// the existing HTTP path (both remain live at once; NATS is an
+	// additional ingestion path, not a replacement for the HTTP one -
+	// see internal/edgeagent/nats.go's own doc comment).
+	NATSURL string
+	// NATSPollInterval (ZONARYOS_NATS_POLL_INTERVAL) is how often the
+	// server's durable pull consumer fetches from the JetStream stream -
+	// only read when NATSURL is set. Defaults to 5s per this batch's own
+	// design brief.
+	NATSPollInterval time.Duration
+
+	// RequestTimeout (ZONARYOS_REQUEST_TIMEOUT, server infrastructure
+	// hardening batch) bounds how long any single request's own context
+	// may run before internal/platform/middleware's timeout middleware
+	// cancels it - defaults to 30s. See that middleware's own doc
+	// comment for why the permission-events SSE stream is exempted from
+	// this bound.
+	RequestTimeout time.Duration
+	// MaxJSONBodyBytes/MaxUploadBodyBytes (ZONARYOS_MAX_JSON_BODY_BYTES/
+	// ZONARYOS_MAX_UPLOAD_BODY_BYTES) bound request body size -
+	// internal/platform/middleware's size-limit middleware picks between
+	// the two per request based on Content-Type. Default 1MB/10MB per
+	// this batch's own design brief.
+	MaxJSONBodyBytes   int64
+	MaxUploadBodyBytes int64
 }
 
 // Load reads configuration from environment variables, applying defaults
@@ -120,6 +153,11 @@ func Load() (Config, error) {
 		LicenseToken:        os.Getenv("ZONARYOS_LICENSE_TOKEN"),
 		PublicURL:           strings.TrimRight(os.Getenv("ZONARYOS_PUBLIC_URL"), "/"),
 		TelemetryEnabled:    os.Getenv("ZONARYOS_TELEMETRY_ENABLED") == "true",
+		NATSURL:             os.Getenv("ZONARYOS_NATS_URL"),
+		NATSPollInterval:    5 * time.Second,
+		RequestTimeout:      30 * time.Second,
+		MaxJSONBodyBytes:    1 << 20,  // 1MB
+		MaxUploadBodyBytes:  10 << 20, // 10MB
 	}
 	cfg.DiscoveryStartURL = strings.TrimRight(getEnv("ZONARYOS_DISCOVERY_START_URL", cfg.PublicURL), "/")
 
@@ -146,6 +184,35 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("ZONARYOS_LICENSE_GRACE_PERIOD must be a valid Go duration (e.g. \"72h\"): %w", err)
 		}
 		cfg.LicenseGracePeriod = d
+	}
+
+	if raw := os.Getenv("ZONARYOS_NATS_POLL_INTERVAL"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil || d <= 0 {
+			return Config{}, fmt.Errorf("ZONARYOS_NATS_POLL_INTERVAL must be a positive Go duration (e.g. \"5s\")")
+		}
+		cfg.NATSPollInterval = d
+	}
+	if raw := os.Getenv("ZONARYOS_REQUEST_TIMEOUT"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil || d <= 0 {
+			return Config{}, fmt.Errorf("ZONARYOS_REQUEST_TIMEOUT must be a positive Go duration (e.g. \"30s\")")
+		}
+		cfg.RequestTimeout = d
+	}
+	if raw := os.Getenv("ZONARYOS_MAX_JSON_BODY_BYTES"); raw != "" {
+		n, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || n <= 0 {
+			return Config{}, fmt.Errorf("ZONARYOS_MAX_JSON_BODY_BYTES must be a positive integer")
+		}
+		cfg.MaxJSONBodyBytes = n
+	}
+	if raw := os.Getenv("ZONARYOS_MAX_UPLOAD_BODY_BYTES"); raw != "" {
+		n, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || n <= 0 {
+			return Config{}, fmt.Errorf("ZONARYOS_MAX_UPLOAD_BODY_BYTES must be a positive integer")
+		}
+		cfg.MaxUploadBodyBytes = n
 	}
 
 	return cfg, nil

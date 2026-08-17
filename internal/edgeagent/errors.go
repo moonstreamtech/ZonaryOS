@@ -28,4 +28,12 @@ var (
 	// ErrInvalidToken means the presented bearer token does not match
 	// any live (non-expired) edge_agent_tokens row.
 	ErrInvalidToken = errors.New("invalid or expired edge agent token")
+
+	// ErrInvalidCommand means CreateCommand was given a structurally
+	// invalid command (e.g. an empty commandType).
+	ErrInvalidCommand = errors.New("invalid edge agent command")
+
+	// ErrCommandNotFound means no edge_agent_commands row with the given
+	// id is visible in the caller's firm/agent context.
+	ErrCommandNotFound = errors.New("edge agent command not found")
 )

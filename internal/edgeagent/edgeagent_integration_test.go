@@ -52,7 +52,9 @@ func setupTest(t *testing.T) (adminPool, appPool *pgxpool.Pool) {
 	t.Cleanup(adminPool.Close)
 	if _, err := adminPool.Exec(ctx, `
 		TRUNCATE firms, users, roles, role_permissions, user_firm_roles,
-			edge_agents, edge_agent_tokens, edge_events, audit_log, permissions CASCADE
+			edge_agents, edge_agent_tokens, edge_events, edge_agent_commands,
+			workflow_definitions, workflow_states, workflow_transitions, workflow_rules,
+			audit_log, permissions CASCADE
 	`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}

@@ -46,6 +46,8 @@ func RegisterRoutes(mux *http.ServeMux, verifier *identity.Verifier, pool *pgxpo
 	mux.Handle("POST /api/firms/{firmID}/edge-agents/{agentID}/tokens", auth(http.HandlerFunc(handleIssueToken(pool))))
 	mux.Handle("GET /api/firms/{firmID}/edge-agents/{agentID}/tokens", auth(http.HandlerFunc(handleListTokens(pool))))
 	mux.Handle("GET /api/firms/{firmID}/edge-agents/{agentID}/events", auth(http.HandlerFunc(handleListEvents(pool))))
+	mux.Handle("POST /api/firms/{firmID}/edge-agents/{agentID}/commands", auth(http.HandlerFunc(handleCreateCommand(pool))))
+	mux.Handle("GET /api/firms/{firmID}/edge-agents/{agentID}/commands", auth(http.HandlerFunc(handleListCommands(pool))))
 
 	// bearerAgentToken (below) is the token path: no Keycloak, no
 	// firmID/agentID in the URL at all - the agent's identity comes
@@ -53,6 +55,8 @@ func RegisterRoutes(mux *http.ServeMux, verifier *identity.Verifier, pool *pgxpo
 	// doc comment).
 	mux.Handle("POST /api/edge/heartbeat", http.HandlerFunc(handleHeartbeat(pool)))
 	mux.Handle("POST /api/edge/events", http.HandlerFunc(handleRecordEvent(pool)))
+	mux.Handle("GET /api/edge/commands", http.HandlerFunc(handlePollCommands(pool)))
+	mux.Handle("POST /api/edge/commands/{commandID}/ack", http.HandlerFunc(handleAckCommand(pool)))
 }
 
 // writeEdgeAgentError maps this package's sentinel errors to the HTTP
@@ -64,7 +68,9 @@ func writeEdgeAgentError(w http.ResponseWriter, err error) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 	case errors.Is(err, ErrNotOwner):
 		http.Error(w, err.Error(), http.StatusForbidden)
-	case errors.Is(err, ErrInvalidAgent):
+	case errors.Is(err, ErrCommandNotFound):
+		http.Error(w, err.Error(), http.StatusNotFound)
+	case errors.Is(err, ErrInvalidAgent), errors.Is(err, ErrInvalidCommand):
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	default:
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -399,5 +405,154 @@ func handleRecordEvent(pool *pgxpool.Pool) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(toEventResponse(event))
+	}
+}
+
+type commandResponse struct {
+	ID             string         `json:"id"`
+	AgentID        string         `json:"agentId"`
+	CommandType    string         `json:"commandType"`
+	Payload        map[string]any `json:"payload"`
+	Status         string         `json:"status"`
+	CreatedAt      string         `json:"createdAt"`
+	DeliveredAt    *string        `json:"deliveredAt,omitempty"`
+	AcknowledgedAt *string        `json:"acknowledgedAt,omitempty"`
+}
+
+func toCommandResponse(c Command) commandResponse {
+	return commandResponse{
+		ID: c.ID.String(), AgentID: c.AgentID.String(), CommandType: c.CommandType, Payload: c.Payload,
+		Status: string(c.Status), CreatedAt: c.CreatedAt.Format(time.RFC3339),
+		DeliveredAt: formatTime(c.DeliveredAt), AcknowledgedAt: formatTime(c.AcknowledgedAt),
+	}
+}
+
+type createCommandRequest struct {
+	CommandType string         `json:"commandType"`
+	Payload     map[string]any `json:"payload"`
+}
+
+// handleCreateCommand serves POST .../edge-agents/{agentID}/commands
+// (owner-gated) - Part 2's "server sends a command to an agent" half.
+func handleCreateCommand(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		firmID, userID, ok, status, msg := resolveIdentity(r, pool)
+		if !ok {
+			http.Error(w, msg, status)
+			return
+		}
+		agentID, err := uuid.Parse(r.PathValue("agentID"))
+		if err != nil {
+			http.Error(w, "invalid agent id", http.StatusBadRequest)
+			return
+		}
+		var req createCommandRequest
+		if err := decodeJSONBody(r, &req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		command, err := CreateCommand(r.Context(), pool, firmID, userID, agentID, CreateCommandInput{CommandType: req.CommandType, Payload: req.Payload})
+		if err != nil {
+			writeEdgeAgentError(w, err)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(toCommandResponse(command))
+	}
+}
+
+// handleListCommands serves GET .../edge-agents/{agentID}/commands
+// (member-gated) - the edge agent detail page's command history.
+func handleListCommands(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		firmID, userID, ok, status, msg := resolveIdentity(r, pool)
+		if !ok {
+			http.Error(w, msg, status)
+			return
+		}
+		agentID, err := uuid.Parse(r.PathValue("agentID"))
+		if err != nil {
+			http.Error(w, "invalid agent id", http.StatusBadRequest)
+			return
+		}
+
+		commands, err := ListCommands(r.Context(), pool, firmID, userID, agentID)
+		if err != nil {
+			writeEdgeAgentError(w, err)
+			return
+		}
+
+		resp := make([]commandResponse, 0, len(commands))
+		for _, c := range commands {
+			resp = append(resp, toCommandResponse(c))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}
+}
+
+// handlePollCommands serves GET /api/edge/commands (token-authenticated)
+// - the agent's own poll loop, Part 2's "agent picks up its pending
+// commands" half. Same unwrapped /api/edge/... convention as heartbeat/
+// events: no Keycloak, no firmID/agentID in the URL, identity comes
+// entirely from the bearer token.
+func handlePollCommands(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token, ok := bearerToken(r)
+		if !ok {
+			http.Error(w, "missing bearer token", http.StatusUnauthorized)
+			return
+		}
+
+		commands, err := PollCommands(r.Context(), pool, token)
+		if err != nil {
+			if errors.Is(err, ErrInvalidToken) {
+				http.Error(w, err.Error(), http.StatusUnauthorized)
+				return
+			}
+			writeEdgeAgentError(w, err)
+			return
+		}
+
+		resp := make([]commandResponse, 0, len(commands))
+		for _, c := range commands {
+			resp = append(resp, toCommandResponse(c))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}
+}
+
+// handleAckCommand serves POST /api/edge/commands/{commandID}/ack
+// (token-authenticated) - the agent reporting it has finished executing
+// a command.
+func handleAckCommand(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token, ok := bearerToken(r)
+		if !ok {
+			http.Error(w, "missing bearer token", http.StatusUnauthorized)
+			return
+		}
+		commandID, err := uuid.Parse(r.PathValue("commandID"))
+		if err != nil {
+			http.Error(w, "invalid command id", http.StatusBadRequest)
+			return
+		}
+
+		command, err := AckCommand(r.Context(), pool, token, commandID)
+		if err != nil {
+			if errors.Is(err, ErrInvalidToken) {
+				http.Error(w, err.Error(), http.StatusUnauthorized)
+				return
+			}
+			writeEdgeAgentError(w, err)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(toCommandResponse(command))
 	}
 }
