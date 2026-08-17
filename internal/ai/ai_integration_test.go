@@ -243,12 +243,12 @@ func TestSuggestReport_ValidSuggestion_PassesThrough(t *testing.T) {
 	}
 }
 
-// seedJournalActivity posts one balanced journal entry (cash debit /
-// sales revenue credit) for firmID, then backdates it to daysAgo days in
-// the past - the same "insert via the normal path, then UPDATE
-// posted_at directly" pattern internal/accounting's own integration tests
-// use to get a real, distinct posted_at to filter/aggregate on.
-func seedJournalActivity(ctx context.Context, t *testing.T, adminPool, appPool *pgxpool.Pool, firmID, userID uuid.UUID, description, amount string, daysAgo int) {
+// seedChartOfAccounts seeds firmID's chart of accounts once - callers that
+// post more than one journal entry for the same firm (seedJournalActivity)
+// must call this exactly once per firm, since a second call would try to
+// insert the same account codes again and hit accounts' own
+// UNIQUE (firm_id, code) constraint.
+func seedChartOfAccounts(ctx context.Context, t *testing.T, appPool *pgxpool.Pool, firmID uuid.UUID) {
 	t.Helper()
 	err := zdb.WithFirmContext(ctx, appPool, firmID, func(ctx context.Context, tx pgx.Tx) error {
 		return accounting.SeedDefaultChartOfAccountsTx(ctx, tx, firmID, accounting.SeedChartOptions{Sells: true})
@@ -256,9 +256,19 @@ func seedJournalActivity(ctx context.Context, t *testing.T, adminPool, appPool *
 	if err != nil {
 		t.Fatalf("seed chart of accounts: %v", err)
 	}
+}
+
+// seedJournalActivity posts one balanced journal entry (cash debit /
+// sales revenue credit) for firmID, then backdates it to daysAgo days in
+// the past - the same "insert via the normal path, then UPDATE
+// posted_at directly" pattern internal/accounting's own integration tests
+// use to get a real, distinct posted_at to filter/aggregate on. Callers
+// must seed the chart of accounts (seedChartOfAccounts) once beforehand.
+func seedJournalActivity(ctx context.Context, t *testing.T, adminPool, appPool *pgxpool.Pool, firmID, userID uuid.UUID, description, amount string, daysAgo int) {
+	t.Helper()
 
 	var entryID uuid.UUID
-	err = zdb.WithFirmContext(ctx, appPool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+	err := zdb.WithFirmContext(ctx, appPool, firmID, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		entryID, err = accounting.PostJournalEntryTx(ctx, tx, firmID, userID, description, "", nil, []accounting.LineInput{
 			{AccountCode: accounting.CashAccountCode, Side: accounting.SideDebit, Amount: amount},
@@ -290,6 +300,7 @@ func TestProcessAnomalyChecks_NotifiesOwnersWhenFlagged_AndPromptExcludesPII(t *
 	createTestConfig(ctx, t, appPool, encryptor, firmID, userID)
 
 	const piiMarker = "CUSTOMER_ACME_CORP_SECRET_DEAL"
+	seedChartOfAccounts(ctx, t, appPool, firmID)
 	seedJournalActivity(ctx, t, adminPool, appPool, firmID, userID, piiMarker, "5000.0000", 2)
 	seedJournalActivity(ctx, t, adminPool, appPool, firmID, userID, "prior period baseline", "100.0000", 10)
 
@@ -334,6 +345,7 @@ func TestProcessAnomalyChecks_NothingUnusual_NoNotification(t *testing.T) {
 
 	firmID, userID := seedOwner(ctx, t, adminPool, appPool, "Firm A", "anomaly-quiet-owner")
 	createTestConfig(ctx, t, appPool, encryptor, firmID, userID)
+	seedChartOfAccounts(ctx, t, appPool, firmID)
 	seedJournalActivity(ctx, t, adminPool, appPool, firmID, userID, "routine sale", "100.0000", 2)
 
 	withMockProvider(t, mockProvider{response: "NOTHING_UNUSUAL"})
@@ -357,6 +369,7 @@ func TestProcessAnomalyChecks_NoActiveConfig_SkipsFirm(t *testing.T) {
 	encryptor := testEncryptor(t)
 
 	firmID, userID := seedOwner(ctx, t, adminPool, appPool, "Firm A", "anomaly-noconfig-owner")
+	seedChartOfAccounts(ctx, t, appPool, firmID)
 	seedJournalActivity(ctx, t, adminPool, appPool, firmID, userID, "routine sale", "100.0000", 2)
 	// No CreateConfig call.
 
