@@ -251,7 +251,7 @@ func TestSuggestReport_ValidSuggestion_PassesThrough(t *testing.T) {
 func seedJournalActivity(ctx context.Context, t *testing.T, adminPool, appPool *pgxpool.Pool, firmID, userID uuid.UUID, description, amount string, daysAgo int) {
 	t.Helper()
 	err := zdb.WithFirmContext(ctx, appPool, firmID, func(ctx context.Context, tx pgx.Tx) error {
-		return accounting.SeedDefaultChartOfAccountsTx(ctx, tx, firmID, accounting.SeedChartOptions{})
+		return accounting.SeedDefaultChartOfAccountsTx(ctx, tx, firmID, accounting.SeedChartOptions{Sells: true})
 	})
 	if err != nil {
 		t.Fatalf("seed chart of accounts: %v", err)
