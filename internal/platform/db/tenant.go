@@ -78,6 +78,63 @@ func WithInviteTokenContext(ctx context.Context, pool *pgxpool.Pool, token strin
 	return nil
 }
 
+// WithTwoFirmContext runs fn inside a SINGLE transaction that can be
+// re-scoped between different firms' RLS contexts via the scope function
+// fn is given - the primitive a genuinely atomic cross-firm write (one
+// commit/rollback covering inserts into more than one firm's tenant-
+// scoped tables) needs, which WithFirmContext itself cannot express:
+// WithFirmContext always calls pool.Begin(ctx) itself, so two
+// WithFirmContext calls are always two separate transactions/commits,
+// not one atomic unit (if the second failed after the first committed,
+// the first's writes would not be rolled back).
+//
+// scope(firmID) issues the same `SET LOCAL app.current_firm_id`
+// set_config call WithFirmContext's own withSessionContext does, just
+// against the one already-open tx rather than a fresh one - calling it
+// again with a different firmID immediately re-scopes every subsequent
+// statement on that tx to the new firm's RLS policies. Only one firm's
+// context is ever active at a time; nothing here grants any query
+// visibility across firms simultaneously; Never-Violate Rule 3 (isolation
+// enforced by Postgres itself) still holds exactly as it does for every
+// other WithFirmContext caller - this is two sequential RLS scopes
+// sharing one commit, not a bypass.
+//
+// First sanctioned use: internal/consolidation.PostIntercompanyTransfer
+// (multi-company/consolidation batch) - see its own doc comment for why
+// posting matching journal entries into two different firms' books needs
+// to be atomic. There is no other precedent for a cross-firm-atomic write
+// anywhere else in this codebase; new callers should have an equally
+// deliberate reason before reaching for this instead of two separate
+// WithFirmContext calls.
+//
+// ciaudit:ignore-firmid-check: this is the low-level RLS session
+// primitive itself, not a caller-facing operation - same reasoning as
+// WithFirmContext's own suppression above. It is fn's job to run its own
+// authorization check(s) for each firm it scopes into.
+func WithTwoFirmContext(ctx context.Context, pool *pgxpool.Pool, fn func(ctx context.Context, tx pgx.Tx, scope func(firmID uuid.UUID) error) error) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	scope := func(firmID uuid.UUID) error {
+		if _, err := tx.Exec(ctx, "SELECT set_config('app.current_firm_id', $1, true)", firmID.String()); err != nil {
+			return fmt.Errorf("set app.current_firm_id: %w", err)
+		}
+		return nil
+	}
+
+	if err := fn(ctx, tx, scope); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+	return nil
+}
+
 // withSessionContext sets the given Postgres session setting to id.String()
 // for the lifetime of one transaction, then runs fn. set_config(..., true)
 // (equivalent to `SET LOCAL`) is used instead of string-interpolating a SQL

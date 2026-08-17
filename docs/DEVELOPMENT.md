@@ -1395,6 +1395,38 @@ go test ./internal/workflow/... -run CostCenter -v
 go test ./internal/accounting/... -run BudgetVariance -v
 ```
 
+## Multi-company, consolidation, and group accounting
+
+A single ZonaryOS installation already supports multiple firms via RLS, but those firms are completely independent - many real businesses operate as a group (a holding company with subsidiaries), so this batch adds the relationships between otherwise-isolated firms. New package: `internal/consolidation`, a sibling to `internal/platformadmin` rather than folded into it, since it does real writes (group membership, journal-entry-posting transfers) on top of that package's existing read-only allowlist-gated surface.
+
+**Firm groups** (`firm_groups`/`firm_group_members`, `migrations/0033_multi_company_consolidation.up.sql`): platform-level structures - neither table is scoped to a single owning firm, and neither gets RLS, the same "not RLS-scoped, no broader tenant above it" treatment `firms`/`users`/`permissions` already get (`migrations/0001_core_schema.up.sql`). `firm_group_members`'s own firm reference is deliberately named `member_firm_id`, not `firm_id`: this column means "which firm this membership record is about," not "the firm that owns/is scoped to this row" the way every genuinely tenant-scoped table's `firm_id` column in this codebase does (and which `cmd/ciaudit`'s RLS audit mechanically flags on sight of a literal `firm_id` column) - renaming it avoids a false positive on that audit without weakening real RLS enforcement anywhere it actually matters. Only platform admins (`internal/platformadmin.Allowlist`, the same allowlist `internal/currency`'s platform-admin-only write already reuses) can create a group or modify membership; a firm's own member can only read which group (if any) their firm belongs to via `GetFirmGroupForFirm` (`GET /api/firms/{firmID}/group`) - member-gated, and deliberately narrow: fellow members' firm id/name/role/ownership percentage only, never any financial data ("a subsidiary shouldn't see the parent's books").
+
+**Inter-company transfers** (`intercompany_transactions`): `POST /api/platform-admin/firm-groups/{id}/intercompany-transfer` posts a real, balanced journal entry into **both** member firms' own books, atomically - either both entries (and the `intercompany_transactions` row tying them together) land, or none do.
+
+- *The RLS challenge*: `zdb.WithFirmContext` always opens its own transaction (one call = one commit), so two `WithFirmContext` calls - one per firm - can never be atomic together; a failure in the second would leave the first's already-committed entry standing. There was no existing precedent in this codebase for one Postgres transaction spanning two firms' RLS contexts.
+- *The solution*: a new primitive, `zdb.WithTwoFirmContext` (`internal/platform/db/tenant.go`) - one transaction, re-scoped via repeated `SET LOCAL app.current_firm_id` calls on the same already-open `tx` (first to the "from" firm, post that entry; then to the "to" firm, post that entry; then commit once). RLS is still fully enforced on every single statement - only one firm's context is ever active at a time, so this never grants cross-firm query visibility; it just lets both firms' inserts share one atomic commit/rollback. Alternatives considered and rejected: a superuser/RLS-bypass role (a significant, unprecedented departure from Never-Violate Rule 3), and two independent transactions with manual compensating rollback (merely best-effort, not truly atomic).
+- *Accounting treatment*: the "from" firm books DR Intercompany Receivable / CR Cash; the "to" firm books DR Cash / CR Intercompany Payable - the standard treatment for an intercompany cash advance. Both accounts are auto-created per firm on first use under fixed codes (`internal/consolidation.ensureAccountTx`, reusing `internal/accounting.CreateAccountTx`'s "shared account-creation primitive"), since a platform admin posting a transfer isn't a member of either firm who could be asked to configure one first.
+
+**Consolidated P&L** (`GET /api/platform-admin/firm-groups/{id}/consolidated-pnl?from=&to=`): sums each member firm's own revenue/expense totals for the period, looping `WithFirmContext` once per firm (the same per-firm-scoped-loop pattern `internal/platformadmin.ListFirms` already establishes) - RLS makes a single cross-firm `SELECT` impossible by construction, so summing across firms happens firm-by-firm in Go, with each individual sum still computed by Postgres's own exact `numeric` arithmetic. **Inter-company elimination**: each firm's own revenue/expense sum excludes any `journal_entries` row that is either leg of an intercompany transfer, via a `NOT EXISTS` filter matched against real `intercompany_transactions.from_journal_entry_id`/`to_journal_entry_id` rows - tied to actual transaction records rather than a `source_type` string match, so the elimination stays correct even if a future caller reuses `"intercompany_transfer"` as a source type for something `PostIntercompanyTransfer` didn't itself post. The report is deliberately **not** broken down per-account across firms: different member firms' charts of accounts are independent RLS-scoped data, so two firms sharing an account code is coincidence, not a signal they should be merged into one combined line - per-firm totals plus a group rollup avoids that ambiguity while still answering "what does the group make as a whole," staying within this batch's own scope boundary.
+
+- HTTP surface: `GET`/`POST /api/platform-admin/firm-groups`, `POST /api/platform-admin/firm-groups/{id}/members`, `POST /api/platform-admin/firm-groups/{id}/intercompany-transfer`, `GET /api/platform-admin/firm-groups/{id}/consolidated-pnl?from=&to=`; `GET /api/firms/{firmID}/group`.
+- Frontend: `/platform-admin` extended with a firm groups management section (create group, add members, post an inter-company transfer) and a group P&L view.
+
+### Scope boundaries
+
+No minority interest / non-controlling interest accounting. No consolidation adjustments beyond inter-company elimination. No transfer pricing compliance. Keep it minimal - the foundation for group structures, not a full consolidation engine.
+
+### Running these tests
+
+`internal/consolidation/consolidation_integration_test.go` (platform-admin-only enforcement on group creation/membership, a firm member viewing its own group with no financial data leaking, both journal entries posting atomically, one firm's posting failure rolling back the other firm's already-inserted entry on the same transaction, and consolidated P&L eliminating a manually-tagged intercompany entry while summing ordinary revenue accurately) needs a real Postgres:
+
+```
+export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5433/zonaryos?sslmode=disable
+export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5433/zonaryos?sslmode=disable
+make migrate
+go test ./internal/consolidation/... -v
+```
+
 ## Continuous Integration
 
 `.github/workflows/ci.yml` turns most of the CI Checklist categories (CLAUDE.md's "How to Verify a Change") from manual PR-by-PR discipline into automated checks on every PR (and on push to `main`). Every job here existed as a manual step some earlier PR ran by hand - this file doesn't introduce new verification steps, it just stops trusting a human to remember to run them. **Canary/Rollback Trigger** remains the one item intentionally "Not Set Up": there is no ZonaryOS deployment target or infrastructure decided yet (see `docs/OPEN_POINTS.md` item 34) for a rollback trigger to hook into.

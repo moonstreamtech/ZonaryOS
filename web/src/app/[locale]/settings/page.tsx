@@ -8,6 +8,7 @@ import { requireFirmContext } from "@/lib/firmContext";
 import { fetchRoleInFirm } from "@/lib/me";
 import { fetchDefinitions } from "@/lib/workflow";
 import { fetchFirmMetadata } from "@/lib/firm";
+import { fetchFirmGroupForFirm } from "@/lib/consolidation";
 import FirmMetadataEditor from "./FirmMetadataEditor";
 import PortabilityPanel from "./PortabilityPanel";
 
@@ -34,6 +35,7 @@ export default async function SettingsPage({ params }: PageProps) {
   const role = await fetchRoleInFirm(sessionToken, firm.firmId);
   const definitions = await fetchDefinitions(sessionToken, firm.firmId);
   const metadata = await fetchFirmMetadata(sessionToken, firm.firmId);
+  const firmGroupResult = await fetchFirmGroupForFirm(sessionToken, firm.firmId);
 
   return (
     <main className="flex flex-1 flex-col items-center gap-8 bg-zinc-50 px-6 py-16 dark:bg-black">
@@ -107,6 +109,40 @@ export default async function SettingsPage({ params }: PageProps) {
           </dl>
         )}
       </div>
+
+      {/* Item 3 of the multi-company consolidation batch
+          (internal/consolidation.GetFirmGroupForFirm): a small,
+          read-only "which firm group am I in" display, member-visible
+          (not owner-gated - this is ordinary firm metadata visibility,
+          same tier as the metadata block above for a non-owner), calling
+          the firm-member-gated GET /api/firms/{firmId}/group directly
+          (not the platform-admin routes above it). A `null` group is not
+          an error - most firms aren't in any group - so this renders
+          nothing rather than an error state in that case; only a genuine
+          fetch failure shows loadError. */}
+      {firmGroupResult.ok && firmGroupResult.group ? (
+        <div className="w-full max-w-md rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
+          <h2 className="mb-3 text-lg font-semibold text-black dark:text-zinc-50">
+            {t("firmGroupTitle")}
+          </h2>
+          <p className="text-sm text-black dark:text-zinc-50">
+            {t("firmGroupBelongsTo", { groupName: firmGroupResult.group.name })}
+          </p>
+          {firmGroupResult.group.members.length > 0 && (
+            <ul className="mt-2 flex flex-col gap-1 text-sm text-zinc-600 dark:text-zinc-400">
+              {firmGroupResult.group.members.map((m) => (
+                <li key={m.firmId}>
+                  {m.firmName} — {t(`firmGroupRole.${m.role}`)}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ) : !firmGroupResult.ok ? (
+        <p className="w-full max-w-md text-sm text-red-600 dark:text-red-400">
+          {t("firmGroupLoadError")}
+        </p>
+      ) : null}
 
       <div className="w-full max-w-md">
         <h2 className="mb-3 text-lg font-semibold text-black dark:text-zinc-50">
