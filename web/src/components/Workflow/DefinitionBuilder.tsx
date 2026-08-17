@@ -9,6 +9,7 @@ import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import type { Account } from "@/lib/accounting";
 import type { DefinitionSpecInput } from "@/lib/workflow";
+import type { AIWorkflowSuggestion } from "@/lib/aiConfig";
 import {
   validateBuilderSpec,
   type BuilderFieldRow,
@@ -115,6 +116,104 @@ export default function DefinitionBuilder({ firmId, existingDefinitionKeys, acco
   const [errors, setErrors] = useState<BuilderValidationError[]>([]);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  // "Suggest with AI" (Vision §5): a plain-language description goes to
+  // internal/ai.SuggestWorkflow, and a successful response pre-fills this
+  // form's OWN state setters below (applyAiSuggestion) - the same fields
+  // an owner would have typed by hand. Nothing is ever submitted on the
+  // owner's behalf (Never-Violate Rule 9): applying a suggestion only
+  // populates the form, "Create workflow" still requires its own click.
+  // Owner-gated on the backend (same tier as this whole builder), so this
+  // panel is tagged data-permission-public the same way the rest of the
+  // form is.
+  const [aiPanelOpen, setAiPanelOpen] = useState(false);
+  const [aiDescription, setAiDescription] = useState("");
+  const [aiSubmitting, setAiSubmitting] = useState(false);
+  const [aiResult, setAiResult] = useState<
+    { kind: "notConfigured" } | { kind: "invalid"; raw: string } | { kind: "error"; message: string } | null
+  >(null);
+
+  const VALID_FIELD_TYPES = new Set<FieldTypeValue>([
+    "string",
+    "number",
+    "boolean",
+    "date",
+    "enum",
+    "reference",
+    "array",
+  ]);
+
+  function applyAiSuggestion(s: AIWorkflowSuggestion) {
+    setKey(s.key);
+    setName(s.name);
+    setCreatePermissionKey(s.createPermission.key);
+    setCreatePermissionDescription(s.createPermission.description);
+    setStates(
+      s.states.length > 0
+        ? s.states.map((st) => ({
+            ...emptyState(),
+            key: st.key,
+            name: st.name,
+            isInitial: st.isInitial,
+            isTerminal: st.isTerminal,
+          }))
+        : [emptyState()],
+    );
+    setTransitions(
+      s.transitions.map((tr) => ({
+        ...emptyTransition(),
+        fromStateKey: tr.fromStateKey,
+        toStateKey: tr.toStateKey,
+        actionKey: tr.actionKey,
+        name: tr.name,
+        permissionKey: tr.permission.key,
+        permissionDescription: tr.permission.description,
+      })),
+    );
+    setFields(
+      (s.fields ?? []).map((f) => ({
+        ...emptyField(),
+        name: f.name,
+        type: VALID_FIELD_TYPES.has(f.type as FieldTypeValue) ? (f.type as FieldTypeValue) : "string",
+        required: f.required,
+      })),
+    );
+    setAiPanelOpen(false);
+    setAiDescription("");
+    setAiResult(null);
+  }
+
+  async function handleAiSuggest(e: FormEvent) {
+    e.preventDefault();
+    setAiResult(null);
+    if (!aiDescription.trim()) return;
+
+    setAiSubmitting(true);
+    try {
+      const res = await fetch(`/api/ai/suggest-workflow/${firmId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description: aiDescription.trim() }),
+      });
+      if (res.status === 404) {
+        setAiResult({ kind: "notConfigured" });
+        return;
+      }
+      if (res.status === 422) {
+        setAiResult({ kind: "invalid", raw: await res.text() });
+        return;
+      }
+      if (!res.ok) {
+        setAiResult({ kind: "error", message: t("aiSuggestError") });
+        return;
+      }
+      applyAiSuggestion((await res.json()) as AIWorkflowSuggestion);
+    } catch {
+      setAiResult({ kind: "error", message: t("aiSuggestError") });
+    } finally {
+      setAiSubmitting(false);
+    }
+  }
 
   function updateState(id: number, patch: Partial<BuilderStateRow>) {
     setStates((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
@@ -392,6 +491,63 @@ export default function DefinitionBuilder({ firmId, existingDefinitionKeys, acco
       <h2 className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
         {t("builderTitle")}
       </h2>
+
+      <div className="flex flex-col gap-2">
+        <button
+          type="button"
+          data-permission-public="true"
+          onClick={() => {
+            setAiPanelOpen((v) => !v);
+            setAiResult(null);
+          }}
+          className="self-start rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium text-black hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-50 dark:hover:bg-zinc-900"
+        >
+          {aiPanelOpen ? t("aiSuggestCancel") : t("aiSuggestOpenButton")}
+        </button>
+
+        {aiPanelOpen && (
+          <form
+            onSubmit={handleAiSuggest}
+            data-permission-public="true"
+            className="flex flex-col gap-2 rounded-md border border-zinc-300 bg-zinc-50 p-3 dark:border-zinc-700 dark:bg-zinc-900"
+          >
+            <label className="flex flex-col gap-1 text-xs text-zinc-600 dark:text-zinc-400">
+              {t("aiSuggestLabel")}
+              <textarea
+                value={aiDescription}
+                onChange={(e) => setAiDescription(e.target.value)}
+                placeholder={t("aiSuggestPlaceholder")}
+                rows={3}
+                className={inputClass}
+              />
+            </label>
+
+            {aiResult?.kind === "notConfigured" && (
+              <p className="text-xs text-amber-700 dark:text-amber-400">{t("aiNotConfigured")}</p>
+            )}
+            {aiResult?.kind === "invalid" && (
+              <div className="flex flex-col gap-1 text-xs text-red-600 dark:text-red-400">
+                <p>{t("aiInvalidSuggestion")}</p>
+                <pre className="overflow-x-auto rounded-md border border-red-300 bg-white p-2 text-[11px] whitespace-pre-wrap text-black dark:border-red-900 dark:bg-black dark:text-zinc-100">
+                  {aiResult.raw}
+                </pre>
+              </div>
+            )}
+            {aiResult?.kind === "error" && (
+              <p className="text-xs text-red-600 dark:text-red-400">{aiResult.message}</p>
+            )}
+
+            <button
+              type="submit"
+              data-permission-public="true"
+              disabled={aiSubmitting || !aiDescription.trim()}
+              className="self-start rounded-md bg-foreground px-3 py-1.5 text-xs font-medium text-background disabled:opacity-50"
+            >
+              {aiSubmitting ? t("aiSuggestSubmitting") : t("aiSuggestSubmit")}
+            </button>
+          </form>
+        )}
+      </div>
 
       {errors.length > 0 && (
         <ul className="list-disc pl-5 text-sm text-red-600 dark:text-red-400">

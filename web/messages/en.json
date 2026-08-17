@@ -40,6 +40,7 @@
     "documentTemplates": "Document Templates",
     "apiKeys": "API Keys",
     "webhooks": "Webhooks",
+    "aiConfig": "AI Configuration",
     "hr": "People",
     "payroll": "Payroll",
     "timeTracking": "Time Tracking",
@@ -311,7 +312,16 @@
     "builderErrorTransitionPermissionKeyRequired": "Every transition needs a permission key.",
     "builderErrorUnknownFromState": "\"{key}\" isn't one of the states defined above.",
     "builderErrorUnknownToState": "\"{key}\" isn't one of the states defined above.",
-    "builderErrorDuplicateTransition": "Two transitions can't share the same from-state (\"{fromStateKey}\") and action key (\"{actionKey}\")."
+    "builderErrorDuplicateTransition": "Two transitions can't share the same from-state (\"{fromStateKey}\") and action key (\"{actionKey}\").",
+    "aiSuggestOpenButton": "Suggest with AI",
+    "aiSuggestCancel": "Cancel",
+    "aiSuggestLabel": "Describe the process in plain language",
+    "aiSuggestPlaceholder": "e.g. when a customer places an order, hold it until payment is confirmed, then fulfill it",
+    "aiSuggestSubmit": "Suggest",
+    "aiSuggestSubmitting": "Suggesting…",
+    "aiSuggestError": "Couldn't get a suggestion. Please try again.",
+    "aiNotConfigured": "AI isn't configured for this firm yet. Set it up on the AI Configuration settings page.",
+    "aiInvalidSuggestion": "The AI's response couldn't be used. Here's what it said:"
   },
   "WorkflowInstanceDetail": {
     "title": "Workflow Instance",
@@ -729,7 +739,16 @@
     "builderSaveError": "Couldn't save this report. Please try again.",
     "fromLabel": "From",
     "toLabel": "To",
-    "overdueTasksCaveat": "Heuristic: tasks open more than 30 days, not a real due-date check."
+    "overdueTasksCaveat": "Heuristic: tasks open more than 30 days, not a real due-date check.",
+    "aiAskOpenButton": "Ask AI",
+    "aiAskCancel": "Cancel",
+    "aiAskLabel": "Ask a question in plain language",
+    "aiAskPlaceholder": "e.g. How many invoices did we issue last month?",
+    "aiAskSubmit": "Ask",
+    "aiAskSubmitting": "Asking…",
+    "aiAskError": "Couldn't get a suggestion. Please try again.",
+    "aiNotConfigured": "AI isn't configured for this firm yet. Set it up on the AI Configuration settings page.",
+    "aiInvalidSuggestion": "The AI's response couldn't be used. Here's what it said:"
   },
   "DocumentTemplatesSettings": {
     "title": "Document Templates",
@@ -779,6 +798,33 @@
     "secretModalTitle": "\"{name}\" created",
     "secretModalBody": "Copy this key now - it won't be shown again.",
     "secretModalClose": "I've copied it"
+  },
+  "AiConfigSettings": {
+    "title": "AI Configuration",
+    "description": "Connect an AI provider to enable AI-assisted suggestions across this firm. AI only ever suggests - it never changes anything on its own, and every suggestion is reviewed and edited by a human before it's used.",
+    "notAuthorized": "You don't have permission to view this page.",
+    "loadError": "Couldn't load this data. Please try again.",
+    "newConfigTitle": "New configuration",
+    "newConfigHint": "Creating a new configuration makes it the firm's active one - only one configuration can be active at a time.",
+    "provider": "Provider",
+    "providerName": {
+      "anthropic": "Anthropic",
+      "openai": "OpenAI",
+      "google": "Google",
+      "custom": "Custom"
+    },
+    "model": "Model",
+    "modelPlaceholder": "e.g. claude-sonnet-4-5",
+    "apiKey": "API key",
+    "create": "Create",
+    "createFieldsRequired": "Please enter a model and an API key.",
+    "createError": "Couldn't create this configuration. Please try again.",
+    "empty": "No AI configurations yet.",
+    "status": "Status",
+    "active": "Active",
+    "inactive": "Inactive",
+    "delete": "Delete",
+    "deleteError": "Couldn't delete this configuration. Please try again."
   },
   "WebhooksSettings": {
     "title": "Webhooks",
