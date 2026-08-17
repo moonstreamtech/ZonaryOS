@@ -137,27 +137,49 @@ type Config struct {
 	// this batch's own design brief.
 	MaxJSONBodyBytes   int64
 	MaxUploadBodyBytes int64
+
+	// AIEncryptionKey (ZONARYOS_AI_ENCRYPTION_KEY, AI integration layer
+	// batch) is internal/ai.NewEncryptor's single default-disabled switch,
+	// mirroring NATSURL's exact convention: empty (the default) means
+	// every /ai/* feature is unavailable (internal/ai.Encryptor is nil,
+	// CreateConfig/SuggestWorkflow/SuggestReport/the anomaly scheduler all
+	// return ErrEncryptionKeyNotSet) and the system behaves exactly as
+	// before this batch. Must be exactly 32 bytes, base64-encoded, when
+	// set - see internal/ai.NewEncryptor's own doc comment for the
+	// "unset is fine, set-but-malformed is a real startup error"
+	// validation this field's own parsing below performs.
+	AIEncryptionKey string
+	// AIAnomalySchedulerPollInterval (ZONARYOS_AI_ANOMALY_POLL_INTERVAL) is
+	// how often the daily anomaly-detection background check
+	// (internal/ai.RunAnomalyScheduler) runs. Defaults to 24h (Part 4's own
+	// "daily" brief) - only meaningful for firms that both have this set
+	// (implicitly, via AIEncryptionKey being set) AND hold an active AI
+	// configuration; every other firm's check is a fast no-op (see
+	// ProcessAnomalyChecks).
+	AIAnomalySchedulerPollInterval time.Duration
 }
 
 // Load reads configuration from environment variables, applying defaults
 // where a variable is not set.
 func Load() (Config, error) {
 	cfg := Config{
-		HTTPAddr:            getEnv("ZONARYOS_HTTP_ADDR", ":8080"),
-		DatabaseURL:         os.Getenv("ZONARYOS_DATABASE_URL"),
-		OIDCIssuerURL:       os.Getenv("ZONARYOS_OIDC_ISSUER_URL"),
-		OIDCClientID:        getEnv("ZONARYOS_OIDC_CLIENT_ID", "zonaryos-web"),
-		PlatformAdminEmails: parseEmailList(os.Getenv("ZONARYOS_PLATFORM_ADMIN_EMAILS")),
-		LicenseEnforced:     os.Getenv("ZONARYOS_LICENSE_ENFORCEMENT") == "true",
-		LicensePublicKey:    os.Getenv("ZONARYOS_LICENSE_PUBLIC_KEY"),
-		LicenseToken:        os.Getenv("ZONARYOS_LICENSE_TOKEN"),
-		PublicURL:           strings.TrimRight(os.Getenv("ZONARYOS_PUBLIC_URL"), "/"),
-		TelemetryEnabled:    os.Getenv("ZONARYOS_TELEMETRY_ENABLED") == "true",
-		NATSURL:             os.Getenv("ZONARYOS_NATS_URL"),
-		NATSPollInterval:    5 * time.Second,
-		RequestTimeout:      30 * time.Second,
-		MaxJSONBodyBytes:    1 << 20,  // 1MB
-		MaxUploadBodyBytes:  10 << 20, // 10MB
+		HTTPAddr:                       getEnv("ZONARYOS_HTTP_ADDR", ":8080"),
+		DatabaseURL:                    os.Getenv("ZONARYOS_DATABASE_URL"),
+		OIDCIssuerURL:                  os.Getenv("ZONARYOS_OIDC_ISSUER_URL"),
+		OIDCClientID:                   getEnv("ZONARYOS_OIDC_CLIENT_ID", "zonaryos-web"),
+		PlatformAdminEmails:            parseEmailList(os.Getenv("ZONARYOS_PLATFORM_ADMIN_EMAILS")),
+		LicenseEnforced:                os.Getenv("ZONARYOS_LICENSE_ENFORCEMENT") == "true",
+		LicensePublicKey:               os.Getenv("ZONARYOS_LICENSE_PUBLIC_KEY"),
+		LicenseToken:                   os.Getenv("ZONARYOS_LICENSE_TOKEN"),
+		PublicURL:                      strings.TrimRight(os.Getenv("ZONARYOS_PUBLIC_URL"), "/"),
+		TelemetryEnabled:               os.Getenv("ZONARYOS_TELEMETRY_ENABLED") == "true",
+		NATSURL:                        os.Getenv("ZONARYOS_NATS_URL"),
+		NATSPollInterval:               5 * time.Second,
+		RequestTimeout:                 30 * time.Second,
+		MaxJSONBodyBytes:               1 << 20,  // 1MB
+		MaxUploadBodyBytes:             10 << 20, // 10MB
+		AIEncryptionKey:                os.Getenv("ZONARYOS_AI_ENCRYPTION_KEY"),
+		AIAnomalySchedulerPollInterval: 24 * time.Hour,
 	}
 	cfg.DiscoveryStartURL = strings.TrimRight(getEnv("ZONARYOS_DISCOVERY_START_URL", cfg.PublicURL), "/")
 
@@ -213,6 +235,13 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("ZONARYOS_MAX_UPLOAD_BODY_BYTES must be a positive integer")
 		}
 		cfg.MaxUploadBodyBytes = n
+	}
+	if raw := os.Getenv("ZONARYOS_AI_ANOMALY_POLL_INTERVAL"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil || d <= 0 {
+			return Config{}, fmt.Errorf("ZONARYOS_AI_ANOMALY_POLL_INTERVAL must be a positive Go duration (e.g. \"24h\")")
+		}
+		cfg.AIAnomalySchedulerPollInterval = d
 	}
 
 	return cfg, nil
