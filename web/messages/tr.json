@@ -72,7 +72,9 @@
     "assets": "Varlıklar",
     "opportunities": "Fırsatlar",
     "projects": "Projeler",
-    "contracts": "Sözleşmeler"
+    "contracts": "Sözleşmeler",
+    "budgets": "Bütçeler",
+    "costCenters": "Masraf Merkezleri"
   },
   "Dashboard": {
     "welcome": "Tekrar hoş geldiniz, {name}.",
@@ -844,7 +846,13 @@
     "balanceSheetTotalLiabilities": "Toplam borçlar",
     "balanceSheetCurrentEarnings": "Cari dönem kârı (kapatılmamış)",
     "balanceSheetTotalEquity": "Toplam özkaynak",
-    "balanceSheetOutOfBalance": "Uyarı: varlıklar, borçlar artı özkaynağa eşit değil (fark: {difference}). Bu bir veri sorununa işaret edebilir."
+    "balanceSheetOutOfBalance": "Uyarı: varlıklar, borçlar artı özkaynağa eşit değil (fark: {difference}). Bu bir veri sorununa işaret edebilir.",
+    "tabCostCenterPnL": "Masraf Merkezi K/Z",
+    "costCenterPnlTitle": "Masraf Merkezi Kâr & Zarar",
+    "costCenterPnlName": "Masraf Merkezi",
+    "costCenterPnlRevenue": "Gelir",
+    "costCenterPnlExpenses": "Gider",
+    "costCenterPnlNet": "Net"
   },
   "Search": {
     "title": "Ara",
@@ -1546,5 +1554,78 @@
       "annex": "Ek",
       "correspondence": "Yazışma"
     }
+  },
+  "Budgets": {
+    "title": "Bütçeler",
+    "description": "Bu firmanın dönemlere göre bütçeleri. Çakışan bir dönemde yalnızca bir bütçe aktif olabilir - birini aktifleştirmek, çakışan diğer aktif bütçeyi otomatik olarak 'onaylandı' durumuna döndürür.",
+    "loadError": "Bütçeler yüklenemedi. Lütfen tekrar deneyin.",
+    "newBudget": "+ Yeni bütçe",
+    "cancel": "İptal",
+    "name": "Ad",
+    "periodType": "Dönem türü",
+    "periodStart": "Dönem başlangıcı",
+    "periodEnd": "Dönem bitişi",
+    "currency": "Para birimi",
+    "notes": "Notlar",
+    "create": "Oluştur",
+    "createRequired": "Lütfen bir ad, dönem başlangıcı ve dönem bitişi girin.",
+    "createError": "Bu bütçe oluşturulamadı. Lütfen tekrar deneyin.",
+    "budgetsEmpty": "Bu firma için henüz tanımlanmış bütçe yok.",
+    "columnName": "Ad",
+    "columnPeriod": "Dönem",
+    "columnStatus": "Durum",
+    "columnCurrency": "Para birimi",
+    "periodTypes": {
+      "monthly": "Aylık",
+      "quarterly": "Üç aylık",
+      "annual": "Yıllık"
+    },
+    "statuses": {
+      "draft": "Taslak",
+      "approved": "Onaylandı",
+      "active": "Aktif",
+      "closed": "Kapatıldı"
+    },
+    "approve": "Onayla",
+    "approveError": "Bu bütçe onaylanamadı. Lütfen tekrar deneyin.",
+    "approvedAt": "Onay tarihi",
+    "linesTitle": "Bütçe kalemleri",
+    "addLine": "+ Kalem ekle",
+    "linesEmpty": "Bu bütçede henüz kalem yok.",
+    "lineAccount": "Hesap",
+    "lineAccountSelect": "Bir hesap seçin",
+    "linePlannedAmount": "Planlanan tutar",
+    "lineActualAmount": "Gerçekleşen tutar",
+    "lineVariance": "Sapma",
+    "lineVariancePercent": "Sapma %",
+    "lineNoActuals": "Henüz hareket yok",
+    "lineNotes": "Notlar",
+    "lineCreateRequired": "Lütfen bir hesap seçin ve planlanan tutarı girin.",
+    "lineCreateError": "Bu kalem eklenemedi. Lütfen tekrar deneyin."
+  },
+  "CostCentersSettings": {
+    "title": "Masraf Merkezleri",
+    "description": "Bu firmanın masraf merkezleri; yevmiye kayıtlarını masraf merkezi bazında Kâr & Zarar raporlaması için etiketlemek amacıyla kullanılır.",
+    "notAuthorized": "Bu sayfayı görüntüleme izniniz yok.",
+    "loadError": "Masraf merkezleri yüklenemedi. Lütfen tekrar deneyin.",
+    "empty": "Bu firma için henüz tanımlanmış masraf merkezi yok.",
+    "newCostCenter": "+ Yeni masraf merkezi",
+    "cancel": "İptal",
+    "code": "Kod",
+    "name": "Ad",
+    "parentCostCenter": "Üst masraf merkezi",
+    "noParent": "Yok",
+    "status": "Durum",
+    "statusActive": "Aktif",
+    "statusInactive": "Pasif",
+    "activate": "Aktifleştir",
+    "deactivate": "Pasifleştir",
+    "actions": "İşlemler",
+    "create": "Oluştur",
+    "createCodeRequired": "Lütfen bir masraf merkezi kodu girin.",
+    "createNameRequired": "Lütfen bir masraf merkezi adı girin.",
+    "createCodeExists": "Bu firmada bu kodla zaten bir masraf merkezi var.",
+    "createError": "Bu masraf merkezi oluşturulamadı. Lütfen tekrar deneyin.",
+    "updateError": "Bu masraf merkezi güncellenemedi. Lütfen tekrar deneyin."
   }
 }

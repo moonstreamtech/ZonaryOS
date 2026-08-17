@@ -72,7 +72,9 @@
     "assets": "Assets",
     "opportunities": "Opportunities",
     "projects": "Projects",
-    "contracts": "Contracts"
+    "contracts": "Contracts",
+    "budgets": "Budgets",
+    "costCenters": "Cost Centers"
   },
   "Dashboard": {
     "welcome": "Welcome back, {name}.",
@@ -844,7 +846,13 @@
     "balanceSheetTotalLiabilities": "Total liabilities",
     "balanceSheetCurrentEarnings": "Current earnings (unclosed)",
     "balanceSheetTotalEquity": "Total equity",
-    "balanceSheetOutOfBalance": "Warning: assets do not equal liabilities plus equity (difference: {difference}). This may indicate a data problem."
+    "balanceSheetOutOfBalance": "Warning: assets do not equal liabilities plus equity (difference: {difference}). This may indicate a data problem.",
+    "tabCostCenterPnL": "Cost Center P&L",
+    "costCenterPnlTitle": "Cost Center P&L",
+    "costCenterPnlName": "Cost Center",
+    "costCenterPnlRevenue": "Revenue",
+    "costCenterPnlExpenses": "Expenses",
+    "costCenterPnlNet": "Net"
   },
   "Search": {
     "title": "Search",
@@ -1546,5 +1554,78 @@
       "annex": "Annex",
       "correspondence": "Correspondence"
     }
+  },
+  "Budgets": {
+    "title": "Budgets",
+    "description": "This firm's budgets by period. Only one budget can be active per overlapping period - activating one automatically returns any other overlapping active budget to 'approved'.",
+    "loadError": "Couldn't load budgets. Please try again.",
+    "newBudget": "+ New budget",
+    "cancel": "Cancel",
+    "name": "Name",
+    "periodType": "Period type",
+    "periodStart": "Period start",
+    "periodEnd": "Period end",
+    "currency": "Currency",
+    "notes": "Notes",
+    "create": "Create",
+    "createRequired": "Please enter a name, period start, and period end.",
+    "createError": "Couldn't create this budget. Please try again.",
+    "budgetsEmpty": "No budgets on file for this firm yet.",
+    "columnName": "Name",
+    "columnPeriod": "Period",
+    "columnStatus": "Status",
+    "columnCurrency": "Currency",
+    "periodTypes": {
+      "monthly": "Monthly",
+      "quarterly": "Quarterly",
+      "annual": "Annual"
+    },
+    "statuses": {
+      "draft": "Draft",
+      "approved": "Approved",
+      "active": "Active",
+      "closed": "Closed"
+    },
+    "approve": "Approve",
+    "approveError": "Couldn't approve this budget. Please try again.",
+    "approvedAt": "Approved at",
+    "linesTitle": "Budget lines",
+    "addLine": "+ Add line",
+    "linesEmpty": "No lines on this budget yet.",
+    "lineAccount": "Account",
+    "lineAccountSelect": "Select an account",
+    "linePlannedAmount": "Planned amount",
+    "lineActualAmount": "Actual amount",
+    "lineVariance": "Variance",
+    "lineVariancePercent": "Variance %",
+    "lineNoActuals": "No activity yet",
+    "lineNotes": "Notes",
+    "lineCreateRequired": "Please select an account and enter a planned amount.",
+    "lineCreateError": "Couldn't add this line. Please try again."
+  },
+  "CostCentersSettings": {
+    "title": "Cost Centers",
+    "description": "This firm's cost centers, used to tag journal entries for cost-center-level P&L reporting.",
+    "notAuthorized": "You don't have permission to view this page.",
+    "loadError": "Couldn't load cost centers. Please try again.",
+    "empty": "No cost centers defined for this firm yet.",
+    "newCostCenter": "+ New cost center",
+    "cancel": "Cancel",
+    "code": "Code",
+    "name": "Name",
+    "parentCostCenter": "Parent cost center",
+    "noParent": "None",
+    "status": "Status",
+    "statusActive": "Active",
+    "statusInactive": "Inactive",
+    "activate": "Activate",
+    "deactivate": "Deactivate",
+    "actions": "Actions",
+    "create": "Create",
+    "createCodeRequired": "Please enter a cost center code.",
+    "createNameRequired": "Please enter a cost center name.",
+    "createCodeExists": "A cost center with this code already exists for this firm.",
+    "createError": "Couldn't create this cost center. Please try again.",
+    "updateError": "Couldn't update this cost center. Please try again."
   }
 }

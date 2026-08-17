@@ -49,12 +49,22 @@ export type ListJournalEntriesPage = {
 // ReportLine is internal/accounting.ReportLine's wire shape - one
 // account's own contribution to a P&L or Balance Sheet report, shared by
 // both report types below (PnLReport.revenue/expenses,
-// BalanceSheetReport.assets/liabilities/equity).
+// BalanceSheetReport.assets/liabilities/equity). budgetedAmount/
+// variance/variancePercent (budget management batch) are only ever
+// present on PnLReport.revenue/expenses lines, and only when an
+// 'active' budget covers the requested period - see
+// internal/accounting/reports.go's attachBudgetVarianceTx. variance =
+// amount - budgetedAmount (positive means over budget for an expense
+// line, under budget for a revenue line - the account type tells you
+// which).
 export type ReportLine = {
   accountId: string;
   code: string;
   name: string;
   amount: string;
+  budgetedAmount?: string;
+  variance?: string;
+  variancePercent?: string;
 };
 
 export type PnLReport = {
