@@ -19,6 +19,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/asset"
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
 	"github.com/moonstreamtech/ZonaryOS/internal/budget"
+	"github.com/moonstreamtech/ZonaryOS/internal/consolidation"
 	"github.com/moonstreamtech/ZonaryOS/internal/contracts"
 	"github.com/moonstreamtech/ZonaryOS/internal/costcenter"
 	"github.com/moonstreamtech/ZonaryOS/internal/crm"
@@ -247,6 +248,11 @@ func main() {
 	// internal/currency (this batch): the multi-currency foundation -
 	// platform-admin-gated rate creation, unauthenticated rate lookup.
 	currency.RegisterRoutes(mux, verifier, pool, platformAdminAllowlist)
+	// internal/consolidation (multi-company/consolidation/group-accounting
+	// batch): firm groups, inter-company transfers, and consolidated P&L -
+	// platform-admin-gated writes/reads, same allowlist, plus one
+	// firm-scoped member-gated read (GET /api/firms/{firmID}/group).
+	consolidation.RegisterRoutes(mux, verifier, pool, platformAdminAllowlist)
 	// internal/localization (this batch, Open Points item 24's
 	// foundation-only address/tax data model): owner-gated, firm-scoped
 	// CRUD for addresses and tax rates.
