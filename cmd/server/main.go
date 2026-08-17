@@ -44,6 +44,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/config"
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/db"
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/httpapi"
+	"github.com/moonstreamtech/ZonaryOS/internal/platform/middleware"
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/version"
 	"github.com/moonstreamtech/ZonaryOS/internal/platformadmin"
 	"github.com/moonstreamtech/ZonaryOS/internal/portability"
@@ -198,6 +199,26 @@ func main() {
 	// schedulerCtx/cancelScheduler so all three stop together on shutdown.
 	go contracts.RunExpiryScheduler(schedulerCtx, pool, contracts.ExpirySchedulerPollInterval)
 
+	// edgeagent.NewNATSBridge (NATS JetStream/Edge Agent completion
+	// batch, Part 1): default-off, gated by cfg.NATSURL
+	// (ZONARYOS_NATS_URL) - see that function's own doc comment. Unlike
+	// simply leaving NATS unset (the nil, nil case, silently a no-op), a
+	// connection failure when NATS IS configured is a real startup error:
+	// an operator explicitly opted in, and failing loudly here is better
+	// than an installation that appears to run but silently never
+	// consumes the queue it was configured to consume from.
+	natsBridge, err := edgeagent.NewNATSBridge(ctx, cfg.NATSURL)
+	if err != nil {
+		slog.Error("failed to connect to NATS", "err", err)
+		os.Exit(1)
+	}
+	defer natsBridge.Close()
+	if natsBridge != nil {
+		natsCtx, cancelNATS := context.WithCancel(ctx)
+		defer cancelNATS()
+		go edgeagent.RunSubscriber(natsCtx, natsBridge, pool, cfg.NATSPollInterval)
+	}
+
 	mux := httpapi.NewMux()
 	// The well-known discovery endpoint (Open Points item 34) is
 	// unconditional - see internal/discovery.RegisterRoutes's own
@@ -306,9 +327,18 @@ func main() {
 	// that function's own comment), so Handler below is byte-for-byte
 	// what it was before this batch on any installation that hasn't
 	// opted in.
+	//
+	// middleware.Chain (server infrastructure hardening batch, Part 4)
+	// wraps OUTSIDE telemetry.Middleware, unconditionally - request ID/
+	// panic recovery/size limits/timeout are not default-off features
+	// the way license/telemetry are; they're baseline hardening every
+	// installation gets. PanicRecovery being outermost-but-one (only
+	// RequestID wraps it) means it also protects telemetry.Middleware
+	// itself, not just route handlers - see middleware.Chain's own doc
+	// comment for the full ordering rationale.
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           telemetry.Middleware(telemetryReporter, mux)(mux),
+		Handler:           middleware.Chain(telemetry.Middleware(telemetryReporter, mux)(mux), cfg.RequestTimeout, cfg.MaxJSONBodyBytes, cfg.MaxUploadBodyBytes),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

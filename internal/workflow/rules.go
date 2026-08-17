@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -36,7 +37,10 @@ import (
 // gap) is a deliberately PARTIAL implementation of Vision §3's "if sensor
 // temperature exceeds Y" style timer-driven rule, not the full thing -
 // see scheduler.go's own doc comment for the exact scope boundary
-// (no condition tree, notify-only actions).
+// (no condition tree, notify-only actions). TriggerOnEdgeEvent (NATS
+// JetStream/Edge Agent completion batch) is the same kind of partial,
+// notify-only implementation, for the same reason - see this file's own
+// EvaluateEdgeEventRules doc comment.
 type Trigger string
 
 const (
@@ -46,6 +50,11 @@ const (
 	// scheduler.go's background goroutine rather than CreateInstance/
 	// ExecuteTransition - see that file's own doc comment.
 	TriggerSchedule Trigger = "schedule"
+	// TriggerOnEdgeEvent fires when internal/edgeagent.RecordEvent
+	// records a new edge_events row - see EvaluateEdgeEventRules' own
+	// doc comment for the wiring point and why it's a separate driver
+	// from EvaluateRules.
+	TriggerOnEdgeEvent Trigger = "on_edge_event"
 )
 
 // LogicOp is a logic node's boolean operator.
@@ -71,6 +80,15 @@ const (
 	// ConditionFieldCompare compares two fields from this instance's own
 	// payload against each other.
 	ConditionFieldCompare ConditionType = "field_compare"
+	// ConditionEdgeEvent (NATS JetStream/Edge Agent completion batch) is
+	// true when an edge_events row exists for the given agent+event type
+	// within the last EdgeEventWithinMinutes minutes - usable by ANY
+	// rule's condition tree (on_create/on_transition rules can gate a
+	// transition on "did a matching edge event show up recently", not
+	// just on_edge_event-triggered rules themselves), the same "condition
+	// leaf reads via ec.Pool, independent of which trigger fired
+	// evaluation" shape ConditionState already establishes.
+	ConditionEdgeEvent ConditionType = "edge_event"
 )
 
 // CompareOp is the comparison operator a "field" or "field_compare" leaf
@@ -122,6 +140,16 @@ type ExpressionNode struct {
 	// "field_compare" leaf: FieldA/Op/FieldB.
 	FieldA string `json:"fieldA,omitempty"`
 	FieldB string `json:"fieldB,omitempty"`
+
+	// "edge_event" leaf: AgentID (an edge_agents.id, as a string - not
+	// resolved from the payload the way "state"'s InstanceIDField is,
+	// since an edge event's own triggering agent is already known and
+	// distinct from whatever instance/event payload happens to be in
+	// scope), EventType, and EdgeEventWithinMinutes (the lookback
+	// window, required positive).
+	AgentID                string `json:"agentId,omitempty"`
+	EventType              string `json:"eventType,omitempty"`
+	EdgeEventWithinMinutes int    `json:"withinMinutes,omitempty"`
 }
 
 // isLogicNode reports whether n is a logic node (Type unset) as opposed to
@@ -259,6 +287,8 @@ func Evaluate(ctx context.Context, tree ExpressionNode, ec EvalContext) (bool, e
 		return evaluateStateCondition(ctx, tree, ec)
 	case ConditionFieldCompare:
 		return evaluateFieldCompareCondition(tree, ec)
+	case ConditionEdgeEvent:
+		return evaluateEdgeEventCondition(ctx, tree, ec)
 	default:
 		return false, fmt.Errorf("%w: unknown condition leaf type %q", ErrInvalidRule, tree.Type)
 	}
@@ -383,6 +413,51 @@ func evaluateStateCondition(ctx context.Context, node ExpressionNode, ec EvalCon
 		return false, fmt.Errorf("%w: read referenced instance state: %v", ErrConditionEvaluation, err)
 	}
 	return stateKey == node.State, nil
+}
+
+// evaluateEdgeEventCondition implements the "edge_event" leaf: true when
+// an edge_events row exists for (firm, node.AgentID, node.EventType)
+// with received_at within the last node.EdgeEventWithinMinutes minutes.
+// Reads via ec.Pool (like evaluateStateCondition's own cross-workflow
+// read), NOT ec.Payload - this leaf answers "has this happened
+// recently", a question about the database's own history, not about the
+// currently-evaluating instance/event's payload.
+func evaluateEdgeEventCondition(ctx context.Context, node ExpressionNode, ec EvalContext) (bool, error) {
+	if node.AgentID == "" || node.EventType == "" || node.EdgeEventWithinMinutes <= 0 {
+		return false, fmt.Errorf("%w: \"edge_event\" condition must set agentId, eventType, and a positive withinMinutes", ErrInvalidRule)
+	}
+	if ec.Pool == nil {
+		return false, fmt.Errorf("%w: \"edge_event\" condition requires a database pool", ErrConditionEvaluation)
+	}
+	agentID, err := uuid.Parse(node.AgentID)
+	if err != nil {
+		return false, fmt.Errorf("%w: \"edge_event\" condition's agentId %q is not a valid agent ID: %s", ErrConditionEvaluation, node.AgentID, err)
+	}
+
+	// Built as a Go string (e.g. "5 minutes") and cast directly to
+	// ::interval, rather than concatenating a bound int parameter with a
+	// literal inside the query - pgx's extended query protocol plans each
+	// placeholder's wire encoding from the describe response before the
+	// query executes, and an int value can't be encoded against a `text`-
+	// typed placeholder that way even with an explicit SQL-side ::text
+	// cast. EdgeEventWithinMinutes is validated positive above, so this
+	// is never influenced by anything resembling free-form input.
+	lookback := fmt.Sprintf("%d minutes", node.EdgeEventWithinMinutes)
+
+	var exists bool
+	err = zdb.WithFirmContext(ctx, ec.Pool, ec.FirmID, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM edge_events
+				WHERE firm_id = $1 AND agent_id = $2 AND event_type = $3
+					AND received_at >= now() - $4::interval
+			)
+		`, ec.FirmID, agentID, node.EventType, lookback).Scan(&exists)
+	})
+	if err != nil {
+		return false, fmt.Errorf("%w: check recent edge events: %v", ErrConditionEvaluation, err)
+	}
+	return exists, nil
 }
 
 // toFloat64 mirrors checkScalarValue's (engine.go) FieldTypeNumber switch:
@@ -519,6 +594,13 @@ func ValidateExpressionTree(tree ExpressionNode) error {
 		if !isKnownCompareOp(CompareOp(tree.Op), false) {
 			return fmt.Errorf("%w: \"field_compare\" condition has unknown operator %q", ErrInvalidRule, tree.Op)
 		}
+	case ConditionEdgeEvent:
+		if tree.AgentID == "" || tree.EventType == "" || tree.EdgeEventWithinMinutes <= 0 {
+			return fmt.Errorf("%w: \"edge_event\" condition must set agentId, eventType, and a positive withinMinutes", ErrInvalidRule)
+		}
+		if _, err := uuid.Parse(tree.AgentID); err != nil {
+			return fmt.Errorf("%w: \"edge_event\" condition's agentId must be a valid UUID", ErrInvalidRule)
+		}
 	default:
 		return fmt.Errorf("%w: unknown condition leaf type %q", ErrInvalidRule, tree.Type)
 	}
@@ -605,8 +687,8 @@ func validateRuleShape(rule Rule) error {
 	if rule.DefinitionKey == "" {
 		return fmt.Errorf("%w: rule definitionKey must not be empty", ErrInvalidRule)
 	}
-	if rule.Trigger != TriggerOnCreate && rule.Trigger != TriggerOnTransition && rule.Trigger != TriggerSchedule {
-		return fmt.Errorf("%w: rule trigger must be %q, %q, or %q", ErrInvalidRule, TriggerOnCreate, TriggerOnTransition, TriggerSchedule)
+	if rule.Trigger != TriggerOnCreate && rule.Trigger != TriggerOnTransition && rule.Trigger != TriggerSchedule && rule.Trigger != TriggerOnEdgeEvent {
+		return fmt.Errorf("%w: rule trigger must be %q, %q, %q, or %q", ErrInvalidRule, TriggerOnCreate, TriggerOnTransition, TriggerSchedule, TriggerOnEdgeEvent)
 	}
 
 	if rule.Trigger == TriggerSchedule {
@@ -627,6 +709,21 @@ func validateRuleShape(rule Rule) error {
 		}
 		if d, err := time.ParseDuration(*rule.ScheduleInterval); err != nil || d <= 0 {
 			return fmt.Errorf("%w: scheduleInterval must be a positive Go duration string (e.g. \"1h\", \"24h\")", ErrInvalidRule)
+		}
+	}
+
+	if rule.Trigger == TriggerOnEdgeEvent {
+		// Same reasoning as TriggerSchedule's own restriction just above,
+		// for the same underlying cause: an edge event has no backing
+		// workflow_instances row, so ActionTransition/ActionSetField have
+		// nothing to act on - only ActionNotify is supported. Unlike
+		// TriggerSchedule, a condition tree IS meaningful here (it's
+		// evaluated against the incoming event's own payload, see
+		// EvaluateEdgeEventRules), so it is NOT restricted to empty.
+		for i, a := range rule.Actions {
+			if a.Type != ActionNotify {
+				return fmt.Errorf("%w: action %d: on_edge_event-triggered rules only support %q actions", ErrInvalidRule, i, ActionNotify)
+			}
 		}
 	}
 
@@ -1180,6 +1277,119 @@ func listEnabledRulesTx(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, defini
 		rules = append(rules, r)
 	}
 	return rules, rows.Err()
+}
+
+// listEnabledEdgeEventRulesTx loads every enabled on_edge_event rule for
+// firmID, across ALL definition keys - deliberately NOT filtered by one
+// definitionKey the way listEnabledRulesTx is for on_create/
+// on_transition. An edge_events row has no natural workflow definition
+// of its own: internal/edgeagent.RecordEvent is reached purely via an
+// edge agent's bearer token, with no workflow context at all - there is
+// no single instance/definition an incoming event could be said to
+// belong to. workflow_rules.definition_key stays NOT NULL regardless
+// (a rule must still be filed under some existing definition to be
+// created at all, unchanged), but that definitionKey plays no role in
+// on_edge_event dispatch - a deliberate deviation from on_create/
+// on_transition's own dispatch shape, worth calling out explicitly
+// (see this batch's own design write-up).
+//
+// ciaudit:ignore-firmid-check: internal helper called only by
+// EvaluateEdgeEventRules, itself only reachable from
+// internal/edgeagent.RecordEvent after the edge agent's own bearer
+// token has already been authenticated - firmID here scopes a read
+// query (RLS is the actual enforcement), not a fresh authorization
+// decision of its own.
+func listEnabledEdgeEventRulesTx(ctx context.Context, tx pgx.Tx, firmID uuid.UUID) ([]Rule, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT `+ruleColumns+`
+		FROM workflow_rules
+		WHERE firm_id = $1 AND trigger = $2 AND enabled
+		ORDER BY created_at
+	`, firmID, string(TriggerOnEdgeEvent))
+	if err != nil {
+		return nil, fmt.Errorf("list enabled on_edge_event workflow rules: %w", err)
+	}
+	defer rows.Close()
+	var rules []Rule
+	for rows.Next() {
+		r, err := scanRule(rows)
+		if err != nil {
+			return nil, err
+		}
+		rules = append(rules, r)
+	}
+	return rules, rows.Err()
+}
+
+// EvaluateEdgeEventRules is on_edge_event's own driver - the trigger-
+// specific counterpart EvaluateRules is for on_create/on_transition,
+// kept as a SEPARATE function rather than folded into EvaluateRules
+// because an edge event has no backing workflow_instances row at all:
+// EvaluateRules' own dispatch (executeRuleActions, firstTransitionAction/
+// createPendingApprovalAndNotify) is built entirely around acting on one
+// specific instanceID, which doesn't exist here. validateRuleShape
+// already restricts on_edge_event rules to ActionNotify-only actions at
+// definition time (mirroring TriggerSchedule's own restriction, for the
+// identical reason: no instance/payload-backed target to transition or
+// set a field on) - so this driver only ever needs to run that one
+// action kind.
+//
+// Like scheduler.go's own runScheduledRule, a matched rule's notify
+// action is logged via slog rather than written to audit_log:
+// audit_log.user_id is NOT NULL (references a real users row), and
+// there is no real ZonaryOS user in scope for an automated edge-event
+// match the way there is for a human-triggered CreateInstance/
+// ExecuteTransition call - the edge agent's bearer token resolves to an
+// AuthenticatedAgent (internal/edgeagent), not a users.id. This also
+// means the Autonomous/human-approval toggle (Never-Violate Rule 8) is
+// not consulted here, the same way runScheduledRule doesn't consult it
+// either: the toggle exists to gate STATE-CHANGING actions
+// (ActionTransition) behind human approval before they run, and
+// ActionNotify - the only action kind reachable here - changes no
+// state, so there is nothing for approval to meaningfully gate.
+//
+// Called from internal/edgeagent's own HTTP handler, after RecordEvent's
+// insert has already committed - the same post-commit seam EvaluateRules
+// itself uses for on_create/on_transition (see its own doc comment for
+// why), and the same "error is logged by the caller, never propagated
+// back to fail the triggering write" contract.
+//
+// ciaudit:ignore-firmid-check: called only by
+// internal/edgeagent.RecordEvent, itself only reachable once the edge
+// agent's own bearer token has already been authenticated - firmID here
+// scopes which firm's rules run (RLS is the actual enforcement), it is
+// not itself a fresh authorization decision, the same reasoning
+// listEnabledEdgeEventRulesTx's own suppression documents just above.
+func EvaluateEdgeEventRules(ctx context.Context, pool *pgxpool.Pool, firmID, agentID uuid.UUID, eventType string, payload map[string]any) error {
+	var rules []Rule
+	err := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		rules, err = listEnabledEdgeEventRulesTx(ctx, tx, firmID)
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("load on_edge_event workflow rules: %w", err)
+	}
+
+	ec := EvalContext{FirmID: firmID, Payload: payload, Pool: pool}
+	for _, rule := range rules {
+		matched, evalErr := Evaluate(ctx, rule.ConditionTree, ec)
+		if evalErr != nil {
+			slog.Warn("on_edge_event rule evaluation failed", "firmId", firmID, "agentId", agentID, "ruleId", rule.ID, "ruleName", rule.Name, "err", evalErr)
+			continue
+		}
+		if !matched {
+			continue
+		}
+		for _, action := range rule.Actions {
+			// validateRuleShape already guarantees every action on an
+			// on_edge_event rule is ActionNotify - see that function's
+			// own doc comment.
+			message := renderMessageTemplate(action.MessageTemplate, payload)
+			slog.Info("edge event rule fired", "firmId", firmID, "agentId", agentID, "eventType", eventType, "ruleId", rule.ID, "ruleName", rule.Name, "message", message)
+		}
+	}
+	return nil
 }
 
 // ruleEntityType/ruleEvaluationErrorAction/rulePendingApprovalAction are

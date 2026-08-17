@@ -1427,6 +1427,45 @@ make migrate
 go test ./internal/consolidation/... -v
 ```
 
+## NATS JetStream, offline resilience, and Edge Agent completion
+
+Vision §9 names NATS JetStream for offline edge scenarios; the Edge Agent protocol foundation (`internal/edgeagent`) had server-side heartbeat/event ingestion but no message-queue-backed resilience, no server-to-agent command dispatch, and no way for an edge event to trigger a workflow rule. This batch completes all three.
+
+**NATS JetStream bridge** (`internal/edgeagent/nats.go`, `NATSBridge`): default-off, the same pattern `internal/license.Verifier`/`internal/telemetry.Reporter` already establish - `NewNATSBridge` returns `(nil, nil)` when `ZONARYOS_NATS_URL` is unset, and every call site checks for `nil` first; when nil, this file's code never runs and the system behaves exactly as before this batch (direct HTTP push to `POST /api/edge/events`). When set, the server also connects and ensures a durable, file-storage (not memory - events must survive server restarts), 7-day-max-age JetStream stream exists, then runs a durable **pull** consumer (`RunSubscriber`, `ZONARYOS_NATS_POLL_INTERVAL`, default 5s) alongside the existing HTTP path - both remain live at once, NATS is an additional ingestion path, not a replacement. NATS carries no HTTP headers, so an edge agent's bearer token travels *inside* the published message body (`natsEventMessage{Token, EventType, Payload}`); each consumed message is handed straight to the same `RecordEvent` the HTTP path calls, so authentication and business logic never diverge between transports. A message is Ack'd (discarded) only for a *permanent* failure (`ErrInvalidToken`/`ErrInvalidAgent`/`ErrAgentNotFound`) and Nak'd (redelivered) for anything else (e.g. a transient Postgres failure). Scope boundary: no embedded NATS server in the ZonaryOS binary itself - NATS is an external, optional service; the actual Edge Agent process (a separate deployable, not in this repository) is assumed to run its own JetStream/leaf-node and publish there. This bridge never publishes, only subscribes.
+
+**Command dispatch** (`edge_agent_commands`, `migrations/0034_nats_edge_agent_resilience.up.sql`): the other direction - until now the server could only ever receive from an agent. `POST /api/firms/{firmID}/edge-agents/{agentID}/commands` (owner-gated) enqueues a `'pending'` command; the agent's own poll loop (`GET /api/edge/commands`, token-authenticated) returns its pending commands and marks them `'delivered'` in the same transaction; `POST /api/edge/commands/{id}/ack` (token-authenticated) marks one `'acknowledged'`. Poll-based, not WebSocket/push, per this batch's own scope boundary - the agent calls on its own schedule, the server never pushes.
+
+**Edge event → workflow trigger** (Part 3): two genuinely separate additions.
+- A new condition leaf type, `"edge_event"` (`{type: "edge_event", agentId, eventType, withinMinutes}`), usable by **any** rule regardless of trigger - true when a matching `edge_events` row exists within the lookback window. Reads via `EvalContext.Pool` (like the existing `"state"` leaf's own cross-workflow read), not `Payload`.
+- A new trigger type, `on_edge_event`, fired from `internal/edgeagent.RecordEvent` itself (after its own insert has committed - the same post-commit seam `EvaluateRules` uses for `on_create`/`on_transition`) via a new, separate driver, `workflow.EvaluateEdgeEventRules`. Kept separate from `EvaluateRules` because an edge event has no backing `workflow_instances` row at all: `EvaluateRules`' own action dispatch (`ActionTransition`/`ActionSetField`) needs a real `instanceID` to act on, which doesn't exist here - so, mirroring `TriggerSchedule`'s own existing restriction (`scheduler.go`), `validateRuleShape` restricts `on_edge_event` rules to `ActionNotify`-only actions. Dispatch itself is also a deliberate deviation from `on_create`/`on_transition`: `listEnabledEdgeEventRulesTx` loads every enabled `on_edge_event` rule for the firm **across all definition keys** (not filtered to one, the way `on_create`/`on_transition` are) - an edge event has no natural workflow definition of its own, even though `workflow_rules.definition_key` stays `NOT NULL` (a rule must still be filed under some existing definition to be created). A matched rule's notify action is logged via `slog`, not written to `audit_log`, the same choice `scheduler.go`'s own `runScheduledRule` already makes: `audit_log.user_id` is `NOT NULL` (a real `users` row), and there is no such user in scope for an automated edge-event match - the edge agent's bearer token resolves to an `AuthenticatedAgent`, not a `users.id`.
+
+**Server infrastructure hardening** (`internal/platform/middleware`, Part 4): four dependency-free `net/http` middleware, composed once (`middleware.Chain`) around the *entire* mux in `cmd/server/main.go` - unlike `internal/identity.Middleware`, which wraps per-route inside each module's own `RegisterRoutes`. Order (outermost to innermost, the order a request passes through on the way in): **RequestID** (generates or reuses an incoming `X-Request-Id`, attaches it to the request context, logs one structured line per request) → **PanicRecovery** (recovers any panic, logs it with a stack trace, returns a clean 500 - without this, one panicking handler anywhere in this codebase's ~40 route-registering packages would crash the entire process) → **RequestSizeLimit** (`ZONARYOS_MAX_JSON_BODY_BYTES`/`ZONARYOS_MAX_UPLOAD_BODY_BYTES`, default 1MB/10MB, chosen per request by `Content-Type`) → **RequestTimeout** (`ZONARYOS_REQUEST_TIMEOUT`, default 30s - a plain `context.WithTimeout` around the request's own context, not `http.TimeoutHandler`: every handler here already threads `ctx` through pgx, so a cancelled context surfaces as a real error each handler's own error-mapping already understands, rather than `http.TimeoutHandler`'s detached-goroutine-plus-substitute-response model, which doesn't actually stop the original handler running). `RequestTimeout` exempts routes ending in `/permission-events` (the existing SSE stream, which is meant to stay open far longer than any per-request budget).
+
+- HTTP surface: `POST/GET /api/firms/{firmID}/edge-agents/{agentID}/commands`; `GET /api/edge/commands`, `POST /api/edge/commands/{id}/ack`.
+- Frontend: edge agent detail page gets a "Send Command" form and command history.
+
+### Scope boundaries
+
+No embedded NATS server in the main ZonaryOS binary (NATS as an external optional service only). No WebSocket for real-time command push (poll-based for now). No OTA update commands (too sensitive for this batch).
+
+### Running these tests
+
+`internal/edgeagent`'s test suite (agent/token/command CRUD, `PollCommands`/`AckCommand` scoping, the NATS regression test confirming a nil bridge is a true no-op, and a real embedded-NATS-server test - `github.com/nats-io/nats-server/v2/test`'s own exported `RunServer` helper, no external NATS binary needed - proving a published message is consumed and recorded, including the permanent-vs-transient-failure Ack/Nak distinction) and `internal/workflow`'s new `edge_event` leaf/`on_edge_event` trigger tests both need a real Postgres:
+
+```
+export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5433/zonaryos?sslmode=disable
+export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5433/zonaryos?sslmode=disable
+make migrate
+go test ./internal/edgeagent/... -v
+go test ./internal/workflow/... -run EdgeEvent -v
+```
+
+`internal/platform/middleware`'s own unit tests (no Postgres needed) cover panic recovery, request ID propagation, size limits, and the SSE-route timeout exemption:
+
+```
+go test ./internal/platform/middleware/... -v
+```
+
 ## Continuous Integration
 
 `.github/workflows/ci.yml` turns most of the CI Checklist categories (CLAUDE.md's "How to Verify a Change") from manual PR-by-PR discipline into automated checks on every PR (and on push to `main`). Every job here existed as a manual step some earlier PR ran by hand - this file doesn't introduce new verification steps, it just stops trusting a human to remember to run them. **Canary/Rollback Trigger** remains the one item intentionally "Not Set Up": there is no ZonaryOS deployment target or infrastructure decided yet (see `docs/OPEN_POINTS.md` item 34) for a rollback trigger to hook into.

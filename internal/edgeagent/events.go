@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
+	"github.com/moonstreamtech/ZonaryOS/internal/workflow"
 )
 
 func validAgentStatus(s AgentStatus) bool {
@@ -95,6 +97,19 @@ type Event struct {
 // RecordEvent pushes one event on behalf of the agent identified by
 // rawToken - same "identity comes only from the token" guarantee as
 // Heartbeat.
+//
+// Edge event -> workflow trigger (NATS JetStream/Edge Agent completion
+// batch, Part 3): after the event insert has committed,
+// workflow.EvaluateEdgeEventRules runs every enabled on_edge_event rule
+// for the event's firm, using the event's own payload as the evaluation
+// context - the same "run after the triggering write has already
+// committed" post-commit seam internal/workflow.EvaluateRules itself
+// uses for on_create/on_transition (see that function's own doc comment
+// for why), and the same "an evaluation error is logged, never
+// propagated back to fail the triggering call" contract: the event has
+// already been recorded by this point, so there is nothing left for a
+// returned error here to roll back, and a struggling/misconfigured rule
+// must never make RecordEvent itself start failing for the edge agent.
 func RecordEvent(ctx context.Context, pool *pgxpool.Pool, rawToken, eventType string, payload map[string]any) (Event, error) {
 	if eventType == "" {
 		return Event{}, fmt.Errorf("%w: eventType must not be empty", ErrInvalidAgent)
@@ -129,6 +144,10 @@ func RecordEvent(ctx context.Context, pool *pgxpool.Pool, rawToken, eventType st
 	})
 	if txErr != nil {
 		return Event{}, txErr
+	}
+
+	if err := workflow.EvaluateEdgeEventRules(ctx, pool, event.FirmID, event.AgentID, event.EventType, event.Payload); err != nil {
+		slog.Warn("evaluate on_edge_event workflow rules", "firmId", event.FirmID, "agentId", event.AgentID, "eventType", event.EventType, "err", err)
 	}
 	return event, nil
 }
