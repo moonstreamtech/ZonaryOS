@@ -470,6 +470,20 @@ const (
 	// table (contract_registry) directly, not a choice of target - see
 	// validation.go's own contractValidator.
 	FieldTypeContract FieldType = "contract"
+	// FieldTypeCostCenter (Budget management/cost centers/financial
+	// planning batch) is FieldTypePerson's counterpart for this batch's
+	// new cross-module entity: a value that must be a real
+	// internal/costcenter.CostCenter's ID within the same firm. Same
+	// reasoning as FieldTypePerson/FieldTypeContract: resolves against
+	// one specific table (cost_centers) directly, not a choice of target
+	// - see validation.go's own costCenterValidator. Decoupled from the
+	// journal-posting bridge itself: resolveJournalLines (engine.go)
+	// reads a well-known "cost_center_id" payload key directly, the same
+	// way it already reads "currency" - it works whether or not the
+	// definition's own FieldSpec for that key declares
+	// FieldTypeCostCenter (which only adds existence validation on top,
+	// via CreateInstance's normal payload validation pipeline).
+	FieldTypeCostCenter FieldType = "cost_center"
 )
 
 // FieldSpec is one declared field in a workflow definition's instance
@@ -726,7 +740,7 @@ func validateFieldShape(defKey string, f FieldSpec) error {
 		}
 		return nil
 
-	case FieldTypePerson, FieldTypeProduct, FieldTypeSupplier, FieldTypeDelivery, FieldTypeCustomer, FieldTypeProject, FieldTypeAsset, FieldTypeContract:
+	case FieldTypePerson, FieldTypeProduct, FieldTypeSupplier, FieldTypeDelivery, FieldTypeCustomer, FieldTypeProject, FieldTypeAsset, FieldTypeContract, FieldTypeCostCenter:
 		// No extra fields needed - same reasoning FieldTypePerson's own doc
 		// comment gives (only one target table to reference per type,
 		// unlike FieldTypeReference's choice of target workflow definition).

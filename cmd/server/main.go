@@ -18,7 +18,9 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/apikey"
 	"github.com/moonstreamtech/ZonaryOS/internal/asset"
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
+	"github.com/moonstreamtech/ZonaryOS/internal/budget"
 	"github.com/moonstreamtech/ZonaryOS/internal/contracts"
+	"github.com/moonstreamtech/ZonaryOS/internal/costcenter"
 	"github.com/moonstreamtech/ZonaryOS/internal/crm"
 	"github.com/moonstreamtech/ZonaryOS/internal/currency"
 	"github.com/moonstreamtech/ZonaryOS/internal/discovery"
@@ -227,6 +229,8 @@ func main() {
 	warehouse.RegisterRoutes(mux, verifier, pool)
 	asset.RegisterRoutes(mux, verifier, pool)
 	contracts.RegisterRoutes(mux, verifier, pool)
+	budget.RegisterRoutes(mux, verifier, pool)
+	costcenter.RegisterRoutes(mux, verifier, pool)
 	portability.RegisterRoutes(mux, verifier, pool)
 	reports.RegisterRoutes(mux, verifier, pool)
 	documents.RegisterRoutes(mux, verifier, pool)

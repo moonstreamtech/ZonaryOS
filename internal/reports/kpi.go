@@ -24,6 +24,7 @@ package reports
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -155,6 +156,14 @@ const (
 	// contracts is its own module with its own table, not a cross-cutting
 	// metric spanning two unrelated packages.
 	KPIKindContracts KPIKind = "contracts"
+	// KPIKindFinancialPlanning (Budget management/cost centers/financial
+	// planning batch): dispatches further on FinancialPlanningMetric
+	// below - both metrics are complex, multi-table aggregations
+	// (budgets/budget_lines/journal_lines/cost_centers together), not a
+	// single table's own simple count/sum the way KPIKindAssets/
+	// KPIKindContracts' own metrics are, so this is its own Kind rather
+	// than folded into either.
+	KPIKindFinancialPlanning KPIKind = "financial_planning"
 )
 
 // InventoryMetric is KPIKindInventoryKPI's own descriptor field - which
@@ -314,6 +323,29 @@ const (
 	ContractMetricActive ContractMetric = "contracts_active"
 )
 
+// FinancialPlanningMetric is KPIKindFinancialPlanning's own descriptor
+// field - which financial-planning-specific figure to compute (see
+// computeFinancialPlanningKPI).
+type FinancialPlanningMetric string
+
+const (
+	// FinancialPlanningMetricBudgetUtilization: for the firm's currently
+	// active budget, total actual spend (expense accounts only) / total
+	// budgeted spend, as a percentage - per the design brief's
+	// "budget_utilization" spec. "" (empty Value, not "0" or an error)
+	// when the firm has no active budget, or its budget_lines sum to
+	// zero - a real "nothing to report yet" answer, not a divide-by-zero
+	// masquerading as 0%.
+	FinancialPlanningMetricBudgetUtilization FinancialPlanningMetric = "budget_utilization"
+	// FinancialPlanningMetricLargestCostCenterSpend: the cost center with
+	// the highest total expense-account journal lines this calendar
+	// month, per the design brief's "largest_cost_center_spend" spec -
+	// name + amount, the one KPI in this codebase whose Value is
+	// inherently a name/amount pair rather than a single scalar (see
+	// KPIResult's own Label field, added for exactly this).
+	FinancialPlanningMetricLargestCostCenterSpend FinancialPlanningMetric = "largest_cost_center_spend"
+)
+
 // ReceivablesMetric is KPIKindReceivables' own descriptor field - which
 // receivables-specific aggregation to compute (see computeReceivablesKPI).
 type ReceivablesMetric string
@@ -401,6 +433,9 @@ type KPIDescriptor struct {
 
 	// ContractMetric is used by KPIKindContracts.
 	ContractMetric ContractMetric
+
+	// FinancialPlanningMetric is used by KPIKindFinancialPlanning.
+	FinancialPlanningMetric FinancialPlanningMetric
 }
 
 // kpiDescriptors is the dashboard's actual KPI list - the design brief's
@@ -509,6 +544,14 @@ var kpiDescriptors = []KPIDescriptor{
 		Key: "contractsActive", Kind: KPIKindContracts,
 		ContractMetric: ContractMetricActive,
 	},
+	{
+		Key: "budgetUtilization", Kind: KPIKindFinancialPlanning,
+		FinancialPlanningMetric: FinancialPlanningMetricBudgetUtilization,
+	},
+	{
+		Key: "largestCostCenterSpend", Kind: KPIKindFinancialPlanning,
+		FinancialPlanningMetric: FinancialPlanningMetricLargestCostCenterSpend,
+	},
 }
 
 // KPIResult is one computed dashboard tile - Key ties it back to its
@@ -518,13 +561,22 @@ var kpiDescriptors = []KPIDescriptor{
 // it client-side.
 type KPIResult struct {
 	Key   string
-	Unit  string // "currency" | "count"
+	Unit  string // "currency" | "count" | "percent"
 	Value string
+	// Label (budget management/cost centers/financial planning batch) is
+	// set only by FinancialPlanningMetricLargestCostCenterSpend - the one
+	// KPI whose natural answer pairs a name with an amount (Value), not
+	// just a bare scalar. "" for every other KPI in this codebase, the
+	// same "one extra optional descriptor field used by exactly one
+	// Kind" pattern KPIDescriptor's own per-Kind metric fields (e.g.
+	// ContractMetric, AssetMetric) already establish.
+	Label string
 }
 
 const (
 	unitCurrency = "currency"
 	unitCount    = "count"
+	unitPercent  = "percent"
 )
 
 // GetDashboardKPIs computes every descriptor in kpiDescriptors for
@@ -630,6 +682,9 @@ func computeKPI(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, d KPIDescripto
 
 	case KPIKindContracts:
 		return computeContractKPI(ctx, tx, firmID, d)
+
+	case KPIKindFinancialPlanning:
+		return computeFinancialPlanningKPI(ctx, tx, firmID, d)
 
 	default:
 		return KPIResult{}, fmt.Errorf("unknown KPI kind %q", d.Kind)
@@ -964,6 +1019,86 @@ func computeContractKPI(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, d KPID
 
 	default:
 		return KPIResult{}, fmt.Errorf("unknown contract metric %q", d.ContractMetric)
+	}
+}
+
+// computeFinancialPlanningKPI dispatches on d.FinancialPlanningMetric -
+// the same role computeContractKPI's own switch plays for ContractMetric.
+// Both metrics here are the "complex aggregations" the design brief's own
+// wording calls out - multi-table joins across budgets/budget_lines/
+// journal_lines/cost_centers, not a single table's own count/sum.
+//
+// ciaudit:ignore-firmid-check: internal helper called only by computeKPI,
+// itself only called by GetDashboardKPIs after permission.IsMember has
+// already run - firmID here scopes the query (defense in depth alongside
+// RLS), it is not itself an authorization decision.
+func computeFinancialPlanningKPI(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, d KPIDescriptor) (KPIResult, error) {
+	switch d.FinancialPlanningMetric {
+	case FinancialPlanningMetricBudgetUtilization:
+		var budgetID uuid.UUID
+		var periodStart, periodEnd time.Time
+		err := tx.QueryRow(ctx, `
+			SELECT id, period_start, period_end FROM budgets WHERE firm_id = $1 AND status = 'active' LIMIT 1
+		`, firmID).Scan(&budgetID, &periodStart, &periodEnd)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return KPIResult{Key: d.Key, Unit: unitPercent, Value: ""}, nil
+		}
+		if err != nil {
+			return KPIResult{}, fmt.Errorf("look up active budget: %w", err)
+		}
+
+		var plannedSpend string
+		if err := tx.QueryRow(ctx, `
+			SELECT COALESCE(SUM(bl.planned_amount), 0)::text
+			FROM budget_lines bl JOIN accounts a ON a.id = bl.account_id
+			WHERE bl.firm_id = $1 AND bl.budget_id = $2 AND a.type = 'expense'
+		`, firmID, budgetID).Scan(&plannedSpend); err != nil {
+			return KPIResult{}, fmt.Errorf("sum planned expense spend: %w", err)
+		}
+		if plannedSpend == "0" || plannedSpend == "0.0000" {
+			return KPIResult{Key: d.Key, Unit: unitPercent, Value: ""}, nil
+		}
+
+		var actualSpend string
+		if err := tx.QueryRow(ctx, `
+			SELECT COALESCE(SUM(CASE WHEN jl.side = 'debit' THEN jl.amount WHEN jl.side = 'credit' THEN -jl.amount ELSE 0 END), 0)::text
+			FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id JOIN accounts a ON a.id = jl.account_id
+			WHERE jl.firm_id = $1 AND a.type = 'expense'
+				AND je.posted_at >= $2::date AND je.posted_at < ($3::date + INTERVAL '1 day')
+		`, firmID, periodStart, periodEnd).Scan(&actualSpend); err != nil {
+			return KPIResult{}, fmt.Errorf("sum actual expense spend: %w", err)
+		}
+
+		var percent string
+		if err := tx.QueryRow(ctx, `SELECT ($1::numeric / $2::numeric * 100)::text`, actualSpend, plannedSpend).Scan(&percent); err != nil {
+			return KPIResult{}, fmt.Errorf("compute budget utilization: %w", err)
+		}
+		return KPIResult{Key: d.Key, Unit: unitPercent, Value: percent}, nil
+
+	case FinancialPlanningMetricLargestCostCenterSpend:
+		var name, amount string
+		err := tx.QueryRow(ctx, `
+			SELECT cc.name, SUM(CASE WHEN jl.side = 'debit' THEN jl.amount WHEN jl.side = 'credit' THEN -jl.amount ELSE 0 END) AS spend
+			FROM journal_lines jl
+			JOIN journal_entries je ON je.id = jl.entry_id
+			JOIN accounts a ON a.id = jl.account_id
+			JOIN cost_centers cc ON cc.id = jl.cost_center_id
+			WHERE jl.firm_id = $1 AND a.type = 'expense'
+				AND je.posted_at >= date_trunc('month', now()) AND je.posted_at < date_trunc('month', now()) + INTERVAL '1 month'
+			GROUP BY cc.id, cc.name
+			ORDER BY spend DESC
+			LIMIT 1
+		`, firmID).Scan(&name, &amount)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return KPIResult{Key: d.Key, Unit: unitCurrency, Value: ""}, nil
+		}
+		if err != nil {
+			return KPIResult{}, fmt.Errorf("find largest cost center spend: %w", err)
+		}
+		return KPIResult{Key: d.Key, Unit: unitCurrency, Value: amount, Label: name}, nil
+
+	default:
+		return KPIResult{}, fmt.Errorf("unknown financial planning metric %q", d.FinancialPlanningMetric)
 	}
 }
 

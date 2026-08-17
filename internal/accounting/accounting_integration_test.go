@@ -54,7 +54,8 @@ func setupTest(t *testing.T) (adminPool, appPool *pgxpool.Pool) {
 	t.Cleanup(adminPool.Close)
 	if _, err := adminPool.Exec(ctx, `
 		TRUNCATE firms, users, roles, role_permissions, user_firm_roles,
-			accounts, journal_entries, journal_lines, audit_log, permissions CASCADE
+			accounts, journal_entries, journal_lines, budgets, budget_lines,
+			audit_log, permissions CASCADE
 	`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}

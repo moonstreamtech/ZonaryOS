@@ -676,6 +676,33 @@ func resolveJournalLines(jt *JournalTemplate, payload map[string]any) ([]account
 		return nil, false, err
 	}
 
+	// costCenterIDPayloadField (budget management/cost centers/financial
+	// planning batch) mirrors instanceCurrencyPayloadField's own "fixed,
+	// well-known field name" convention: a payload's optional
+	// "cost_center_id" string field, when present and a valid UUID, is
+	// threaded onto every resolved line - decoupled from FieldTypeCostCenter
+	// entirely (see spec.go's own doc comment on that FieldType): this
+	// bridge only ever reads the raw payload value, never inspects the
+	// definition's own FieldSpec types, so it works whether or not
+	// whoever declared this field on their spec even used
+	// FieldTypeCostCenter (that only adds existence validation on top,
+	// via CreateInstance's normal payload validation pipeline - a
+	// completely separate concern from this bridge). A malformed (non-
+	// UUID) value is silently ignored, not an error: the same
+	// "financially-relevant fields fail loudly, everything else degrades
+	// gracefully" judgment call this function's own doc comment already
+	// makes for a missing amount field vs. a missing optional one.
+	costCenterRaw, costCenterPresent, err := lookupStringField(payload, costCenterIDPayloadField)
+	if err != nil {
+		return nil, false, err
+	}
+	var costCenterID *uuid.UUID
+	if costCenterPresent {
+		if parsed, err := uuid.Parse(costCenterRaw); err == nil {
+			costCenterID = &parsed
+		}
+	}
+
 	lines := make([]accounting.LineInput, 0, len(jt.Lines))
 	for _, lt := range jt.Lines {
 		amount, ok, err := resolveAmountField(payload, lt.AmountField)
@@ -686,10 +713,11 @@ func resolveJournalLines(jt *JournalTemplate, payload map[string]any) ([]account
 			return nil, false, nil
 		}
 		lines = append(lines, accounting.LineInput{
-			AccountCode: lt.AccountCode,
-			Side:        accounting.Side(lt.Side),
-			Amount:      amount,
-			Currency:    instanceCurrency,
+			AccountCode:  lt.AccountCode,
+			Side:         accounting.Side(lt.Side),
+			Amount:       amount,
+			Currency:     instanceCurrency,
+			CostCenterID: costCenterID,
 		})
 	}
 	return lines, true, nil
@@ -699,6 +727,11 @@ func resolveJournalLines(jt *JournalTemplate, payload map[string]any) ([]account
 // resolveJournalLines looks for - see its own doc comment above for why
 // this is a fixed convention rather than a new JournalTemplate field.
 const instanceCurrencyPayloadField = "currency"
+
+// costCenterIDPayloadField is the well-known payload field name
+// resolveJournalLines looks for to propagate cost_center_id onto posted
+// journal lines - see that function's own doc comment.
+const costCenterIDPayloadField = "cost_center_id"
 
 // customerIDPayloadField is the well-known payload field name
 // resolveJournalDescription looks for - "customer_id", the exact field

@@ -13,6 +13,7 @@ package accounting
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -27,11 +28,24 @@ import (
 // ReportLine is one account's contribution to a report - a real chart-of-
 // accounts row plus a computed amount, not a synthetic bucket, so a
 // reader can trace every reported figure back to its account.
+// BudgetedAmount/Variance/VariancePercent (budget management/cost
+// centers/financial planning batch) are populated by GetProfitAndLoss
+// only - nil for every other report built from this same struct
+// (GetBalanceSheet) and nil even on a PnL line when no 'active' budget
+// covers the requested [from,to] period, or that budget has no line for
+// this account. Variance = Amount - BudgetedAmount (positive means over
+// budget for an expense line, under for a revenue line - the reader's
+// own account type tells them which); VariancePercent is Variance as a
+// percentage of BudgetedAmount, nil (not divide-by-zero) when
+// BudgetedAmount is exactly zero.
 type ReportLine struct {
-	AccountID uuid.UUID
-	Code      string
-	Name      string
-	Amount    string
+	AccountID       uuid.UUID
+	Code            string
+	Name            string
+	Amount          string
+	BudgetedAmount  *string
+	Variance        *string
+	VariancePercent *string
 }
 
 // reportAccountRows runs the shared "per-account signed sum over a date-
@@ -107,6 +121,90 @@ func reportAccountRows(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, account
 	return lines, total, nil
 }
 
+// attachBudgetVarianceTx populates lines' BudgetedAmount/Variance/
+// VariancePercent in place from firmID's single 'active' budget covering
+// [from,to] (if any) - a no-op (every line's budget fields stay nil)
+// when from or to is nil (no period to match a budget's own
+// period_start/period_end against), or when no 'active' budget covers
+// that period, or a matched budget simply has no line for a given
+// account. "Only one active budget per period" (internal/budget's own
+// enforcement, not re-checked here) is what makes "the" active budget
+// well-defined; this query would silently pick whichever one budgets.id
+// sorts first if that invariant were ever violated, the same
+// defense-in-depth-only posture every other cross-package invariant in
+// this codebase takes (the enforcement lives at the write path, not
+// re-verified at every read).
+//
+// This queries budgets/budget_lines directly (raw SQL), not via
+// internal/budget's own Go API - internal/accounting stays a leaf
+// dependency (see journal.go's own doc comment on LineInput.CostCenterID
+// for the identical reasoning), the same "a report reads another
+// module's tables directly once its own caller has already authorized
+// the read" pattern internal/reports' KPI computations and
+// internal/costcenter.GetCostCenterPnL both already establish.
+//
+// ciaudit:ignore-firmid-check: internal helper called only by
+// GetProfitAndLoss, which has already run permission.IsMember before
+// reaching this call - firmID here scopes the query (defense in depth
+// alongside RLS), it is not itself an authorization decision.
+func attachBudgetVarianceTx(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, lines []ReportLine, from, to *time.Time) error {
+	if from == nil || to == nil || len(lines) == 0 {
+		return nil
+	}
+
+	var budgetID uuid.UUID
+	err := tx.QueryRow(ctx, `
+		SELECT id FROM budgets
+		WHERE firm_id = $1 AND status = 'active' AND period_start <= $3::date AND period_end >= $2::date
+		ORDER BY period_start LIMIT 1
+	`, firmID, from, to).Scan(&budgetID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("look up active budget for period: %w", err)
+	}
+
+	planned := make(map[uuid.UUID]string, len(lines))
+	rows, err := tx.Query(ctx, `SELECT account_id, planned_amount::text FROM budget_lines WHERE firm_id = $1 AND budget_id = $2`, firmID, budgetID)
+	if err != nil {
+		return fmt.Errorf("list budget lines for variance: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var accountID uuid.UUID
+		var amount string
+		if err := rows.Scan(&accountID, &amount); err != nil {
+			return err
+		}
+		planned[accountID] = amount
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for i := range lines {
+		budgeted, ok := planned[lines[i].AccountID]
+		if !ok {
+			continue
+		}
+		var variance string
+		var variancePercent *string
+		if err := tx.QueryRow(ctx, `SELECT ($1::numeric - $2::numeric)::text`, lines[i].Amount, budgeted).Scan(&variance); err != nil {
+			return fmt.Errorf("compute budget variance: %w", err)
+		}
+		if err := tx.QueryRow(ctx, `
+			SELECT CASE WHEN $2::numeric = 0 THEN NULL ELSE (($1::numeric - $2::numeric) / $2::numeric * 100)::text END
+		`, lines[i].Amount, budgeted).Scan(&variancePercent); err != nil {
+			return fmt.Errorf("compute budget variance percent: %w", err)
+		}
+		lines[i].BudgetedAmount = &budgeted
+		lines[i].Variance = &variance
+		lines[i].VariancePercent = variancePercent
+	}
+	return nil
+}
+
 // sumDecimals adds a and b using Postgres's own exact `numeric`
 // arithmetic - the same "never a Go float, never hand-rolled decimal
 // math" discipline as isZeroDecimal/PostJournalEntryTx's own balance
@@ -173,7 +271,14 @@ func GetProfitAndLoss(ctx context.Context, pool *pgxpool.Pool, firmID, userID uu
 			return err
 		}
 		report.NetIncome, err = diffDecimals(ctx, tx, report.TotalRevenue, report.TotalExpenses)
-		return err
+		if err != nil {
+			return err
+		}
+
+		if err := attachBudgetVarianceTx(ctx, tx, firmID, report.Revenue, from, to); err != nil {
+			return err
+		}
+		return attachBudgetVarianceTx(ctx, tx, firmID, report.Expenses, from, to)
 	})
 	if err != nil {
 		return PnLReport{}, err
