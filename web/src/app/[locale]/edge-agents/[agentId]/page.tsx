@@ -6,7 +6,7 @@
 import { setRequestLocale, getTranslations } from "next-intl/server";
 import { requireFirmContext } from "@/lib/firmContext";
 import { fetchRoleInFirm } from "@/lib/me";
-import { fetchEdgeAgent, fetchEdgeAgentTokens, fetchEdgeAgentEvents } from "@/lib/edgeAgents";
+import { fetchEdgeAgent, fetchEdgeAgentTokens, fetchEdgeAgentEvents, fetchEdgeAgentCommands } from "@/lib/edgeAgents";
 import EdgeAgentDetail from "@/components/EdgeAgents/EdgeAgentDetail";
 
 type PageProps = {
@@ -15,9 +15,10 @@ type PageProps = {
 
 // Edge Agent detail page: event log plus token management (issue a new
 // token, list existing tokens without ever showing the secret again -
-// see internal/edgeagent.IssueToken's own doc comment). Member-gated
-// read, owner-gated token management, same tier as the /edge-agents list
-// page itself.
+// see internal/edgeagent.IssueToken's own doc comment) plus command
+// dispatch (send a new command, list command history). Member-gated
+// read, owner-gated token management and command dispatch, same tier as
+// the /edge-agents list page itself.
 export default async function EdgeAgentDetailPage({ params }: PageProps) {
   const { locale, agentId } = await params;
   setRequestLocale(locale);
@@ -28,9 +29,10 @@ export default async function EdgeAgentDetailPage({ params }: PageProps) {
   const isOwner = role?.isOwner ?? false;
 
   const agent = await fetchEdgeAgent(sessionToken, firm.firmId, agentId);
-  const [tokens, events] = await Promise.all([
+  const [tokens, events, commands] = await Promise.all([
     isOwner ? fetchEdgeAgentTokens(sessionToken, firm.firmId, agentId) : Promise.resolve([]),
     fetchEdgeAgentEvents(sessionToken, firm.firmId, agentId),
+    fetchEdgeAgentCommands(sessionToken, firm.firmId, agentId),
   ]);
 
   return (
@@ -43,6 +45,7 @@ export default async function EdgeAgentDetailPage({ params }: PageProps) {
           agent={agent}
           tokens={tokens ?? []}
           events={events ?? []}
+          commands={commands ?? []}
           isOwner={isOwner}
         />
       )}
