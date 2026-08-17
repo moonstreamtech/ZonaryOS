@@ -111,6 +111,35 @@ jobs:
       ZONARYOS_TEST_APP_DATABASE_URL: postgres://zonaryos_app:zonaryos_app@localhost:5432/zonaryos?sslmode=disable
     steps:
       - uses: actions/checkout@v4
+      # The backend test suite has grown to ~50 packages, each integration
+      # test opening its own admin+app pgxpool pair (zdb.Open). Postgres's
+      # default max_connections=100 is now occasionally exhausted by the
+      # sheer volume of short-lived pools opened/closed in rapid sequence
+      # (pgxpool.Close() releases connections asynchronously, so a burst of
+      # back-to-back tests can transiently exceed the ceiling before
+      # already-finished tests' connections fully drain) - observed as
+      # "FATAL: remaining connection slots are reserved for roles with the
+      # SUPERUSER attribute" on an otherwise-passing test, not a real
+      # test/RLS failure (reproduced locally: raising max_connections makes
+      # it disappear; the test itself is unaffected either way).
+      # max_connections can only be set via postgresql.conf or a `-c`
+      # command-line flag (not an env var), and GitHub Actions' `services:`
+      # block has no way to pass either (its `options:` field only accepts
+      # `docker create`-style flags, never a command/args override for the
+      # image itself), so this step edits the ALREADY-RUNNING
+      # service container's config directly (job.services.<id>.id is the
+      # documented way to reach a service container's real container ID)
+      # and restarts just the Postgres process inside it, before any test
+      # step runs - a one-time ~2s cost, not a workaround baked into
+      # application code for what is purely a CI-runner resource ceiling.
+      - name: Raise Postgres max_connections for the integration test suite
+        run: |
+          docker exec "${{ job.services.postgres.id }}" bash -c 'echo "max_connections = 300" >> /var/lib/postgresql/data/postgresql.conf'
+          docker restart "${{ job.services.postgres.id }}"
+          for i in $(seq 1 30); do
+            if pg_isready -h localhost -U zonaryos -d zonaryos >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
       - uses: actions/setup-go@v5
         with: { go-version: "${{ env.GO_VERSION }}" }
       - run: go run ./cmd/migrate
