@@ -219,3 +219,44 @@ func TestChain_ComposesAllFourMiddlewareInOrder(t *testing.T) {
 		t.Error("expected a request ID header even on a panicking request")
 	}
 }
+
+// TestAPIVersionAlias_RewritesV1PrefixToUnversionedPath is the mobile
+// API optimization batch's own "/api/v1/ is an additive alias for /api/"
+// requirement: a request to /api/v1/firms/x/products must reach the
+// exact same handler an unversioned /api/firms/x/products request does.
+func TestAPIVersionAlias_RewritesV1PrefixToUnversionedPath(t *testing.T) {
+	var gotPath string
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := middleware.APIVersionAlias(inner)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/firms/abc/products", nil)
+	handler.ServeHTTP(rec, req)
+
+	if gotPath != "/api/firms/abc/products" {
+		t.Errorf("expected rewritten path \"/api/firms/abc/products\", got %q", gotPath)
+	}
+}
+
+// TestAPIVersionAlias_LeavesUnversionedPathUnchanged proves the alias is
+// purely additive - an existing, unversioned caller sees no behavior
+// change at all.
+func TestAPIVersionAlias_LeavesUnversionedPathUnchanged(t *testing.T) {
+	var gotPath string
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := middleware.APIVersionAlias(inner)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/firms/abc/products", nil)
+	handler.ServeHTTP(rec, req)
+
+	if gotPath != "/api/firms/abc/products" {
+		t.Errorf("expected unchanged path \"/api/firms/abc/products\", got %q", gotPath)
+	}
+}

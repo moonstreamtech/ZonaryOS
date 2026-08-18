@@ -1635,6 +1635,41 @@ make migrate
 go test ./internal/integration/... -v
 ```
 
+## Mobile API optimization, offline support, and PWA
+
+Vision §9 mentions edge and device integration; until this batch ZonaryOS had no mobile-optimized API layer at all - every list endpoint always returned the full entity, with no way for a bandwidth-constrained client to sync only what changed.
+
+**Field projection** (`?fields=id,name`, `internal/apifields`, Part 1): a NEW, dependency-free leaf package shared by every list handler that supports it (products, customers, invoices, workflow instances). `apifields.Project` uses an ALLOWLIST, not reflection: each handler defines its own closed `map[string]bool` of its response DTO's real JSON field names (e.g. `productResponseFields`), and `Project` marshals the response to JSON, decodes it generically, and keeps only the requested keys - any name not in the caller's allowlist is rejected with `ErrUnknownField` (a 400), never silently dropped. Allowlist over reflection for the same reason `internal/queryfilter.BuildClause`/`internal/reports.entityRegistry` already choose an explicit allowlist over reflecting a struct's own tags: reflection would make a field added to a response struct for some unrelated later reason automatically projectable without anyone deciding it should be - an explicit allowlist keeps "which fields can a mobile client ask for on their own" a deliberate per-endpoint choice, not an accident of whatever the struct happens to contain.
+
+**Delta sync** (`?updated_since=`, Part 1): `migrations/0039` adds an `updated_at timestamptz NOT NULL DEFAULT now()` column (plus a `(firm_id, updated_at)` index) to `products`/`customers`/`invoices` - `workflow_instances` already had one (`migrations/0003`). Every write path that mutates one of these rows now sets `updated_at = now()` explicitly (the same "set it in the UPDATE statement itself, no DB trigger" convention `internal/workflow`'s own `updated_at = now()` calls already established, rather than introducing a new trigger-based mechanism for these three tables only). For products/customers (simple `ListXOptions` structs, no existing filter framework) `?updated_since=` is a plain `UpdatedSince *time.Time` option appended as `AND updated_at >= $N`. For invoices/workflow instances (which already support `?filters=` via `internal/queryfilter`) `?updated_since=` is translated into the equivalent `{field: "updated_at", op: "gte", value: ...}` filter entry rather than adding a second, parallel filtering code path - one mechanism, two ways to spell the same query.
+
+**API versioning** (Part 4): `/api/v1/` is an ADDITIVE alias, not a second route table - `internal/platform/middleware.APIVersionAlias` rewrites `/api/v1/...` to `/api/...` on the incoming request before `internal/platform/httpapi`'s mux ever sees it, so every existing (unversioned) route keeps working completely unchanged and a versioned caller reaches the identical handler. `GET /api/version` (unauthenticated, same tier as `GET /healthz`) returns `{"version":"v1","supportedVersions":["v1"]}`. **Versioning policy**: additive changes (a new field, a new optional query param, a new endpoint) ship without a version bump - `v1` covers all of them. A genuinely BREAKING change (removing/renaming a response field, changing a status code's meaning, removing an endpoint) requires a new version (`v2`) with its own alias and its own deprecation cycle for `v1` (Never-Violate Rule 6) - it does not simply overwrite `v1`'s behavior in place. `scripts/check_api_contract.py` already enforces the "no removed path/method" half of this for the documented OpenAPI subset; a real v2 is future work, not something this batch needed to build ahead of an actual breaking change existing.
+
+**PWA foundation** (Part 2, frontend): `web/public/manifest.json` + a cache-first (static shell)/network-first (everything else, `/api/*` NEVER cached) service worker (`web/public/sw.js`), registered from the locale-scoped root layout, plus an offline indicator in the nav.
+
+**Offline sync queue** (Part 3, frontend): `web/src/lib/offlineQueue.ts`, an IndexedDB-backed queue of not-yet-sent write operations, replayed strictly in enqueue order on reconnect - a failed replay stops the queue rather than skipping ahead, since a later queued operation may depend on an earlier one having actually succeeded (e.g. a payment recorded against an instance that hasn't been created yet). This batch ships the library and its own nav status indicator only - wiring specific existing forms (record payment, create instance, ...) to actually enqueue when offline is out of scope here, per Part 3's own "frontend-only, no backend changes needed" brief.
+
+### Scope boundaries
+
+No native mobile app (PWA only). No push notifications via service worker (FCM/APNS require external services this batch doesn't stand up). No Background Sync API (inconsistent browser support - the offline queue replays on the `online` event and on-demand, not via a browser-managed background sync registration). No GraphQL - field projection is a simple, closed `?fields=` allowlist on existing REST endpoints, not a query language.
+
+### Running these tests
+
+`internal/apifields`'s own tests are pure unit tests (no Postgres needed):
+
+```
+go test ./internal/apifields/... -v
+```
+
+`internal/inventory`'s delta-sync test (`TestListProducts_UpdatedSinceReturnsOnlyRecordsModifiedAfter`) needs a real Postgres, same convention as every other package's integration tests:
+
+```
+export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5433/zonaryos?sslmode=disable
+export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5433/zonaryos?sslmode=disable
+make migrate
+go test ./internal/inventory/... -run TestListProducts_UpdatedSince -v
+```
+
 ## Continuous Integration
 
 `.github/workflows/ci.yml` turns most of the CI Checklist categories (CLAUDE.md's "How to Verify a Change") from manual PR-by-PR discipline into automated checks on every PR (and on push to `main`). Every job here existed as a manual step some earlier PR ran by hand - this file doesn't introduce new verification steps, it just stops trusting a human to remember to run them. **Canary/Rollback Trigger** remains the one item intentionally "Not Set Up": there is no ZonaryOS deployment target or infrastructure decided yet (see `docs/OPEN_POINTS.md` item 34) for a rollback trigger to hook into.

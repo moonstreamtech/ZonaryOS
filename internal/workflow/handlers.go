@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/moonstreamtech/ZonaryOS/internal/apifields"
 	"github.com/moonstreamtech/ZonaryOS/internal/identity"
 	"github.com/moonstreamtech/ZonaryOS/internal/inventory"
 	"github.com/moonstreamtech/ZonaryOS/internal/invoicing"
@@ -140,7 +141,15 @@ type instanceStateResponse struct {
 	// on handleCurrentState's own response - see
 	// InstanceState.OpenApprovalsCount's own doc comment for why
 	// ListInstances leaves it unset.
-	OpenApprovalsCount *int `json:"openApprovalsCount,omitempty"`
+	OpenApprovalsCount *int   `json:"openApprovalsCount,omitempty"`
+	UpdatedAt          string `json:"updatedAt"`
+}
+
+// instanceStateResponseFields is handleListInstances' own ?fields=
+// allowlist (mobile API optimization batch, Part 1).
+var instanceStateResponseFields = map[string]bool{
+	"instanceId": true, "workflowDefinitionId": true, "state": true, "payload": true,
+	"availableActions": true, "openApprovalsCount": true, "updatedAt": true,
 }
 
 func toInstanceStateResponse(s InstanceState) instanceStateResponse {
@@ -151,6 +160,7 @@ func toInstanceStateResponse(s InstanceState) instanceStateResponse {
 		Payload:              s.Payload,
 		AvailableActions:     make([]availableActionResponse, 0, len(s.AvailableActions)),
 		OpenApprovalsCount:   s.OpenApprovalsCount,
+		UpdatedAt:            s.UpdatedAt.Format(time.RFC3339),
 	}
 	for _, a := range s.AvailableActions {
 		resp.AvailableActions = append(resp.AvailableActions, availableActionResponse{
@@ -946,9 +956,17 @@ func handleListInstances(pool *pgxpool.Pool) http.HandlerFunc {
 			resp = append(resp, toInstanceStateResponse(inst))
 		}
 
+		projected, err := apifields.Project(resp, apifields.ParseFields(r.URL.Query().Get("fields")), instanceStateResponseFields)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		w.Header().Set("X-Total-Count", strconv.Itoa(result.Total))
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
+		// #nosec G705 -- see internal/inventory.handleListProducts' own
+		// identical suppression comment; projected is self-produced JSON
+		// filtered to instanceStateResponseFields' own closed allowlist.
+		_, _ = w.Write(projected)
 	}
 }
 
@@ -980,6 +998,16 @@ func parseListInstancesOptions(r *http.Request) (ListInstancesOptions, error) {
 	filters, err := queryfilter.ParseFiltersParam(q.Get("filters"))
 	if err != nil {
 		return ListInstancesOptions{}, err
+	}
+	// ?updated_since= (mobile API optimization batch, Part 1) is a
+	// friendlier alias for the equivalent ?filters= entry against
+	// workflowInstanceFilterFields' own "updated_at" column - see
+	// internal/invoicing.handleListInvoices' identical translation.
+	if raw := q.Get("updated_since"); raw != "" {
+		if _, err := apifields.ParseUpdatedSince(raw); err != nil {
+			return ListInstancesOptions{}, err
+		}
+		filters = append(filters, queryfilter.Filter{Field: "updated_at", Op: queryfilter.OpGte, Value: raw})
 	}
 	opts.Filters = filters
 	return opts, nil

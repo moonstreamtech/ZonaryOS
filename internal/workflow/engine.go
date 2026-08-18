@@ -1582,6 +1582,10 @@ type InstanceState struct {
 	// a real zero count; only CurrentState (a single-instance detail
 	// read) ever sets it.
 	OpenApprovalsCount *int
+	// UpdatedAt (mobile API optimization batch) backs ?updated_since=
+	// delta sync - workflow_instances.updated_at already existed
+	// (migrations/0003), just wasn't exposed on this struct before.
+	UpdatedAt time.Time
 }
 
 // CurrentState reads instanceID's current state and its structurally
@@ -1606,11 +1610,11 @@ func CurrentState(ctx context.Context, pool *pgxpool.Pool, firmID, userID, insta
 
 		var payloadJSON []byte
 		err = tx.QueryRow(ctx, `
-			SELECT wi.id, wi.workflow_definition_id, wi.current_state_id, ws.key, ws.name, wi.payload
+			SELECT wi.id, wi.workflow_definition_id, wi.current_state_id, ws.key, ws.name, wi.payload, wi.updated_at
 			FROM workflow_instances wi
 			JOIN workflow_states ws ON ws.id = wi.current_state_id
 			WHERE wi.id = $1
-		`, instanceID).Scan(&result.InstanceID, &definitionID, &currentStateID, &result.State.Key, &result.State.Name, &payloadJSON)
+		`, instanceID).Scan(&result.InstanceID, &definitionID, &currentStateID, &result.State.Key, &result.State.Name, &payloadJSON, &result.UpdatedAt)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrInstanceNotFound
 		}
@@ -1811,7 +1815,7 @@ func ListInstances(ctx context.Context, pool *pgxpool.Pool, firmID, userID, defi
 			return fmt.Errorf("%w: %w", ErrInvalidFilter, err)
 		}
 		query := `
-			SELECT wi.id, wi.current_state_id, ws.key, ws.name, wi.payload, COUNT(*) OVER()
+			SELECT wi.id, wi.current_state_id, ws.key, ws.name, wi.payload, wi.updated_at, COUNT(*) OVER()
 			FROM workflow_instances wi
 			JOIN workflow_states ws ON ws.id = wi.current_state_id
 			WHERE wi.workflow_definition_id = $1
@@ -1832,7 +1836,7 @@ func ListInstances(ctx context.Context, pool *pgxpool.Pool, firmID, userID, defi
 			var currentStateID uuid.UUID
 			var payloadJSON []byte
 			var total int
-			if err := instanceRows.Scan(&inst.InstanceID, &currentStateID, &inst.State.Key, &inst.State.Name, &payloadJSON, &total); err != nil {
+			if err := instanceRows.Scan(&inst.InstanceID, &currentStateID, &inst.State.Key, &inst.State.Name, &payloadJSON, &inst.UpdatedAt, &total); err != nil {
 				return err
 			}
 			if err := json.Unmarshal(payloadJSON, &inst.Payload); err != nil {

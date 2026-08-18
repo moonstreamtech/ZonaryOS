@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/moonstreamtech/ZonaryOS/internal/apifields"
 	"github.com/moonstreamtech/ZonaryOS/internal/identity"
 )
 
@@ -79,12 +80,21 @@ type customerResponse struct {
 	CustomFields           map[string]any `json:"customFields"`
 	SourceWorkflowInstance *string        `json:"sourceWorkflowInstance,omitempty"`
 	CreatedAt              string         `json:"createdAt"`
+	UpdatedAt              string         `json:"updatedAt"`
 	// TotalInvoiced/TotalPaid (Part 3, computed fields) are only ever
 	// non-nil on handleGetCustomer's own response - see
 	// Customer.TotalInvoiced's own doc comment for why ListCustomers
 	// leaves them unset.
 	TotalInvoiced *string `json:"totalInvoiced,omitempty"`
 	TotalPaid     *string `json:"totalPaid,omitempty"`
+}
+
+// customerResponseFields is handleListCustomers' own ?fields= allowlist
+// (mobile API optimization batch, Part 1).
+var customerResponseFields = map[string]bool{
+	"id": true, "name": true, "email": true, "phone": true, "address": true, "taxId": true,
+	"creditLimit": true, "currency": true, "customFields": true, "sourceWorkflowInstance": true,
+	"createdAt": true, "updatedAt": true, "totalInvoiced": true, "totalPaid": true,
 }
 
 func toCustomerResponse(c Customer) customerResponse {
@@ -97,7 +107,7 @@ func toCustomerResponse(c Customer) customerResponse {
 		ID: c.ID.String(), Name: c.Name, Email: c.Email, Phone: c.Phone, Address: c.Address, TaxID: c.TaxID,
 		CreditLimit: c.CreditLimit, Currency: c.Currency, CustomFields: c.CustomFields,
 		SourceWorkflowInstance: sourceWorkflowInstance, CreatedAt: c.CreatedAt.Format(time.RFC3339),
-		TotalInvoiced: c.TotalInvoiced, TotalPaid: c.TotalPaid,
+		UpdatedAt: c.UpdatedAt.Format(time.RFC3339), TotalInvoiced: c.TotalInvoiced, TotalPaid: c.TotalPaid,
 	}
 }
 
@@ -125,7 +135,12 @@ func handleListCustomers(pool *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 
-		opts := ListCustomersOptions{Search: r.URL.Query().Get("q")}
+		updatedSince, err := apifields.ParseUpdatedSince(r.URL.Query().Get("updated_since"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		opts := ListCustomersOptions{Search: r.URL.Query().Get("q"), UpdatedSince: updatedSince}
 		customers, err := ListCustomers(r.Context(), pool, firmID, userID, opts)
 		if err != nil {
 			writeCRMError(w, err)
@@ -136,8 +151,17 @@ func handleListCustomers(pool *pgxpool.Pool) http.HandlerFunc {
 		for _, c := range customers {
 			resp = append(resp, toCustomerResponse(c))
 		}
+
+		projected, err := apifields.Project(resp, apifields.ParseFields(r.URL.Query().Get("fields")), customerResponseFields)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
+		// #nosec G705 -- see internal/inventory.handleListProducts' own
+		// identical suppression comment; projected is self-produced JSON
+		// filtered to customerResponseFields' own closed allowlist.
+		_, _ = w.Write(projected)
 	}
 }
 

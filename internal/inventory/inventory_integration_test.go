@@ -10,6 +10,7 @@ import (
 	"errors"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -368,5 +369,37 @@ func TestGetProduct_StockQuantityReflectsMovement(t *testing.T) {
 	}
 	if after.StockQuantity == nil || *after.StockQuantity != "15.0000" {
 		t.Fatalf("expected stock quantity 15.0000 after the movement, got %v", after.StockQuantity)
+	}
+}
+
+// TestListProducts_UpdatedSinceReturnsOnlyRecordsModifiedAfter is the
+// mobile API optimization batch's own "?updated_since= returns only
+// records modified after that timestamp" requirement: a product updated
+// AFTER the cutoff is included, one that was never touched since before
+// the cutoff is excluded.
+func TestListProducts_UpdatedSinceReturnsOnlyRecordsModifiedAfter(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+	firmID, ownerID := seedOwner(ctx, t, adminPool, appPool, "Firm Delta Sync", "inv-delta-owner")
+
+	stale, err := inventory.CreateProduct(ctx, appPool, firmID, ownerID, inventory.CreateProductInput{SKU: "STALE-1", Name: "Stale Product"})
+	if err != nil {
+		t.Fatalf("CreateProduct (stale): %v", err)
+	}
+
+	cutoff := time.Now().Add(time.Second)
+	time.Sleep(2 * time.Second)
+
+	fresh, err := inventory.CreateProduct(ctx, appPool, firmID, ownerID, inventory.CreateProductInput{SKU: "FRESH-1", Name: "Fresh Product"})
+	if err != nil {
+		t.Fatalf("CreateProduct (fresh): %v", err)
+	}
+
+	products, err := inventory.ListProducts(ctx, appPool, firmID, ownerID, inventory.ListProductsOptions{UpdatedSince: &cutoff})
+	if err != nil {
+		t.Fatalf("ListProducts (updated_since): %v", err)
+	}
+	if len(products) != 1 || products[0].ID != fresh.ID {
+		t.Fatalf("expected only the fresh product (id=%s) after cutoff, got %+v (stale id=%s)", fresh.ID, products, stale.ID)
 	}
 }

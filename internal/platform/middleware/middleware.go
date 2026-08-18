@@ -197,5 +197,34 @@ func RequestTimeout(d time.Duration) func(http.Handler) http.Handler {
 // unauthenticated request should never be able to crash or hang the
 // server either).
 func Chain(next http.Handler, requestTimeout time.Duration, maxJSONBytes, maxUploadBytes int64) http.Handler {
-	return RequestID(PanicRecovery(RequestSizeLimit(maxJSONBytes, maxUploadBytes)(RequestTimeout(requestTimeout)(next))))
+	return RequestID(PanicRecovery(RequestSizeLimit(maxJSONBytes, maxUploadBytes)(RequestTimeout(requestTimeout)(APIVersionAlias(next)))))
+}
+
+// apiV1Prefix is the versioned alias APIVersionAlias rewrites off every
+// incoming request path before the mux ever sees it.
+const apiV1Prefix = "/api/v1/"
+
+// APIVersionAlias implements the mobile API optimization batch's own API
+// versioning policy (Part 4, documented in docs/DEVELOPMENT.md): /api/v1/
+// is an ADDITIVE alias for the existing, unversioned /api/ routes, not a
+// second copy of every route registration. A request to
+// /api/v1/firms/{firmID}/products is rewritten to /api/firms/{firmID}/products
+// before reaching internal/platform/httpapi's mux, so it resolves to the
+// exact same handler an unversioned caller already gets - every existing
+// client (unversioned) keeps working unchanged, and a new client can opt
+// into the /v1/ prefix today with zero behavior difference. Only when a
+// FUTURE breaking change needs its own, genuinely different v2 route set
+// would this alias stop being sufficient - see docs/DEVELOPMENT.md's own
+// "breaking changes require a new version" policy.
+func APIVersionAlias(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, apiV1Prefix) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		r2 := r.Clone(r.Context())
+		r2.URL.Path = "/api/" + strings.TrimPrefix(r.URL.Path, apiV1Prefix)
+		r2.URL.RawPath = ""
+		next.ServeHTTP(w, r2)
+	})
 }

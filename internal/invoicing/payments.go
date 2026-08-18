@@ -155,7 +155,7 @@ func RecordPayment(ctx context.Context, pool *pgxpool.Pool, firmID, userID, invo
 		}
 
 		if fullyPaid && invoiceStatus != string(InvoiceStatusPaid) {
-			if _, err := tx.Exec(ctx, `UPDATE invoices SET status = $1 WHERE id = $2`, string(InvoiceStatusPaid), invoiceID); err != nil {
+			if _, err := tx.Exec(ctx, `UPDATE invoices SET status = $1, updated_at = now() WHERE id = $2`, string(InvoiceStatusPaid), invoiceID); err != nil {
 				return fmt.Errorf("mark invoice paid: %w", err)
 			}
 			justPaid = true
