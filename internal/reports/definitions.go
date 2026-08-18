@@ -65,14 +65,25 @@ type ReportDefinitionInput struct {
 	QuerySpec   QuerySpec
 }
 
-// validateQuerySpec runs BuildQuery against a placeholder firm id purely
-// to reject a structurally invalid spec (unknown entity/field/
-// aggregation) at definition-save time, not just at run time - the same
-// "fail fast, at the boundary" reasoning every other package's own input
-// validation follows.
+// validateQuerySpec rejects a structurally invalid spec (unknown entity/
+// field/aggregation) at definition-save time, not just at run time - the
+// same "fail fast, at the boundary" reasoning every other package's own
+// input validation follows. Checks entityRegistry (via BuildQuery, run
+// against a placeholder firm id purely for its own validation side
+// effect - it makes no database call) first, then falls back to a
+// registered ExternalSource (plugin/extension architecture batch, Part
+// 2) - the same lookup order executeQuerySpec's own doc comment
+// describes for the run-time path, so a spec that validates here is
+// guaranteed to also run successfully later.
 func validateQuerySpec(spec QuerySpec) error {
-	_, err := BuildQuery(uuid.Nil, spec)
-	return err
+	if _, builtIn := entityRegistry[spec.Entity]; builtIn {
+		_, err := BuildQuery(uuid.Nil, spec)
+		return err
+	}
+	if source, ok := externalSources[spec.Entity]; ok {
+		return validateExternalQuerySpec(spec, source)
+	}
+	return fmt.Errorf("%w: unknown entity %q", ErrInvalidQuerySpec, spec.Entity)
 }
 
 // CreateReportDefinition saves a new report_definitions row - member-
@@ -225,7 +236,7 @@ func RunReport(ctx context.Context, pool *pgxpool.Pool, firmID, userID, definiti
 			return fmt.Errorf("insert report run: %w", err)
 		}
 
-		result, runErr := executeQuerySpec(ctx, tx, firmID, def.QuerySpec)
+		result, runErr := executeQuerySpec(ctx, tx, pool, firmID, def.QuerySpec)
 		if runErr != nil {
 			errText := runErr.Error()
 			if _, err := tx.Exec(ctx, `
@@ -256,13 +267,25 @@ func RunReport(ctx context.Context, pool *pgxpool.Pool, firmID, userID, definiti
 }
 
 // executeQuerySpec runs spec's BuildQuery-translated SQL and scans the
-// dynamic (group_key + N metric) columns back into ReportRow values.
+// dynamic (group_key + N metric) columns back into ReportRow values -
+// UNLESS spec.Entity is a plugin-provided one (plugin/extension
+// architecture batch, Part 2), in which case it delegates entirely to
+// that ExternalSource's own Query instead of ever reaching BuildQuery.
+// entityRegistry is checked FIRST (see BuildQuery's own lookup) so a
+// plugin can never shadow a built-in entity name - the built-in always
+// wins a collision, the only place this ambiguity is resolved.
 //
 // ciaudit:ignore-firmid-check: internal helper called only by RunReport,
 // which already runs permission.IsMember before reaching this call -
 // firmID here scopes the query (defense in depth alongside RLS), it is
 // not itself an authorization decision.
-func executeQuerySpec(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, spec QuerySpec) ([]ReportRow, error) {
+func executeQuerySpec(ctx context.Context, tx pgx.Tx, pool *pgxpool.Pool, firmID uuid.UUID, spec QuerySpec) ([]ReportRow, error) {
+	if _, builtIn := entityRegistry[spec.Entity]; !builtIn {
+		if source, ok := externalSources[spec.Entity]; ok {
+			return executeExternalQuerySpec(ctx, pool, firmID, spec, source)
+		}
+	}
+
 	q, err := BuildQuery(firmID, spec)
 	if err != nil {
 		return nil, err

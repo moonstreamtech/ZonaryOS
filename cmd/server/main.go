@@ -16,6 +16,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/absence"
 	"github.com/moonstreamtech/ZonaryOS/internal/accounting"
 	"github.com/moonstreamtech/ZonaryOS/internal/ai"
+	"github.com/moonstreamtech/ZonaryOS/internal/apidocs"
 	"github.com/moonstreamtech/ZonaryOS/internal/apikey"
 	"github.com/moonstreamtech/ZonaryOS/internal/asset"
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
@@ -48,6 +49,8 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/middleware"
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/version"
 	"github.com/moonstreamtech/ZonaryOS/internal/platformadmin"
+	"github.com/moonstreamtech/ZonaryOS/internal/plugin"
+	"github.com/moonstreamtech/ZonaryOS/internal/plugins/activitylog"
 	"github.com/moonstreamtech/ZonaryOS/internal/portability"
 	"github.com/moonstreamtech/ZonaryOS/internal/procurement"
 	"github.com/moonstreamtech/ZonaryOS/internal/project"
@@ -239,6 +242,32 @@ func main() {
 	// schedulerCtx/cancelScheduler so all four stop together on shutdown.
 	go ai.RunAnomalyScheduler(schedulerCtx, pool, aiEncryptor, cfg.AIAnomalySchedulerPollInterval)
 
+	// internal/plugin.Registry (plugin/extension architecture + developer
+	// API/SDK foundation batch): built once, here, before any route is
+	// registered or any request served - Part 2's own "immutable after
+	// init, no hot-reloading" scope boundary. internal/plugins/activitylog
+	// (Part 3's real example plugin) registers itself as both a
+	// WorkflowHook and a KPIProvider; a future plugin would add one more
+	// line here, nothing else in this file.
+	pluginRegistry := plugin.NewRegistry()
+	activitylog.Register(pluginRegistry, pool)
+	// Bridging each extension point into the core package that actually
+	// dispatches to it - see internal/workflow/plugin_hooks.go's and
+	// internal/reports/external.go's own doc comments for why this
+	// bridging happens here (in main.go) rather than internal/plugin
+	// calling into internal/workflow/internal/reports directly (an
+	// import-cycle concern: internal/plugin already imports
+	// internal/reports, which imports internal/workflow).
+	for _, hook := range pluginRegistry.WorkflowHooks() {
+		workflow.RegisterTransitionHook(hook)
+	}
+	for _, provider := range pluginRegistry.KPIProviders() {
+		reports.RegisterExternalKPIProvider(provider)
+	}
+	for _, source := range pluginRegistry.ReportSources() {
+		reports.RegisterExternalSource(source)
+	}
+
 	mux := httpapi.NewMux()
 	// The well-known discovery endpoint (Open Points item 34) is
 	// unconditional - see internal/discovery.RegisterRoutes's own
@@ -300,6 +329,15 @@ func main() {
 	// data - unauthenticated reads, platform-admin-gated writes, same
 	// allowlist as internal/currency's own platform-admin-only route.
 	localization.RegisterRoutes(mux, verifier, pool, platformAdminAllowlist)
+	// internal/plugin (plugin/extension architecture + developer API/SDK
+	// foundation batch, Part 1): the plugins catalog (unauthenticated
+	// reads, platform-admin-gated writes, same allowlist) plus owner-
+	// gated, firm-scoped plugin configuration.
+	plugin.RegisterRoutes(mux, verifier, pool, platformAdminAllowlist)
+	// internal/apidocs (same batch, Part 4): GET /api/docs serves
+	// docs/api/openapi.yaml raw - unauthenticated, no route-registration
+	// dependency on anything else in this file.
+	apidocs.RegisterRoutes(mux)
 	// internal/edgeagent (this batch, Vision §9's Edge Agent protocol
 	// foundation): registers both the ordinary Keycloak-authenticated
 	// firm-scoped routes (register/list agents, issue/list tokens, list
