@@ -1212,11 +1212,11 @@ func CreateInstance(ctx context.Context, pool *pgxpool.Pool, firmID, userID, def
 // the real permission.IsMember/Has checks live in executeTransitionTx,
 // which this function calls with the transaction WithFirmContext opens.
 func ExecuteTransition(ctx context.Context, pool *pgxpool.Pool, firmID, userID, instanceID uuid.UUID, actionKey string, payload map[string]any) error {
-	var definitionKey, toStateKey string
+	var definitionKey, fromStateKey, toStateKey string
 	var mergedPayload map[string]any
 	err := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		definitionKey, toStateKey, mergedPayload, err = executeTransitionTx(ctx, tx, firmID, userID, instanceID, actionKey, payload)
+		definitionKey, fromStateKey, toStateKey, mergedPayload, err = executeTransitionTx(ctx, tx, firmID, userID, instanceID, actionKey, payload)
 		return err
 	})
 	if err != nil {
@@ -1240,6 +1240,18 @@ func ExecuteTransition(ctx context.Context, pool *pgxpool.Pool, firmID, userID, 
 		slog.Warn("workflow rule evaluation failed", "instanceID", instanceID, "definitionKey", definitionKey, "trigger", TriggerOnTransition, "err", err)
 	}
 
+	// Plugin/extension architecture batch, Part 2: dispatch to every
+	// registered TransitionHook (internal/plugin.WorkflowHook, wired
+	// through this package's own plugin_hooks.go - see that file's doc
+	// comment for why the interface is defined here rather than imported
+	// from internal/plugin). Same post-commit placement as EvaluateRules
+	// above; see dispatchTransitionHooks' own doc comment for the
+	// sync-dispatch/log-and-continue error-handling contract.
+	dispatchTransitionHooks(ctx, TransitionHookEvent{
+		FirmID: firmID, InstanceID: instanceID, DefinitionKey: definitionKey,
+		FromState: fromStateKey, ToState: toStateKey, ActionKey: actionKey, Payload: mergedPayload,
+	})
+
 	return nil
 }
 
@@ -1253,7 +1265,7 @@ func ExecuteTransition(ctx context.Context, pool *pgxpool.Pool, firmID, userID, 
 // ExecuteTransition once per instance, which would each commit
 // independently. Every other caller of this logic still goes through
 // ExecuteTransition itself, unchanged.
-func executeTransitionTx(ctx context.Context, tx pgx.Tx, firmID, userID, instanceID uuid.UUID, actionKey string, payload map[string]any) (definitionKey, toStateKey string, mergedPayload map[string]any, err error) {
+func executeTransitionTx(ctx context.Context, tx pgx.Tx, firmID, userID, instanceID uuid.UUID, actionKey string, payload map[string]any) (definitionKey, fromStateKey, toStateKey string, mergedPayload map[string]any, err error) {
 	if payload == nil {
 		// See CreateInstance's identical guard above for why: a nil map
 		// marshals to JSON `null`, and `payload || $2::jsonb` below treats
@@ -1263,29 +1275,30 @@ func executeTransitionTx(ctx context.Context, tx pgx.Tx, firmID, userID, instanc
 	}
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
-		return "", "", nil, fmt.Errorf("marshal payload: %w", err)
+		return "", "", "", nil, fmt.Errorf("marshal payload: %w", err)
 	}
 
 	isMember, err := permission.IsMember(ctx, tx, firmID, userID)
 	if err != nil {
-		return "", "", nil, err
+		return "", "", "", nil, err
 	}
 	if !isMember {
-		return "", "", nil, ErrInstanceNotFound
+		return "", "", "", nil, ErrInstanceNotFound
 	}
 
 	var definitionID, currentStateID uuid.UUID
 	err = tx.QueryRow(ctx, `
-		SELECT wi.workflow_definition_id, wi.current_state_id, wd.key
+		SELECT wi.workflow_definition_id, wi.current_state_id, wd.key, ws.key
 		FROM workflow_instances wi
 		JOIN workflow_definitions wd ON wd.id = wi.workflow_definition_id
+		JOIN workflow_states ws ON ws.id = wi.current_state_id
 		WHERE wi.id = $1
-	`, instanceID).Scan(&definitionID, &currentStateID, &definitionKey)
+	`, instanceID).Scan(&definitionID, &currentStateID, &definitionKey, &fromStateKey)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", "", nil, ErrInstanceNotFound
+		return "", "", "", nil, ErrInstanceNotFound
 	}
 	if err != nil {
-		return "", "", nil, fmt.Errorf("look up workflow instance: %w", err)
+		return "", "", "", nil, fmt.Errorf("look up workflow instance: %w", err)
 	}
 
 	var toStateID uuid.UUID
@@ -1298,50 +1311,50 @@ func executeTransitionTx(ctx context.Context, tx pgx.Tx, firmID, userID, instanc
 		WHERE wt.workflow_definition_id = $1 AND wt.from_state_id = $2 AND wt.action_key = $3
 	`, definitionID, currentStateID, actionKey).Scan(&toStateID, &toStateKey, &permissionKey, &effectsJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", "", nil, ErrNoSuchTransition
+		return "", "", "", nil, ErrNoSuchTransition
 	}
 	if err != nil {
-		return "", "", nil, fmt.Errorf("look up transition: %w", err)
+		return "", "", "", nil, fmt.Errorf("look up transition: %w", err)
 	}
 	effects, err := unmarshalEffects(effectsJSON)
 	if err != nil {
-		return "", "", nil, err
+		return "", "", "", nil, err
 	}
 	journalTemplate, err := extractEffect[JournalTemplate](effects, EffectKindJournal)
 	if err != nil {
-		return "", "", nil, err
+		return "", "", "", nil, err
 	}
 	stockAdjustment, err := extractEffect[StockAdjustmentTemplate](effects, EffectKindStock)
 	if err != nil {
-		return "", "", nil, err
+		return "", "", "", nil, err
 	}
 	deliveryTemplate, err := extractEffect[DeliveryTemplate](effects, EffectKindDelivery)
 	if err != nil {
-		return "", "", nil, err
+		return "", "", "", nil, err
 	}
 	customerTemplate, err := extractEffect[CustomerTemplate](effects, EffectKindCustomer)
 	if err != nil {
-		return "", "", nil, err
+		return "", "", "", nil, err
 	}
 	invoiceTemplate, err := extractEffect[InvoiceTemplate](effects, EffectKindInvoice)
 	if err != nil {
-		return "", "", nil, err
+		return "", "", "", nil, err
 	}
 	salesOrderTemplate, err := extractEffect[SalesOrderTemplate](effects, EffectKindSalesOrder)
 	if err != nil {
-		return "", "", nil, err
+		return "", "", "", nil, err
 	}
 	purchaseOrderTemplate, err := extractEffect[PurchaseOrderTemplate](effects, EffectKindPurchaseOrder)
 	if err != nil {
-		return "", "", nil, err
+		return "", "", "", nil, err
 	}
 
 	allowed, err := permission.Has(ctx, tx, firmID, userID, permissionKey)
 	if err != nil {
-		return "", "", nil, err
+		return "", "", "", nil, err
 	}
 	if !allowed {
-		return "", "", nil, ErrPermissionDenied
+		return "", "", "", nil, ErrPermissionDenied
 	}
 
 	var mergedPayloadJSON []byte
@@ -1351,21 +1364,21 @@ func executeTransitionTx(ctx context.Context, tx pgx.Tx, firmID, userID, instanc
 		WHERE id = $3
 		RETURNING payload
 	`, toStateID, payloadJSON, instanceID).Scan(&mergedPayloadJSON); err != nil {
-		return "", "", nil, fmt.Errorf("update workflow instance: %w", err)
+		return "", "", "", nil, fmt.Errorf("update workflow instance: %w", err)
 	}
 	if err := json.Unmarshal(mergedPayloadJSON, &mergedPayload); err != nil {
-		return "", "", nil, fmt.Errorf("unmarshal merged payload: %w", err)
+		return "", "", "", nil, fmt.Errorf("unmarshal merged payload: %w", err)
 	}
 
 	changes, err := json.Marshal(map[string]any{"to_state": toStateKey, "payload": payload})
 	if err != nil {
-		return "", "", nil, fmt.Errorf("marshal audit changes: %w", err)
+		return "", "", "", nil, fmt.Errorf("marshal audit changes: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO audit_log (firm_id, user_id, entity_type, entity_id, action, changes)
 		VALUES ($1, $2, 'workflow_instance', $3, $4, $5)
 	`, firmID, userID, instanceID, actionKey, changes); err != nil {
-		return "", "", nil, fmt.Errorf("write audit log: %w", err)
+		return "", "", "", nil, fmt.Errorf("write audit log: %w", err)
 	}
 
 	// The workflow-to-ledger bridge: when this transition carries a
@@ -1388,15 +1401,15 @@ func executeTransitionTx(ctx context.Context, tx pgx.Tx, firmID, userID, instanc
 	if journalTemplate != nil {
 		lines, ok, err := resolveJournalLines(journalTemplate, mergedPayload)
 		if err != nil {
-			return "", "", nil, err
+			return "", "", "", nil, err
 		}
 		if ok {
 			description, err := resolveJournalDescription(ctx, tx, firmID, journalTemplate, mergedPayload)
 			if err != nil {
-				return "", "", nil, err
+				return "", "", "", nil, err
 			}
 			if _, err := accounting.PostJournalEntryTx(ctx, tx, firmID, userID, description, journalEntitySourceType, &instanceID, lines); err != nil {
-				return "", "", nil, err
+				return "", "", "", nil, err
 			}
 		}
 	}
@@ -1418,11 +1431,11 @@ func executeTransitionTx(ctx context.Context, tx pgx.Tx, firmID, userID, instanc
 	if stockAdjustment != nil {
 		productID, quantityChange, ok, err := resolveStockAdjustment(stockAdjustment, mergedPayload)
 		if err != nil {
-			return "", "", nil, err
+			return "", "", "", nil, err
 		}
 		if ok {
 			if err := inventory.AdjustStockTx(ctx, tx, firmID, productID, nil, quantityChange, stockAdjustment.Reason, journalEntitySourceType, &instanceID); err != nil {
-				return "", "", nil, err
+				return "", "", "", nil, err
 			}
 		}
 	}
@@ -1437,13 +1450,13 @@ func executeTransitionTx(ctx context.Context, tx pgx.Tx, firmID, userID, instanc
 	if deliveryTemplate != nil {
 		deliveryInput, ok, err := resolveDelivery(deliveryTemplate, mergedPayload)
 		if err != nil {
-			return "", "", nil, err
+			return "", "", "", nil, err
 		}
 		if ok {
 			deliveryInput.SourceType = journalEntitySourceType
 			deliveryInput.SourceID = &instanceID
 			if _, err := logistics.CreateDeliveryTx(ctx, tx, firmID, deliveryInput); err != nil {
-				return "", "", nil, err
+				return "", "", "", nil, err
 			}
 		}
 	}
@@ -1459,12 +1472,12 @@ func executeTransitionTx(ctx context.Context, tx pgx.Tx, firmID, userID, instanc
 	if customerTemplate != nil {
 		customerInput, ok, err := resolveCustomer(customerTemplate, mergedPayload)
 		if err != nil {
-			return "", "", nil, err
+			return "", "", "", nil, err
 		}
 		if ok {
 			customerInput.SourceWorkflowInstance = instanceID
 			if _, err := crm.CreateCustomerTx(ctx, tx, firmID, customerInput); err != nil {
-				return "", "", nil, err
+				return "", "", "", nil, err
 			}
 		}
 	}
@@ -1480,11 +1493,11 @@ func executeTransitionTx(ctx context.Context, tx pgx.Tx, firmID, userID, instanc
 	if invoiceTemplate != nil {
 		invoiceInput, ok, err := resolveInvoice(invoiceTemplate, mergedPayload)
 		if err != nil {
-			return "", "", nil, err
+			return "", "", "", nil, err
 		}
 		if ok {
 			if _, err := invoicing.CreateInvoiceTx(ctx, tx, firmID, instanceID, invoiceInput); err != nil {
-				return "", "", nil, err
+				return "", "", "", nil, err
 			}
 		}
 	}
@@ -1501,11 +1514,11 @@ func executeTransitionTx(ctx context.Context, tx pgx.Tx, firmID, userID, instanc
 	if salesOrderTemplate != nil {
 		salesOrderInput, ok, err := resolveSalesOrder(salesOrderTemplate, mergedPayload)
 		if err != nil {
-			return "", "", nil, err
+			return "", "", "", nil, err
 		}
 		if ok {
 			if _, err := salesorders.CreateSalesOrderTx(ctx, tx, firmID, instanceID, salesOrderInput); err != nil {
-				return "", "", nil, err
+				return "", "", "", nil, err
 			}
 		}
 	}
@@ -1520,16 +1533,16 @@ func executeTransitionTx(ctx context.Context, tx pgx.Tx, firmID, userID, instanc
 	if purchaseOrderTemplate != nil {
 		purchaseOrderInput, ok, err := resolvePurchaseOrder(purchaseOrderTemplate, mergedPayload)
 		if err != nil {
-			return "", "", nil, err
+			return "", "", "", nil, err
 		}
 		if ok {
 			if _, err := procurement.CreatePurchaseOrderTx(ctx, tx, firmID, instanceID, purchaseOrderInput); err != nil {
-				return "", "", nil, err
+				return "", "", "", nil, err
 			}
 		}
 	}
 
-	return definitionKey, toStateKey, mergedPayload, nil
+	return definitionKey, fromStateKey, toStateKey, mergedPayload, nil
 }
 
 // StateInfo names a single state node.

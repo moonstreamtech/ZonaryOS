@@ -1550,6 +1550,52 @@ go test ./internal/localization/... -run FiscalCountryConfig -v
 go test ./internal/localization/... -run ValidateVATNumber -v
 ```
 
+## Plugin/extension architecture and developer API/SDK foundation
+
+Vision names "extensible architecture" and a "plugin or extension mechanism" - until this batch, ZonaryOS was a pure monolith with no extension points at all: adding a feature meant modifying the core codebase. This batch builds the first real extension layer, with one working example plugin proving it end to end. See `CONTRIBUTING.md` for the practical "how do I add a plugin" walkthrough - this section covers the design.
+
+**Data model** (`plugins`/`firm_plugin_configs`, `migrations/0037`): `plugins` is a platform-wide catalog row per compiled-in plugin (name/version/description/capabilities/`config_schema`), the same "global, not tenant-scoped" shape `internal/currency`'s `exchange_rates`/`internal/localization`'s `fiscal_country_configs` already establish. `firm_plugin_configs` is firm-scoped (RLS), letting a firm opt into a catalog plugin with its own config. **This is discoverability/enablement metadata only** - nothing in `internal/plugin/catalog.go` loads, unloads, or gates whether a plugin's Go code actually runs; that's entirely `Registry`'s own compile-time registration (below). A plugin whose catalog row has `is_enabled=false` but was still registered in `cmd/server/main.go` still dispatches exactly as if enabled - a deliberate, documented gap (see `catalog.go`'s own doc comment) rather than an oversight, left for a future batch that wants the catalog to actually gate dispatch.
+
+**Hook interfaces** (`internal/plugin/hooks.go`): three extension points a compiled-in Go package can implement - `WorkflowHook` (`OnTransition`, called after a workflow transition commits), `KPIProvider` (`GetKPIs`, contributes dashboard tiles), `ReportSource` (`Entity`/`AllowedFields`/`Query`, contributes a queryable report entity). `Registry` (`internal/plugin/registry.go`) holds all three as plain slices, populated once at startup, immutable after - Part 2's own "no dynamic loading, no hot-reload" scope boundary means no mutex is needed.
+
+**The import-cycle problem, and its resolution.** `internal/plugin` needs `reports.QuerySpec`/`reports.KPIResult` (for `ReportSource`/`KPIProvider`'s own signatures) and needs `workflow`'s transition-event shape (for `WorkflowHook`) - but `internal/reports` already imports `internal/workflow`, and if `internal/workflow` imported `internal/plugin` back to dispatch to it, that completes a cycle: `workflow -> plugin -> reports -> workflow`. The fix, used consistently for all three extension points: the *canonical* interface and event/registration-function pair is defined in the CONSUMING package itself (`internal/workflow/plugin_hooks.go`'s `TransitionHook`/`TransitionHookEvent`/`RegisterTransitionHook`; `internal/reports/external.go`'s `ExternalSource`/`ExternalKPIProvider`/`RegisterExternalSource`/`RegisterExternalKPIProvider`), and `internal/plugin`'s own `TransitionEvent` is a type ALIAS for `workflow.TransitionHookEvent` (not a redeclared struct) - so a concrete type implementing `plugin.WorkflowHook`/`KPIProvider`/`ReportSource` automatically, structurally satisfies `workflow.TransitionHook`/`reports.ExternalKPIProvider`/`reports.ExternalSource` too, Go's ordinary interface-to-interface assignability, with zero adapter code. `cmd/server/main.go` is the one place that bridges `Registry`'s own slices into each consuming package's `Register*` function.
+
+**Dispatch design (sync, not async)**: `ExecuteTransition` calls `dispatchTransitionHooks` synchronously, in the same goroutine, immediately after the transition's own transaction has committed (after the existing `webhook.Dispatch`/`EvaluateRules` calls) - unlike `internal/webhook.Dispatch`'s own goroutine-per-delivery design (justified there because a webhook is an outbound HTTP call to a possibly slow/unreliable external URL). A plugin hook is trusted, in-process Go code, not a network endpoint, so there's no latency/reliability reason to pay goroutine-management complexity, and a caller reading back plugin-derived state (e.g. `activitylog`'s own entries) right after a transition should actually see it - which async dispatch could race against. **Error handling**: one hook's error is logged (`slog.Warn`, identifying which hook) and does not stop the remaining hooks, and never propagates back to `ExecuteTransition`'s own caller - the exact same post-commit, log-and-continue contract `EvaluateRules` already establishes for its own post-commit rule evaluation, deliberately reused rather than inventing a new failure mode. `BulkExecuteTransition` deliberately does NOT dispatch to hooks at all, for the same "no N-pass side effects on a bulk operation" reasoning it already gives for skipping `EvaluateRules`.
+
+**KPIProvider/ReportSource wiring**: `GetDashboardKPIs` runs the built-in `kpiDescriptors` inside its own `WithFirmContext` transaction exactly as before, then - AFTER that transaction commits - calls every registered `ExternalKPIProvider.GetKPIs(ctx, firmID, pool)` (note: `pool`, not the built-ins' own `tx` - a plugin's query needn't share that transaction boundary). `executeQuerySpec` checks `entityRegistry` FIRST; only an entity NOT in the built-in registry falls back to a registered `ExternalSource` - a built-in entity name always wins a collision, the only place this ambiguity is resolved. `validateExternalQuerySpec` (definitions.go) enforces the exact same safety-boundary checks `BuildQuery` runs against `entityRegistry` (unknown field/aggregation/group_by/date_range field all rejected), reusing `internal/queryfilter.BuildClause` for the filters half rather than duplicating that logic.
+
+**Performance note on the ReportSource fallback**: negligible. The fallback is a single `map[string]ExternalSource` lookup keyed by entity name (O(1)) - it only ever engages for an entity name that ISN'T in `entityRegistry` at all, so it adds zero overhead to any existing built-in-entity report (the map lookup happens once, fails, and the built-in `BuildQuery` path proceeds exactly as before this batch). A query that DOES hit a plugin-provided entity is exactly as fast/slow as that plugin's own `Query` implementation - this package has no way to reason about or bound that, the same way it can't reason about the built-in path's own SQL performance either.
+
+**Example plugin** (`internal/plugins/activitylog`): implements `WorkflowHook` (writes one `activity_log` row per transition - a table deliberately separate from `audit_log`, see `migrations/0037`'s own doc comment for why) and `KPIProvider` (`activity_count_today`). Proves the hook system works end to end without this package importing `internal/workflow` or `internal/reports` at all - only `internal/plugin`. One documented gap: `TransitionEvent` carries no acting-user identity, so `activitylog`'s own description can't name a person the way this batch's own illustrative "Kaan sold 5 units of Widget A" example does - see that file's own `OnTransition` doc comment.
+
+**Developer API documentation** (`internal/apidocs`, Part 4): `GET /api/docs` serves `docs/api/openapi.yaml` verbatim (embedded via `go:embed` into the binary, `docs/api/embed.go` - the same "ship inside the binary, don't read off disk at request time" reasoning `migrations.FS` already establishes for SQL migrations), unauthenticated, no UI rendering. `docs/api/openapi.yaml` itself remains the same curated, representative (not exhaustive) subset of endpoints it already was before this batch - `scripts/check_api_contract.py` only fails a PR that REMOVES a previously-documented path/method, it does not require every new endpoint to be added, and this batch follows that existing precedent rather than expanding the spec's own scope.
+
+- HTTP surface: `GET /api/plugins`, `POST /api/plugins` (platform-admin), `PATCH/DELETE /api/plugins/{pluginID}` (platform-admin); `GET/POST /api/firms/{firmID}/plugin-configs`, `DELETE /api/firms/{firmID}/plugin-configs/{pluginID}` (owner-gated); `GET /api/docs` (unauthenticated).
+- Frontend: none in this batch - Part 1's own data model has no exposed UI yet (a future batch could add a plugin catalog/configuration settings page, the same shape `internal/ai`'s own AI-configuration settings page already follows).
+
+### Scope boundaries
+
+No dynamic plugin loading (no `.so` files, no WASM - every plugin is a Go package registered at compile time). No plugin marketplace or installation UI. No plugin sandboxing/isolation - a registered plugin is trusted code with the same privileges as any other package in this binary. No hot-reload. No plugin versioning beyond `plugins.version`'s own informational column - nothing reads or enforces it.
+
+### Running these tests
+
+`internal/workflow`'s `TestDispatchTransitionHooks_*` and `internal/reports`'s `TestReportSource_*`/`TestKPIProvider_*` are pure unit tests (no Postgres needed) - they exercise the dispatch/aggregation logic directly with mock hooks/providers/sources, the same "mock the extension point" approach `internal/ai`'s own tests use for their external AI-provider dependency:
+
+```
+go test ./internal/workflow/... -run TestDispatchTransitionHooks -v
+go test ./internal/reports/... -run 'TestReportSource|TestKPIProvider' -v
+go test ./internal/apidocs/... -v
+```
+
+`internal/plugins/activitylog`'s own tests (transition -> activity_log row, KPI counting) need a real Postgres:
+
+```
+export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5433/zonaryos?sslmode=disable
+export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5433/zonaryos?sslmode=disable
+make migrate
+go test ./internal/plugins/activitylog/... -v
+```
+
 ## Continuous Integration
 
 `.github/workflows/ci.yml` turns most of the CI Checklist categories (CLAUDE.md's "How to Verify a Change") from manual PR-by-PR discipline into automated checks on every PR (and on push to `main`). Every job here existed as a manual step some earlier PR ran by hand - this file doesn't introduce new verification steps, it just stops trusting a human to remember to run them. **Canary/Rollback Trigger** remains the one item intentionally "Not Set Up": there is no ZonaryOS deployment target or infrastructure decided yet (see `docs/OPEN_POINTS.md` item 34) for a rollback trigger to hook into.

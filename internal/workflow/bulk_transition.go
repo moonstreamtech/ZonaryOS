@@ -73,7 +73,10 @@ type BulkTransitionResult struct {
 // scope (see this batch's own "no async job execution" boundary); a rule
 // that reacts to this transition on a single-instance basis still fires
 // normally the next time that instance is transitioned through
-// ExecuteTransition.
+// ExecuteTransition. For the same reason, this also does NOT call
+// dispatchTransitionHooks (plugin/extension architecture batch, Part 2) -
+// a registered WorkflowHook only ever sees single-instance transitions
+// executed through ExecuteTransition itself, not a bulk batch.
 func BulkExecuteTransition(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.UUID, instanceIDs []uuid.UUID, actionKey string, payload map[string]any) (BulkTransitionResult, error) {
 	if len(instanceIDs) == 0 {
 		return BulkTransitionResult{}, ErrBulkTransitionEmpty
@@ -131,7 +134,7 @@ func BulkExecuteTransition(ctx context.Context, pool *pgxpool.Pool, firmID, user
 
 		var toStateKey string
 		for _, instanceID := range instanceIDs {
-			_, stateKey, _, err := executeTransitionTx(ctx, tx, firmID, userID, instanceID, actionKey, payload)
+			_, _, stateKey, _, err := executeTransitionTx(ctx, tx, firmID, userID, instanceID, actionKey, payload)
 			if err != nil {
 				return fmt.Errorf("instance %s: %w", instanceID, err)
 			}

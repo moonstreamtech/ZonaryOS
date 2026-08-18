@@ -26,6 +26,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -580,8 +581,13 @@ const (
 )
 
 // GetDashboardKPIs computes every descriptor in kpiDescriptors for
-// firmID, in order. Member-gated (not owner-gated): reading dashboard
-// KPIs is ordinary firm data visibility, the same tier as
+// firmID, in order, then appends every registered ExternalKPIProvider's
+// own tiles (plugin/extension architecture batch, Part 2) - a plugin
+// author's KPI shows up on the dashboard exactly like a built-in one,
+// with no core-package change beyond calling
+// RegisterExternalKPIProvider once at startup. Member-gated (not
+// owner-gated): reading dashboard KPIs is ordinary firm data visibility,
+// the same tier as
 // internal/accounting.GetProfitAndLoss/internal/workflow.InstanceCountsByDefinition.
 // A single KPI whose underlying data doesn't exist yet for this firm
 // (e.g. no Inventory account, no task_approval workflow seeded) reads
@@ -589,6 +595,16 @@ const (
 // own compute function for why that's always the correct empty-state
 // value here (COALESCE(..., 0) on the SQL side, or a query that simply
 // returns 0 rows matched).
+//
+// Every ExternalKPIProvider call happens AFTER the built-in tiles' own
+// transaction has already committed (WithFirmContext returns) - a
+// provider takes pool, not that tx, precisely so a slow or failing
+// plugin query can never hold open (or roll back) the built-ins'
+// transaction. A provider that errors is logged (slog.Warn) and simply
+// contributes no tiles this call, rather than failing the whole
+// dashboard - the same "a plugin's own failure must never take down core
+// functionality" posture Registry.DispatchTransition documents for
+// WorkflowHook.
 func GetDashboardKPIs(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.UUID) ([]KPIResult, error) {
 	var results []KPIResult
 	err := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
@@ -611,6 +627,15 @@ func GetDashboardKPIs(ctx context.Context, pool *pgxpool.Pool, firmID, userID uu
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	for _, provider := range externalKPIProviders {
+		extra, err := provider.GetKPIs(ctx, firmID, pool)
+		if err != nil {
+			slog.Warn("plugin KPI provider failed", "firmId", firmID, "err", err)
+			continue
+		}
+		results = append(results, extra...)
 	}
 	return results, nil
 }
