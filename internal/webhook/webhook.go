@@ -99,6 +99,20 @@ const (
 	// EventInvoiceCreated's own dispatch site documents.
 	EventSalesOrderCreated    Event = "sales_order.created"
 	EventPurchaseOrderCreated Event = "purchase_order.created"
+	// EventProductCreated/EventProductUpdated/EventCustomerCreated (data
+	// pipeline/ETL/system integrations batch): dispatched by
+	// internal/inventory.CreateProduct/UpdateProduct and
+	// internal/crm.CreateCustomer respectively - the same "direct,
+	// owner-gated mutation path only" reasoning EventInvoiceCreated's own
+	// dispatch site documents. Added specifically so
+	// internal/integration.DispatchOutbound (a second, independent call
+	// right next to each of these Dispatch calls - see that function's
+	// own doc comment) has a real event to react to for its own
+	// field-mapped entity-sync push, distinct from this generic,
+	// event-subscription-based webhooks system.
+	EventProductCreated  Event = "product.created"
+	EventProductUpdated  Event = "product.updated"
+	EventCustomerCreated Event = "customer.created"
 )
 
 // AllEvents is every event type this batch supports - the create/edit
@@ -112,6 +126,9 @@ var AllEvents = []Event{
 	EventApprovalPending,
 	EventSalesOrderCreated,
 	EventPurchaseOrderCreated,
+	EventProductCreated,
+	EventProductUpdated,
+	EventCustomerCreated,
 }
 
 func validEvent(e string) bool {

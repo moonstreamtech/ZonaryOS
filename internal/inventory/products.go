@@ -39,6 +39,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
+	"github.com/moonstreamtech/ZonaryOS/internal/webhook"
 )
 
 // postgresUniqueViolation is the SQLSTATE code Postgres raises for a
@@ -207,6 +208,23 @@ func CreateProduct(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.
 	if err != nil {
 		return Product{}, err
 	}
+
+	// webhook.Dispatch (the generic, event-subscription-based webhooks
+	// system) and outboundDispatch (data pipeline/ETL/system integrations
+	// batch's own field-mapped entity-sync push, see that var's own doc
+	// comment) run side by side here, after commit - two independent
+	// consumers of the same "a product was created" fact, neither one a
+	// replacement for the other (see internal/integration/outbound.go's
+	// own package doc comment for why they're kept separate).
+	webhook.Dispatch(pool, firmID, webhook.EventProductCreated, map[string]any{
+		"productId": product.ID.String(), "sku": sku, "name": name,
+	})
+	outboundDispatch(pool, firmID, "products", map[string]any{
+		"id": product.ID.String(), "sku": product.SKU, "name": product.Name, "unit": product.Unit,
+		"unitPrice": derefStrAny(product.UnitPrice), "costPrice": derefStrAny(product.CostPrice), "taxRate": derefStrAny(product.TaxRate),
+		"category": derefStrAny(product.Category), "minQuantity": product.MinQuantity, "isActive": product.IsActive,
+	})
+
 	return product, nil
 }
 
@@ -432,6 +450,16 @@ func UpdateProduct(ctx context.Context, pool *pgxpool.Pool, firmID, userID, prod
 	if err != nil {
 		return Product{}, err
 	}
+
+	webhook.Dispatch(pool, firmID, webhook.EventProductUpdated, map[string]any{
+		"productId": product.ID.String(), "sku": product.SKU, "name": product.Name,
+	})
+	outboundDispatch(pool, firmID, "products", map[string]any{
+		"id": product.ID.String(), "sku": product.SKU, "name": product.Name, "unit": product.Unit,
+		"unitPrice": derefStrAny(product.UnitPrice), "costPrice": derefStrAny(product.CostPrice), "taxRate": derefStrAny(product.TaxRate),
+		"category": derefStrAny(product.Category), "minQuantity": product.MinQuantity, "isActive": product.IsActive,
+	})
+
 	return product, nil
 }
 

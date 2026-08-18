@@ -25,6 +25,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/contracts"
 	"github.com/moonstreamtech/ZonaryOS/internal/costcenter"
 	"github.com/moonstreamtech/ZonaryOS/internal/crm"
+	"github.com/moonstreamtech/ZonaryOS/internal/cryptutil"
 	"github.com/moonstreamtech/ZonaryOS/internal/currency"
 	"github.com/moonstreamtech/ZonaryOS/internal/discovery"
 	"github.com/moonstreamtech/ZonaryOS/internal/documents"
@@ -33,6 +34,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/health"
 	"github.com/moonstreamtech/ZonaryOS/internal/hr"
 	"github.com/moonstreamtech/ZonaryOS/internal/identity"
+	"github.com/moonstreamtech/ZonaryOS/internal/integration"
 	"github.com/moonstreamtech/ZonaryOS/internal/inventory"
 	"github.com/moonstreamtech/ZonaryOS/internal/invite"
 	"github.com/moonstreamtech/ZonaryOS/internal/invoicing"
@@ -242,6 +244,43 @@ func main() {
 	// schedulerCtx/cancelScheduler so all four stop together on shutdown.
 	go ai.RunAnomalyScheduler(schedulerCtx, pool, aiEncryptor, cfg.AIAnomalySchedulerPollInterval)
 
+	// internal/integration (data pipeline/ETL/system integrations batch):
+	// integrationEncryptor, default-off, gated by
+	// cfg.IntegrationEncryptionKey (ZONARYOS_INTEGRATION_ENCRYPTION_KEY) -
+	// a SEPARATE key from aiEncryptor's own ZONARYOS_AI_ENCRYPTION_KEY, see
+	// that field's own doc comment in internal/platform/config. Same
+	// "unset is fine, set-but-wrong is not" startup posture as aiEncryptor
+	// above.
+	integrationEncryptor, err := cryptutil.NewEncryptor(cfg.IntegrationEncryptionKey, "ZONARYOS_INTEGRATION_ENCRYPTION_KEY")
+	if err != nil {
+		slog.Error("init integration encryptor", "err", err)
+		os.Exit(1)
+	}
+	// inventory.SetOutboundDispatcher/crm.SetOutboundDispatcher wire the
+	// func-var hook pattern (see those packages' own outbound_hook.go)
+	// to internal/integration.DispatchOutbound - internal/inventory and
+	// internal/crm cannot import internal/integration directly (it would
+	// complete an import cycle back through internal/invoicing/
+	// internal/workflow), so each package instead calls an internal,
+	// package-level func-var that defaults to a no-op until wired here,
+	// once, at startup.
+	inventory.SetOutboundDispatcher(integration.DispatchOutbound)
+	crm.SetOutboundDispatcher(integration.DispatchOutbound)
+	// integration.SetEncryptor wires the package-level pkgEncryptor
+	// DispatchOutbound's own deliverOutboundOne needs to decrypt a
+	// connector's config - see that function's own doc comment for why
+	// it can't just take an explicit parameter like RegisterRoutes below
+	// does.
+	integration.SetEncryptor(integrationEncryptor)
+	// integration.RunInboundScheduler: a fifth, dedicated background
+	// goroutine, same RunX(ctx, pool, pollInterval)/ProcessX(ctx, pool)
+	// shape as the other schedulers above - unconditional (it is a fast
+	// per-firm, per-connector no-op for any firm with no active
+	// http_webhook connector holding an inbound mapping, see
+	// ProcessInboundSyncs), shares schedulerCtx/cancelScheduler so all
+	// five stop together on shutdown.
+	go integration.RunInboundScheduler(schedulerCtx, pool, integrationEncryptor, cfg.IntegrationInboundPollInterval)
+
 	// internal/plugin.Registry (plugin/extension architecture + developer
 	// API/SDK foundation batch): built once, here, before any route is
 	// registered or any request served - Part 2's own "immutable after
@@ -353,6 +392,14 @@ func main() {
 	// handler passes it straight through and fails with a clear 500
 	// (ErrEncryptionKeyNotSet) rather than the routes not existing at all.
 	ai.RegisterRoutes(mux, verifier, pool, aiEncryptor)
+	// internal/integration (data pipeline/ETL/system integrations batch):
+	// connector/mapping/sync-log CRUD, owner-gated, firm-scoped - see that
+	// package's own doc comment. integrationEncryptor may be nil
+	// (ZONARYOS_INTEGRATION_ENCRYPTION_KEY unset) - every handler passes
+	// it straight through and fails with a clear 500
+	// (ErrEncryptionKeyNotSet) rather than the routes not existing at all,
+	// same posture as ai.RegisterRoutes above.
+	integration.RegisterRoutes(mux, verifier, pool, integrationEncryptor)
 	// internal/notification (this batch): the in-app notification inbox
 	// - GET .../notifications, GET .../notifications/unread-count,
 	// PATCH .../notifications/{id}/read. Unconditional, same as every

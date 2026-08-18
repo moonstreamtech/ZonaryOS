@@ -157,6 +157,29 @@ type Config struct {
 	// configuration; every other firm's check is a fast no-op (see
 	// ProcessAnomalyChecks).
 	AIAnomalySchedulerPollInterval time.Duration
+
+	// IntegrationEncryptionKey (ZONARYOS_INTEGRATION_ENCRYPTION_KEY, data
+	// pipeline/ETL/system integrations batch) is
+	// internal/integration's own default-disabled switch for
+	// internal/cryptutil.NewEncryptor, deliberately a SEPARATE key from
+	// AIEncryptionKey - a leaked AI provider key must not also expose
+	// integration connector secrets, and vice versa. Empty (the default)
+	// means every integration_connectors.config sensitive field
+	// (apiKey/password/secret/token) is unencryptable -
+	// CreateConnector/TestConnection/outbound push/inbound pull all
+	// return ErrEncryptionKeyNotSet for a connector with any such field.
+	// Must be exactly 32 bytes, base64-encoded, when set - same "unset is
+	// fine, set-but-malformed is a real startup error" validation as
+	// AIEncryptionKey's own parsing below.
+	IntegrationEncryptionKey string
+	// IntegrationInboundPollInterval (ZONARYOS_INTEGRATION_INBOUND_POLL_INTERVAL)
+	// is how often internal/integration.RunInboundScheduler checks every
+	// http_webhook connector with an active inbound mapping for whether
+	// it is individually due (each connector's own
+	// pollIntervalMinutes config field, default 15 min, gates the actual
+	// per-connector fetch - this is only the scheduler's own outer tick).
+	// Defaults to internal/integration.DefaultInboundPollInterval (5 min).
+	IntegrationInboundPollInterval time.Duration
 }
 
 // Load reads configuration from environment variables, applying defaults
@@ -180,6 +203,8 @@ func Load() (Config, error) {
 		MaxUploadBodyBytes:             10 << 20, // 10MB
 		AIEncryptionKey:                os.Getenv("ZONARYOS_AI_ENCRYPTION_KEY"),
 		AIAnomalySchedulerPollInterval: 24 * time.Hour,
+		IntegrationEncryptionKey:       os.Getenv("ZONARYOS_INTEGRATION_ENCRYPTION_KEY"),
+		IntegrationInboundPollInterval: 5 * time.Minute,
 	}
 	cfg.DiscoveryStartURL = strings.TrimRight(getEnv("ZONARYOS_DISCOVERY_START_URL", cfg.PublicURL), "/")
 
@@ -242,6 +267,13 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("ZONARYOS_AI_ANOMALY_POLL_INTERVAL must be a positive Go duration (e.g. \"24h\")")
 		}
 		cfg.AIAnomalySchedulerPollInterval = d
+	}
+	if raw := os.Getenv("ZONARYOS_INTEGRATION_INBOUND_POLL_INTERVAL"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil || d <= 0 {
+			return Config{}, fmt.Errorf("ZONARYOS_INTEGRATION_INBOUND_POLL_INTERVAL must be a positive Go duration (e.g. \"5m\")")
+		}
+		cfg.IntegrationInboundPollInterval = d
 	}
 
 	return cfg, nil
