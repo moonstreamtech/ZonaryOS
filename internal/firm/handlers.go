@@ -6,15 +6,44 @@
 package firm
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/moonstreamtech/ZonaryOS/internal/identity"
+	"github.com/moonstreamtech/ZonaryOS/internal/localization"
 )
+
+// localeToCountryCode is a narrow, explicitly PROVISIONAL heuristic (Open
+// Points item 24 stays open on a real per-firm country field) used only
+// to look up a soft fiscal hint - a VATNumberLabel/tax_id-format warning
+// and a fiscal-year-start default - from fiscal_country_configs. firms
+// has no country column of its own, only default_locale (a UI language
+// choice, migrations/0006's own comment: "expected to hold one of this
+// app's own locales") and default_currency/tax_id (free text, no ISO
+// country code either) - so default_locale is the only signal available
+// today, and only where it unambiguously implies one country. "tr" maps
+// to Turkey; "en" and "ar" are each spoken across several of this
+// batch's own seeded countries (en: GB and US; ar: none seeded at all)
+// with no basis to prefer one over another, so this deliberately returns
+// "" (no hint) for those rather than guessing - a wrong guess here would
+// silently validate a firm's tax ID against the wrong country's format,
+// which is worse than the "no hint" case every caller already handles.
+// The real fix is a dedicated country field on firms, which is a product
+// decision beyond this batch's own narrow scope.
+func localeToCountryCode(locale string) string {
+	switch strings.ToLower(strings.TrimSpace(locale)) {
+	case "tr":
+		return "TR"
+	default:
+		return ""
+	}
+}
 
 // RegisterRoutes wires this package's HTTP endpoints into mux, same
 // bearer-token auth middleware and /api/firms/{firmID}/... path
@@ -69,6 +98,53 @@ type firmResponse struct {
 	DefaultLocale   *string `json:"defaultLocale"`
 	DefaultCurrency *string `json:"defaultCurrency"`
 	LogoURL         *string `json:"logoUrl"`
+	// VATNumberLabel/TaxIDWarning/FiscalYearStartMonth (multi-language
+	// UI/localization depth/fiscal compliance batch, Part 3/4) are soft
+	// fiscal hints derived from localeToCountryCode's own provisional
+	// locale->country mapping, never persisted - all nil/omitted when no
+	// country can be inferred from DefaultLocale, or when that country
+	// hasn't been seeded into fiscal_country_configs.
+	VATNumberLabel *string `json:"vatNumberLabel,omitempty"`
+	// TaxIDWarning is set only when TaxID is non-empty AND fails the
+	// resolved country's own vat_number_pattern - Part 3's own "soft
+	// validation - warn if invalid pattern, don't block" contract, so its
+	// presence never affects whether Update above already succeeded.
+	TaxIDWarning         *string `json:"taxIdWarning,omitempty"`
+	FiscalYearStartMonth *int    `json:"fiscalYearStartMonth,omitempty"`
+}
+
+// applyFiscalHints fills firmResponse's optional VATNumberLabel/
+// TaxIDWarning/FiscalYearStartMonth fields from the fiscal_country_configs
+// row (if any) that m's DefaultLocale maps to - see
+// localeToCountryCode's own doc comment for why this is a best-effort
+// hint, not authoritative country data. A lookup failure (no country
+// inferred, or that country never seeded) is silently treated as "no
+// hint" - this is display-only, additive information, never something
+// that should turn a successful GET/PATCH into an error.
+func applyFiscalHints(ctx context.Context, pool *pgxpool.Pool, m Metadata, resp *firmResponse) {
+	if m.DefaultLocale == nil {
+		return
+	}
+	countryCode := localeToCountryCode(*m.DefaultLocale)
+	if countryCode == "" {
+		return
+	}
+	cfg, err := localization.GetFiscalCountryConfig(ctx, pool, countryCode)
+	if err != nil {
+		return
+	}
+
+	label := cfg.VATNumberLabel
+	resp.VATNumberLabel = &label
+	month := cfg.FiscalYearStartMonth
+	resp.FiscalYearStartMonth = &month
+
+	if m.TaxID != nil && strings.TrimSpace(*m.TaxID) != "" && cfg.VATNumberPattern != nil {
+		if !localization.ValidateVATNumber(*cfg.VATNumberPattern, *m.TaxID) {
+			warning := "does not match the expected " + label + " format for " + countryCode
+			resp.TaxIDWarning = &warning
+		}
+	}
 }
 
 // handleGet returns firmID's current name and item 36 metadata,
@@ -101,16 +177,26 @@ func handleGet(pool *pgxpool.Pool) http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(firmResponse{
-			FirmID:          m.FirmID.String(),
-			Name:            m.Name,
-			Address:         m.Address,
-			TaxID:           m.TaxID,
-			DefaultLocale:   m.DefaultLocale,
-			DefaultCurrency: m.DefaultCurrency,
-			LogoURL:         m.LogoURL,
-		})
+		_ = json.NewEncoder(w).Encode(buildFirmResponse(r.Context(), pool, m))
 	}
+}
+
+// buildFirmResponse converts m into the wire response, filling the
+// optional fiscal-hint fields via applyFiscalHints - the one place both
+// handleGet and handleUpdate build their response, so a GET right after a
+// PATCH reflects the exact same hint-resolution logic.
+func buildFirmResponse(ctx context.Context, pool *pgxpool.Pool, m Metadata) firmResponse {
+	resp := firmResponse{
+		FirmID:          m.FirmID.String(),
+		Name:            m.Name,
+		Address:         m.Address,
+		TaxID:           m.TaxID,
+		DefaultLocale:   m.DefaultLocale,
+		DefaultCurrency: m.DefaultCurrency,
+		LogoURL:         m.LogoURL,
+	}
+	applyFiscalHints(ctx, pool, m, &resp)
+	return resp
 }
 
 // handleUpdate is item 4's original name-only mutation, extended by item
@@ -162,14 +248,6 @@ func handleUpdate(pool *pgxpool.Pool) http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(firmResponse{
-			FirmID:          m.FirmID.String(),
-			Name:            m.Name,
-			Address:         m.Address,
-			TaxID:           m.TaxID,
-			DefaultLocale:   m.DefaultLocale,
-			DefaultCurrency: m.DefaultCurrency,
-			LogoURL:         m.LogoURL,
-		})
+		_ = json.NewEncoder(w).Encode(buildFirmResponse(r.Context(), pool, m))
 	}
 }

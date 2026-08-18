@@ -29,6 +29,16 @@ export type FirmMetadata = {
   defaultLocale: string | null;
   defaultCurrency: string | null;
   logoUrl: string | null;
+  // vatNumberLabel/taxIdWarning/fiscalYearStartMonth (multi-language UI/
+  // localization depth/fiscal compliance batch, Part 3/4): best-effort
+  // fiscal hints internal/firm/handlers.go derives from defaultLocale via
+  // a narrow, provisional locale->country mapping - all undefined
+  // (omitted from the JSON) when no country can be inferred, or when
+  // that country hasn't been seeded into fiscal_country_configs. Never
+  // persisted, never required for the form to submit.
+  vatNumberLabel?: string;
+  taxIdWarning?: string;
+  fiscalYearStartMonth?: number;
 };
 
 /**
