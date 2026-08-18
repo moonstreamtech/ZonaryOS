@@ -1635,6 +1635,44 @@ make migrate
 go test ./internal/integration/... -v
 ```
 
+## Analytics, business intelligence, and advanced reporting
+
+The existing report engine (`internal/reports`' QuerySpec/BuildQuery) handles simple per-entity aggregations. This batch adds real analytics on top: event tracking, time-series/trend queries, cohort analysis, and scheduled report delivery.
+
+**Analytics event tracking** (`internal/analytics`, Part 1, `migrations/0040`): `POST /api/firms/{firmID}/analytics/events` accepts a batch of up to 100 events (member-gated), each stamped with the AUTHENTICATED CALLER's own `user_id` - a client can never report an event "as" a different user. `analytics_events.event_type`/`entity_type` are an open, free-form vocabulary (not a DB CHECK constraint) - `'page_view'`/`'feature_used'`/`'workflow_executed'` are illustrative examples from this batch's own design brief, not an exhaustive fixed set.
+
+**Partitioning design choice**: `analytics_events` is declared `PARTITION BY RANGE (occurred_at)` from the start, with a single `DEFAULT` catch-all partition attached in the same migration - real, working declarative partitioning, not a comment promising it later. No time-bounded partitions (one per month, say) are created by this migration: that needs an operational retention policy (how many months to keep, when to detach/drop old partitions) this batch doesn't define, and guessing at boundaries ahead of any real data would be premature. Everything lands in the `DEFAULT` partition today; attaching real time-bounded partitions and migrating rows into them is documented here as a FUTURE operational concern, not solved by this batch. The partition key must be part of any `PRIMARY KEY` on a partitioned table, which is why the key is `(id, occurred_at)` rather than `id` alone.
+
+**Time-series queries and top-by-property** (Part 2): `POST /api/firms/{firmID}/analytics/query` buckets events via Postgres's own `date_trunc` (the bucket-width argument - hour/day/week/month - is bound as a parameter, validated against a closed allow-list first for a clean 400 rather than whatever error `date_trunc` itself would raise on garbage input). `GET /api/firms/{firmID}/analytics/top?eventType=...&property=...` is the shared primitive behind both "top workflows by execution count" and the page-view heatmap table - it groups by one `properties` jsonb key (bound as a parameter into `properties ->> $N`, so an arbitrary caller-supplied key can only ever select a jsonb field by name, never alter the query's own shape) and orders by count descending. `GET /api/firms/{firmID}/analytics/active-users?days=30` is `COUNT(DISTINCT user_id)` over the trailing window.
+
+**Cohort analysis** (`internal/reports/cohort.go`, Part 3): `GET /api/firms/{firmID}/reports/cohorts?entity=customers&cohort_by=created_at&metric=invoice_total&periods=N` lives in `internal/reports`, not `internal/analytics` - it extends the existing report engine's own HTTP surface (`/api/firms/{firmID}/reports/...`), not a new subsystem. Only ONE `(entity, cohort_by, metric)` combination is implemented today - customers cohorted by their own creation month, with `SUM(invoices.total)` as the per-period metric, the exact "classic SaaS retention metric" shape this batch's own brief asks for. Any other combination returns `ErrCohortSpecNotSupported` (400), never a silent no-op or a made-up result - a deliberately narrow first cohort report, not a general cohort-analysis query language.
+
+**Cohort SQL/computation**: rather than one gnarly date-arithmetic SQL query, `CohortAnalysis` does the join in two simple queries (every customer's own `date_trunc('month', created_at)` cohort; every invoice's own `(customer_id, date_trunc('month', issued_date), total)`) and computes each invoice's own period index - `monthsBetween(cohortMonth, invoiceMonth)` - in Go. A period index outside `[0, periods)` is dropped, not clamped into the wrong bucket. The result is `CohortTable{Cohorts []CohortRow}`, each row holding `Periods` `*float64` values - `nil` at a period with no invoice data yet (a real, distinct "no data" signal, not a misleading `0` that would look identical to "this cohort genuinely spent nothing that month").
+
+**Scheduled reports** (`internal/scheduledreports`, Part 4, `migrations/0040`): owner-gated CRUD for `scheduled_reports` (`schedule_interval` is `daily`/`weekly`/`monthly`, a real DB CHECK), plus `RunScheduler`/`ProcessDueScheduledReports` - the same `RunX(ctx, pool, pollInterval)`/`ProcessX(ctx, pool)` shape every other background scheduler in this codebase already uses. A due run calls `internal/reports.RunReport` (the EXACT same engine the report definition's own manual "run" button uses - no second execution path), records the run in `saved_report_runs` (already `RunReport`'s own side effect), and notifies every `recipient_user_ids` entry via `internal/notification.CreateForRecipientsTx` with a result summary (row count, plus an un-grouped single-row report's own metric values inline as the "top-line numbers").
+
+**How this integrates with the notification system without coupling the packages**: `internal/scheduledreports` is a THIRD package that imports both `internal/reports` and `internal/notification` directly, rather than either of those two importing each other. `internal/reports` already has its own, unrelated public surface (query specs, KPIs, cohort analysis) and shouldn't need to know what a notification is; `internal/notification` is deliberately generic (see its own doc comment) and shouldn't need to know what a "report" is. There's no import-cycle risk here (neither package imports the other), so the simpler "just import both from a new package" move suffices - no func-var indirection needed, unlike `internal/integration`'s own outbound-dispatch hooks (that case had a real cycle to avoid).
+
+- HTTP surface: `POST /api/firms/{firmID}/analytics/events`, `POST /api/firms/{firmID}/analytics/query`, `GET /api/firms/{firmID}/analytics/top`, `GET /api/firms/{firmID}/analytics/active-users` (all member-gated); `GET /api/firms/{firmID}/reports/cohorts` (member-gated); `GET/POST /api/firms/{firmID}/scheduled-reports`, `PATCH/DELETE /api/firms/{firmID}/scheduled-reports/{id}` (owner-gated).
+- Frontend: `/analytics` (feature usage trend, top workflows, active users, page-view heatmap table), a "Cohort Analysis" tab on `/reports` (CSS-only conditional-formatting table, no JS charting library), `/reports/scheduled` (list/create/manage).
+
+### Scope boundaries
+
+No real-time analytics (batch ingestion only, via the same request/response cycle as any other write). No funnel analysis. No A/B testing. No ML predictions. No external BI tool integration (Metabase, Tableau, etc.).
+
+### Running these tests
+
+All of this batch's own tests need a real Postgres, same convention as every other package's integration tests:
+
+```
+export ZONARYOS_TEST_ADMIN_DATABASE_URL=postgres://zonaryos:zonaryos@localhost:5433/zonaryos?sslmode=disable
+export ZONARYOS_TEST_APP_DATABASE_URL=postgres://zonaryos_app:zonaryos_app@localhost:5433/zonaryos?sslmode=disable
+make migrate
+go test ./internal/analytics/... -v
+go test ./internal/reports/... -run TestCohortAnalysis -v
+go test ./internal/scheduledreports/... -v
+```
+
 ## Continuous Integration
 
 `.github/workflows/ci.yml` turns most of the CI Checklist categories (CLAUDE.md's "How to Verify a Change") from manual PR-by-PR discipline into automated checks on every PR (and on push to `main`). Every job here existed as a manual step some earlier PR ran by hand - this file doesn't introduce new verification steps, it just stops trusting a human to remember to run them. **Canary/Rollback Trigger** remains the one item intentionally "Not Set Up": there is no ZonaryOS deployment target or infrastructure decided yet (see `docs/OPEN_POINTS.md` item 34) for a rollback trigger to hook into.
