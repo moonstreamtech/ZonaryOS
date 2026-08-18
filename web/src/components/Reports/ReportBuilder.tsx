@@ -4,13 +4,19 @@
 // file in the root of this repository (draft, pending legal review - see
 // docs/OPEN_POINTS.md item 20).
 
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import type { CompareOp, QueryFilter, QueryMetric, ReportRow } from "@/lib/reports";
+import type { AIReportSuggestion } from "@/lib/aiConfig";
 
 type Props = {
   firmId: string;
+  // isOwner gates the "Ask AI" panel only - internal/ai.SuggestReport is
+  // owner-gated (Vision §5), while the rest of this builder is ordinary
+  // member-gated read access (see reports/builder/page.tsx's own doc
+  // comment on why isOwner is fetched there just for this).
+  isOwner: boolean;
 };
 
 // entityFields mirrors internal/reports.entityRegistry's own field
@@ -42,7 +48,7 @@ const NUMERIC_FIELDS: Record<string, string[]> = {
 
 const OPS: CompareOp[] = ["eq", "neq", "lt", "gt", "lte", "gte", "contains"];
 
-export default function ReportBuilder({ firmId }: Props) {
+export default function ReportBuilder({ firmId, isOwner }: Props) {
   const t = useTranslations("Reports");
   const router = useRouter();
 
@@ -58,6 +64,65 @@ export default function ReportBuilder({ firmId }: Props) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [rows, setRows] = useState<ReportRow[] | null>(null);
+
+  // "Ask AI" (Vision §5): a plain-language question goes to
+  // internal/ai.SuggestReport, and a successful response pre-fills this
+  // form's OWN state setters below (applyAiSuggestion) - the same fields
+  // an owner would have picked by hand from the entity/metrics/filters
+  // selects above. Nothing is ever submitted on the caller's behalf
+  // (Never-Violate Rule 9): applying a suggestion only populates the
+  // form, "Save & Run" still requires its own click.
+  const [aiPanelOpen, setAiPanelOpen] = useState(false);
+  const [aiQuestion, setAiQuestion] = useState("");
+  const [aiSubmitting, setAiSubmitting] = useState(false);
+  const [aiResult, setAiResult] = useState<
+    { kind: "notConfigured" } | { kind: "invalid"; raw: string } | { kind: "error"; message: string } | null
+  >(null);
+
+  function applyAiSuggestion(spec: AIReportSuggestion) {
+    setEntity(spec.entity);
+    setGroupBy(spec.group_by ?? "");
+    setMetrics(spec.metrics.length > 0 ? spec.metrics : [{ name: "count", aggregation: "count" }]);
+    setFilters(spec.filters ?? []);
+    setDateField(spec.date_range?.field ?? "");
+    setDateFrom(spec.date_range?.from ?? "");
+    setDateTo(spec.date_range?.to ?? "");
+    setAiPanelOpen(false);
+    setAiQuestion("");
+    setAiResult(null);
+  }
+
+  async function handleAiAsk(e: FormEvent) {
+    e.preventDefault();
+    setAiResult(null);
+    if (!aiQuestion.trim()) return;
+
+    setAiSubmitting(true);
+    try {
+      const res = await fetch(`/api/ai/suggest-report/${firmId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question: aiQuestion.trim() }),
+      });
+      if (res.status === 404) {
+        setAiResult({ kind: "notConfigured" });
+        return;
+      }
+      if (res.status === 422) {
+        setAiResult({ kind: "invalid", raw: await res.text() });
+        return;
+      }
+      if (!res.ok) {
+        setAiResult({ kind: "error", message: t("aiAskError") });
+        return;
+      }
+      applyAiSuggestion((await res.json()) as AIReportSuggestion);
+    } catch {
+      setAiResult({ kind: "error", message: t("aiAskError") });
+    } finally {
+      setAiSubmitting(false);
+    }
+  }
 
   const fields = ENTITY_FIELDS[entity] ?? [];
   const numericFields = NUMERIC_FIELDS[entity] ?? [];
@@ -128,6 +193,64 @@ export default function ReportBuilder({ firmId }: Props) {
 
   return (
     <div className="flex w-full max-w-3xl flex-col gap-6">
+      {isOwner && (
+        <div className="flex flex-col gap-2">
+          <button
+            type="button"
+            data-permission-public="true"
+            onClick={() => {
+              setAiPanelOpen((v) => !v);
+              setAiResult(null);
+            }}
+            className="self-start rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium text-black hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-50 dark:hover:bg-zinc-900"
+          >
+            {aiPanelOpen ? t("aiAskCancel") : t("aiAskOpenButton")}
+          </button>
+
+          {aiPanelOpen && (
+            <form
+              onSubmit={handleAiAsk}
+              data-permission-public="true"
+              className="flex flex-col gap-2 rounded-md border border-zinc-300 bg-zinc-50 p-3 dark:border-zinc-700 dark:bg-zinc-900"
+            >
+              <label className="flex flex-col gap-1 text-xs text-zinc-600 dark:text-zinc-400">
+                {t("aiAskLabel")}
+                <input
+                  value={aiQuestion}
+                  onChange={(e) => setAiQuestion(e.target.value)}
+                  placeholder={t("aiAskPlaceholder")}
+                  className="rounded-md border border-zinc-300 px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-black dark:text-zinc-50"
+                />
+              </label>
+
+              {aiResult?.kind === "notConfigured" && (
+                <p className="text-xs text-amber-700 dark:text-amber-400">{t("aiNotConfigured")}</p>
+              )}
+              {aiResult?.kind === "invalid" && (
+                <div className="flex flex-col gap-1 text-xs text-red-600 dark:text-red-400">
+                  <p>{t("aiInvalidSuggestion")}</p>
+                  <pre className="overflow-x-auto rounded-md border border-red-300 bg-white p-2 text-[11px] whitespace-pre-wrap text-black dark:border-red-900 dark:bg-black dark:text-zinc-100">
+                    {aiResult.raw}
+                  </pre>
+                </div>
+              )}
+              {aiResult?.kind === "error" && (
+                <p className="text-xs text-red-600 dark:text-red-400">{aiResult.message}</p>
+              )}
+
+              <button
+                type="submit"
+                data-permission-public="true"
+                disabled={aiSubmitting || !aiQuestion.trim()}
+                className="self-start rounded-md bg-black px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50 dark:bg-zinc-50 dark:text-black"
+              >
+                {aiSubmitting ? t("aiAskSubmitting") : t("aiAskSubmit")}
+              </button>
+            </form>
+          )}
+        </div>
+      )}
+
       <div className="flex flex-col gap-4 rounded-md border border-zinc-300 p-4 dark:border-zinc-700">
         <label className="flex flex-col gap-1 text-sm">
           {t("builderName")}

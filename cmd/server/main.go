@@ -15,6 +15,7 @@ import (
 
 	"github.com/moonstreamtech/ZonaryOS/internal/absence"
 	"github.com/moonstreamtech/ZonaryOS/internal/accounting"
+	"github.com/moonstreamtech/ZonaryOS/internal/ai"
 	"github.com/moonstreamtech/ZonaryOS/internal/apikey"
 	"github.com/moonstreamtech/ZonaryOS/internal/asset"
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
@@ -219,6 +220,25 @@ func main() {
 		go edgeagent.RunSubscriber(natsCtx, natsBridge, pool, cfg.NATSPollInterval)
 	}
 
+	// internal/ai.NewEncryptor (AI integration layer batch): default-off,
+	// gated by cfg.AIEncryptionKey (ZONARYOS_AI_ENCRYPTION_KEY) - see that
+	// function's own doc comment. An operator who set the value but got it
+	// wrong (bad base64, wrong length) fails startup loudly, the same
+	// "unset is fine, set-but-wrong is not" posture
+	// edgeagent.NewNATSBridge's own comment above describes for NATSURL.
+	aiEncryptor, err := ai.NewEncryptor(cfg.AIEncryptionKey)
+	if err != nil {
+		slog.Error("init AI encryptor", "err", err)
+		os.Exit(1)
+	}
+	// ai.RunAnomalyScheduler (Part 4): a fourth, dedicated background
+	// goroutine, same RunX(ctx, pool, pollInterval)/ProcessX(ctx, pool)
+	// shape as asset.RunMaintenanceScheduler/contracts.RunExpiryScheduler
+	// above - unconditional (it is a fast per-firm no-op for any firm with
+	// no active AI configuration, see ProcessAnomalyChecks), shares
+	// schedulerCtx/cancelScheduler so all four stop together on shutdown.
+	go ai.RunAnomalyScheduler(schedulerCtx, pool, aiEncryptor, cfg.AIAnomalySchedulerPollInterval)
+
 	mux := httpapi.NewMux()
 	// The well-known discovery endpoint (Open Points item 34) is
 	// unconditional - see internal/discovery.RegisterRoutes's own
@@ -285,6 +305,14 @@ func main() {
 	// itself calls - see that package's own doc comment for why these
 	// are two entirely separate auth chains.
 	edgeagent.RegisterRoutes(mux, verifier, pool)
+	// internal/ai (AI integration layer + intelligent automation batch,
+	// Vision §5): AI configuration CRUD plus the two AI-suggestion
+	// endpoints - see that package's doc comment for the Part 5 safety
+	// constraints (opt-in, 404 not 403 when unconfigured, PII firewall).
+	// aiEncryptor may be nil (ZONARYOS_AI_ENCRYPTION_KEY unset) - every
+	// handler passes it straight through and fails with a clear 500
+	// (ErrEncryptionKeyNotSet) rather than the routes not existing at all.
+	ai.RegisterRoutes(mux, verifier, pool, aiEncryptor)
 	// internal/notification (this batch): the in-app notification inbox
 	// - GET .../notifications, GET .../notifications/unread-count,
 	// PATCH .../notifications/{id}/read. Unconditional, same as every

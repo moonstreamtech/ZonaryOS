@@ -97,6 +97,7 @@ const GROUPS: NavGroup[] = [
       { href: "/settings/document-templates", labelKey: "documentTemplates", ownerOnly: true },
       { href: "/settings/api-keys", labelKey: "apiKeys", ownerOnly: true },
       { href: "/settings/webhooks", labelKey: "webhooks", ownerOnly: true },
+      { href: "/settings/ai-config", labelKey: "aiConfig", ownerOnly: true },
       { href: "/settings/members", labelKey: "members" },
     ],
   },

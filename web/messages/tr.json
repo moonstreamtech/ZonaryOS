@@ -40,6 +40,7 @@
     "documentTemplates": "Belge Şablonları",
     "apiKeys": "API Anahtarları",
     "webhooks": "Webhook'lar",
+    "aiConfig": "Yapay Zeka Yapılandırması",
     "hr": "Personel",
     "payroll": "Bordro",
     "timeTracking": "Zaman Takibi",
@@ -311,7 +312,16 @@
     "builderErrorTransitionPermissionKeyRequired": "Her geçişin bir izin anahtarı olmalı.",
     "builderErrorUnknownFromState": "\"{key}\" yukarıda tanımlanan durumlardan biri değil.",
     "builderErrorUnknownToState": "\"{key}\" yukarıda tanımlanan durumlardan biri değil.",
-    "builderErrorDuplicateTransition": "İki geçiş aynı başlangıç durumunu (\"{fromStateKey}\") ve işlem anahtarını (\"{actionKey}\") paylaşamaz."
+    "builderErrorDuplicateTransition": "İki geçiş aynı başlangıç durumunu (\"{fromStateKey}\") ve işlem anahtarını (\"{actionKey}\") paylaşamaz.",
+    "aiSuggestOpenButton": "Yapay Zeka ile Öner",
+    "aiSuggestCancel": "İptal",
+    "aiSuggestLabel": "Süreci sade bir dille açıklayın",
+    "aiSuggestPlaceholder": "ör. bir müşteri sipariş verdiğinde, ödeme onaylanana kadar bekletin, ardından teslim edin",
+    "aiSuggestSubmit": "Öner",
+    "aiSuggestSubmitting": "Öneri hazırlanıyor…",
+    "aiSuggestError": "Bir öneri alınamadı. Lütfen tekrar deneyin.",
+    "aiNotConfigured": "Bu firma için yapay zeka henüz yapılandırılmadı. Yapay Zeka Yapılandırması ayarlar sayfasından kurabilirsiniz.",
+    "aiInvalidSuggestion": "Yapay zekanın yanıtı kullanılamadı. İşte söyledikleri:"
   },
   "WorkflowInstanceDetail": {
     "title": "İş Akışı Örneği",
@@ -729,7 +739,16 @@
     "builderSaveError": "Bu rapor kaydedilemedi. Lütfen tekrar deneyin.",
     "fromLabel": "Başlangıç",
     "toLabel": "Bitiş",
-    "overdueTasksCaveat": "Sezgisel değer: gerçek bir vade tarihi kontrolü değil, 30 günden uzun süredir açık olan görevleri sayar."
+    "overdueTasksCaveat": "Sezgisel değer: gerçek bir vade tarihi kontrolü değil, 30 günden uzun süredir açık olan görevleri sayar.",
+    "aiAskOpenButton": "Yapay Zekaya Sor",
+    "aiAskCancel": "İptal",
+    "aiAskLabel": "Sorunuzu sade bir dille yazın",
+    "aiAskPlaceholder": "ör. Geçen ay kaç fatura kestik?",
+    "aiAskSubmit": "Sor",
+    "aiAskSubmitting": "Soruluyor…",
+    "aiAskError": "Bir öneri alınamadı. Lütfen tekrar deneyin.",
+    "aiNotConfigured": "Bu firma için yapay zeka henüz yapılandırılmadı. Yapay Zeka Yapılandırması ayarlar sayfasından kurabilirsiniz.",
+    "aiInvalidSuggestion": "Yapay zekanın yanıtı kullanılamadı. İşte söyledikleri:"
   },
   "DocumentTemplatesSettings": {
     "title": "Belge Şablonları",
@@ -779,6 +798,33 @@
     "secretModalTitle": "\"{name}\" oluşturuldu",
     "secretModalBody": "Bu anahtarı şimdi kopyalayın - bir daha gösterilmeyecek.",
     "secretModalClose": "Kopyaladım"
+  },
+  "AiConfigSettings": {
+    "title": "Yapay Zeka Yapılandırması",
+    "description": "Bu firma genelinde yapay zeka destekli önerileri etkinleştirmek için bir yapay zeka sağlayıcısı bağlayın. Yapay zeka yalnızca öneride bulunur - hiçbir şeyi kendi başına değiştirmez ve her öneri kullanılmadan önce bir insan tarafından gözden geçirilip düzenlenir.",
+    "notAuthorized": "Bu sayfayı görüntüleme izniniz yok.",
+    "loadError": "Bu veri yüklenemedi. Lütfen tekrar deneyin.",
+    "newConfigTitle": "Yeni yapılandırma",
+    "newConfigHint": "Yeni bir yapılandırma oluşturmak onu firmanın aktif yapılandırması yapar - aynı anda yalnızca bir yapılandırma aktif olabilir.",
+    "provider": "Sağlayıcı",
+    "providerName": {
+      "anthropic": "Anthropic",
+      "openai": "OpenAI",
+      "google": "Google",
+      "custom": "Özel"
+    },
+    "model": "Model",
+    "modelPlaceholder": "ör. claude-sonnet-4-5",
+    "apiKey": "API anahtarı",
+    "create": "Oluştur",
+    "createFieldsRequired": "Lütfen bir model ve bir API anahtarı girin.",
+    "createError": "Bu yapılandırma oluşturulamadı. Lütfen tekrar deneyin.",
+    "empty": "Henüz yapay zeka yapılandırması yok.",
+    "status": "Durum",
+    "active": "Aktif",
+    "inactive": "Pasif",
+    "delete": "Sil",
+    "deleteError": "Bu yapılandırma silinemedi. Lütfen tekrar deneyin."
   },
   "WebhooksSettings": {
     "title": "Webhook'lar",
