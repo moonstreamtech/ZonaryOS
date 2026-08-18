@@ -42,6 +42,8 @@ import FirmSwitcher from "./FirmSwitcher";
 import NavLinks from "./NavLinks";
 import GlobalSearchBox from "./GlobalSearchBox";
 import NotificationBell from "./NotificationBell";
+import OfflineIndicator from "./OfflineIndicator";
+import SyncStatusIndicator from "./SyncStatusIndicator";
 import MobileBottomNav from "./MobileBottomNav";
 import { IconSearch, IconLogout } from "./icons";
 import AuditModeClient from "@/components/AuditMode/AuditModeClient";
@@ -142,8 +144,14 @@ export default async function NavShell({ me, activeFirmId, isOwner }: Props) {
                 <GlobalSearchBox variant="sidebar" />
               </div>
 
-              <div className="flex items-center justify-center lg:justify-start">
+              <div className="flex items-center justify-center gap-1 lg:justify-start">
                 <NotificationBell firmId={activeFirmId} />
+                {/* PWA foundation batch, Part 2 / offline support batch,
+                    Part 3: connectivity + queued-sync indicators, sharing
+                    this "bell area" with NotificationBell above. Both
+                    render nothing when there's nothing to show. */}
+                <OfflineIndicator />
+                <SyncStatusIndicator />
               </div>
 
               <div className="hidden px-1 lg:block">
