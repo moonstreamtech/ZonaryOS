@@ -342,6 +342,7 @@
     "firmNamePermissionDenied": "Firmayı yalnızca firma sahibi yeniden adlandırabilir.",
     "addressLabel": "Adres",
     "taxIdLabel": "Vergi kimlik numarası",
+    "taxIdLabelWithVatNumber": "{genericLabel} ({vatLabel})",
     "defaultLocaleLabel": "Varsayılan dil",
     "defaultCurrencyLabel": "Varsayılan para birimi",
     "defaultCurrencyPlaceholder": "örn. USD",

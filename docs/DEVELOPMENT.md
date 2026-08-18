@@ -1515,6 +1515,41 @@ make migrate
 go test ./internal/ai/... -v
 ```
 
+## Multi-language UI, localization depth, and fiscal compliance foundation
+
+ZonaryOS already had Turkish/English i18n, but localization goes beyond string translation - number/date formatting, RTL layout, and per-country fiscal reference data. This batch adds all three, narrowly scoped.
+
+**Part 1: Formatting layer** (`web/src/lib/format.ts`): `formatCurrency`/`formatDate`/`formatNumber`, thin wrappers over `Intl.NumberFormat`/`Intl.DateTimeFormat` - no new locale-data dependency, since Intl already ships full ICU in every runtime this project targets. Every formatter takes an explicit `locale` argument rather than reading next-intl's `useLocale()` internally, so these stay usable from plain data-fetching code, not just client components. The locale a call site should normally pass is the **firm's** own `default_locale` (`internal/firm.Metadata.DefaultLocale`) - a firm's invoices/reports format the way that firm's own country expects, which isn't necessarily the viewing user's own UI language. A malformed locale/currency code degrades to a plain `en-US` number rather than throwing.
+
+**Part 2: RTL foundation** (`ar` locale): `ar` added alongside `tr`/`en` in `web/src/i18n/routing.ts`, with `web/messages/ar.json` - English strings with an `[AR]` prefix marking them clearly untranslated rather than silently wrong (no professional Arabic translation in this batch). `web/src/app/[locale]/layout.tsx` sets `dir="rtl"` on `<html>` when the locale is RTL. **Logical CSS properties** (`ps-`/`pe-`/`start-`/`end-` over `pl-`/`pr-`/`left-`/`right-`) are used where Tailwind's utilities support them, since those already flip automatically under `dir="rtl"` with zero per-locale conditional code - see the frontend commit for which components still use physical-direction utilities and need follow-up RTL work (the sidebar/nav shell's fixed-position pieces are the most likely candidates, since Tailwind's logical-property utilities don't cover positioning the same way they cover padding/margin/text-alignment).
+
+**Part 3: Fiscal compliance foundation** (`fiscal_country_configs`, `migrations/0036`, `internal/localization/fiscalconfig.go`): a narrow, genuinely useful slice of Open Points item 24 (deferred many times) - VAT/tax-number **format** validation per country, not tax calculation, not e-invoicing compliance (item 24 stays open beyond this). Platform-wide reference data, not firm-scoped - same "global, no RLS" shape `internal/currency`'s own `exchange_rates` table already establishes. Seeded for TR/DE/GB/US/FR. Unauthenticated `GET /api/fiscal-country-configs[/{countryCode}]` (no sensitive content, same posture as `GET /api/exchange-rates`); platform-admin-gated `POST`/`DELETE` (same allowlist `internal/currency`'s own `POST /api/exchange-rates` uses).
+
+**Validation choice: server-side.** `internal/firm/handlers.go`'s `applyFiscalHints` resolves a soft hint (never blocking - Part 3's own "warn if invalid pattern, don't block" contract) on every `GET`/`PATCH /api/firms/{firmID}` response: `vatNumberLabel` (so the UI shows "VKN" instead of "Tax ID" for a Turkish firm) and, if `taxId` is set and fails the resolved country's `vat_number_pattern`, `taxIdWarning`. Server-side because the pattern itself is server-owned reference data - a client-side re-implementation would either duplicate the regex or require a separate fetch, and the warning has to travel with the firm response either way.
+
+**The locale->country mapping is explicitly provisional.** `firms` has no country column - only `default_locale` (a UI language choice) and free-text `tax_id`/`default_currency` (no ISO country code). `internal/firm/handlers.go`'s `localeToCountryCode` maps `"tr"` -> `"TR"` (unambiguous) and returns `""` (no hint, not a guess) for `"en"`/`"ar"`, since English is spoken across multiple seeded countries (GB and US) with no basis to prefer one, and a wrong guess would silently validate against the wrong country's format - worse than showing no hint at all. The real fix is a dedicated country field on firms, a product decision beyond this batch's own scope (Open Points item 24 stays open on this specific point too).
+
+**Part 4: Fiscal-year-aware date range defaults** (`web/src/lib/fiscalYear.ts`): `getCurrentFiscalYearRange(startMonth, referenceDate?)` returns `[fiscal-year-start, fiscal-year-start + 1 year)` for "this fiscal year" - a UK firm (`fiscalYearStartMonth=4`) in any month before April is still inside the fiscal year that started the *previous* April. **How this avoids tight coupling**: `fiscalYearStartMonth` is just another optional field on the `GET/PATCH /api/firms/{firmID}` response (same fiscal-hint mechanism as `vatNumberLabel` above, defaulting to `undefined` when no country can be inferred) - `/financials`, `/reports`, and the P&L report date pickers each independently import `getCurrentFiscalYearRange` and pass the firm's own value (or omit it, which the function treats as month 1 / calendar year) with zero dependency between those three pages, and zero dependency on `internal/localization` from the frontend at all - the Go backend is the only thing that ever talks to `fiscal_country_configs`.
+
+### Scope boundaries
+
+No professional Arabic translation (placeholder `[AR]`-prefixed strings only). No full e-invoicing compliance (e-fatura for Turkey, etc.) - legal-review territory, Open Points item 24. No tax calculation. No payroll tax tables. No dedicated country field on firms (see the locale->country mapping's own provisional-heuristic note above).
+
+### Running these tests
+
+`web/src/lib/format.test.ts`/`fiscalYear.test.ts` are pure unit tests (no Postgres, no browser):
+
+```
+cd web && npx vitest run src/lib/format.test.ts src/lib/fiscalYear.test.ts
+```
+
+`internal/localization`'s `TestValidateVATNumber_TurkishFormat`/`TestValidateVATNumber_MalformedPatternNeverRejects` are pure Go unit tests; `TestFiscalCountryConfigs_SeededRows` needs a real Postgres (same `ZONARYOS_TEST_ADMIN_DATABASE_URL`/`ZONARYOS_TEST_APP_DATABASE_URL` convention as every other integration test in this repo):
+
+```
+go test ./internal/localization/... -run FiscalCountryConfig -v
+go test ./internal/localization/... -run ValidateVATNumber -v
+```
+
 ## Continuous Integration
 
 `.github/workflows/ci.yml` turns most of the CI Checklist categories (CLAUDE.md's "How to Verify a Change") from manual PR-by-PR discipline into automated checks on every PR (and on push to `main`). Every job here existed as a manual step some earlier PR ran by hand - this file doesn't introduce new verification steps, it just stops trusting a human to remember to run them. **Canary/Rollback Trigger** remains the one item intentionally "Not Set Up": there is no ZonaryOS deployment target or infrastructure decided yet (see `docs/OPEN_POINTS.md` item 34) for a rollback trigger to hook into.

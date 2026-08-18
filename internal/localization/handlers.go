@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/moonstreamtech/ZonaryOS/internal/identity"
+	"github.com/moonstreamtech/ZonaryOS/internal/platformadmin"
 )
 
 func decodeJSONBody(r *http.Request, v any) error {
@@ -28,10 +29,18 @@ func decodeJSONBody(r *http.Request, v any) error {
 	return nil
 }
 
-// RegisterRoutes wires localization's HTTP endpoints into mux - the
-// ordinary Keycloak bearer-token chain, same convention as every other
-// firm-scoped route group in this codebase.
-func RegisterRoutes(mux *http.ServeMux, verifier *identity.Verifier, pool *pgxpool.Pool) {
+// RegisterRoutes wires localization's HTTP endpoints into mux. The
+// address/tax-rate routes are the ordinary Keycloak bearer-token chain,
+// same convention as every other firm-scoped route group in this
+// codebase. The fiscal-country-config routes (Part 3 of the multi-
+// language UI/localization depth/fiscal compliance batch) are platform-
+// wide reference data, not firm-scoped: GET is deliberately
+// unauthenticated (same posture as internal/currency's own
+// GET /api/exchange-rates - a country's VAT-number format/label/currency
+// carries no sensitive data), and the writes are platform-admin-gated via
+// allow, the same allowlist-checked-first-thing convention
+// internal/currency.handleCreateRate already establishes.
+func RegisterRoutes(mux *http.ServeMux, verifier *identity.Verifier, pool *pgxpool.Pool, allow platformadmin.Allowlist) {
 	auth := identity.Middleware(verifier)
 
 	mux.Handle("GET /api/firms/{firmID}/addresses", auth(http.HandlerFunc(handleListAddresses(pool))))
@@ -43,15 +52,21 @@ func RegisterRoutes(mux *http.ServeMux, verifier *identity.Verifier, pool *pgxpo
 	mux.Handle("POST /api/firms/{firmID}/tax-rates", auth(http.HandlerFunc(handleCreateTaxRate(pool))))
 	mux.Handle("PATCH /api/firms/{firmID}/tax-rates/{taxRateID}", auth(http.HandlerFunc(handleUpdateTaxRate(pool))))
 	mux.Handle("DELETE /api/firms/{firmID}/tax-rates/{taxRateID}", auth(http.HandlerFunc(handleDeleteTaxRate(pool))))
+
+	mux.HandleFunc("GET /api/fiscal-country-configs", handleListFiscalCountryConfigs(pool))
+	mux.HandleFunc("GET /api/fiscal-country-configs/{countryCode}", handleGetFiscalCountryConfig(pool))
+	mux.Handle("POST /api/fiscal-country-configs", auth(http.HandlerFunc(handleUpsertFiscalCountryConfig(pool, allow))))
+	mux.Handle("DELETE /api/fiscal-country-configs/{countryCode}", auth(http.HandlerFunc(handleDeleteFiscalCountryConfig(pool, allow))))
 }
 
 func writeLocalizationError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, ErrFirmNotFound), errors.Is(err, ErrAddressNotFound), errors.Is(err, ErrTaxRateNotFound):
+	case errors.Is(err, ErrFirmNotFound), errors.Is(err, ErrAddressNotFound), errors.Is(err, ErrTaxRateNotFound),
+		errors.Is(err, ErrFiscalCountryConfigNotFound):
 		http.Error(w, err.Error(), http.StatusNotFound)
 	case errors.Is(err, ErrNotOwner):
 		http.Error(w, err.Error(), http.StatusForbidden)
-	case errors.Is(err, ErrInvalidAddress), errors.Is(err, ErrInvalidTaxRate):
+	case errors.Is(err, ErrInvalidAddress), errors.Is(err, ErrInvalidTaxRate), errors.Is(err, ErrInvalidFiscalCountryConfig):
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	default:
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -322,6 +337,125 @@ func handleDeleteTaxRate(pool *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 		if err := DeleteTaxRate(r.Context(), pool, firmID, userID, taxRateID); err != nil {
+			writeLocalizationError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+type fiscalCountryConfigResponse struct {
+	CountryCode          string  `json:"countryCode"`
+	VATNumberPattern     *string `json:"vatNumberPattern,omitempty"`
+	VATNumberLabel       string  `json:"vatNumberLabel"`
+	CurrencyCode         string  `json:"currencyCode"`
+	DateFormat           string  `json:"dateFormat"`
+	FiscalYearStartMonth int     `json:"fiscalYearStartMonth"`
+}
+
+func toFiscalCountryConfigResponse(c FiscalCountryConfig) fiscalCountryConfigResponse {
+	return fiscalCountryConfigResponse{
+		CountryCode: c.CountryCode, VATNumberPattern: c.VATNumberPattern, VATNumberLabel: c.VATNumberLabel,
+		CurrencyCode: c.CurrencyCode, DateFormat: c.DateFormat, FiscalYearStartMonth: c.FiscalYearStartMonth,
+	}
+}
+
+type fiscalCountryConfigRequest struct {
+	CountryCode          string `json:"countryCode"`
+	VATNumberPattern     string `json:"vatNumberPattern"`
+	VATNumberLabel       string `json:"vatNumberLabel"`
+	CurrencyCode         string `json:"currencyCode"`
+	DateFormat           string `json:"dateFormat"`
+	FiscalYearStartMonth int    `json:"fiscalYearStartMonth"`
+}
+
+// handleListFiscalCountryConfigs serves GET /api/fiscal-country-configs -
+// unauthenticated, see RegisterRoutes's own doc comment.
+func handleListFiscalCountryConfigs(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		configs, err := ListFiscalCountryConfigs(r.Context(), pool)
+		if err != nil {
+			writeLocalizationError(w, err)
+			return
+		}
+		resp := make([]fiscalCountryConfigResponse, 0, len(configs))
+		for _, c := range configs {
+			resp = append(resp, toFiscalCountryConfigResponse(c))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}
+}
+
+// handleGetFiscalCountryConfig serves
+// GET /api/fiscal-country-configs/{countryCode} - unauthenticated, same
+// posture as handleListFiscalCountryConfigs.
+func handleGetFiscalCountryConfig(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		c, err := GetFiscalCountryConfig(r.Context(), pool, r.PathValue("countryCode"))
+		if err != nil {
+			writeLocalizationError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(toFiscalCountryConfigResponse(c))
+	}
+}
+
+// handleUpsertFiscalCountryConfig serves POST /api/fiscal-country-configs -
+// platform-admin-gated, checked as the very first thing after reading the
+// already-verified identity off the request context, before any database
+// access - same "404, not 403, off-allowlist looks like the route doesn't
+// exist" posture internal/currency.handleCreateRate establishes.
+func handleUpsertFiscalCountryConfig(pool *pgxpool.Pool, allow platformadmin.Allowlist) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := identity.FromContext(r.Context())
+		if !ok {
+			http.Error(w, "missing identity", http.StatusInternalServerError)
+			return
+		}
+		if !allow.Contains(id.Email) {
+			http.NotFound(w, r)
+			return
+		}
+
+		var req fiscalCountryConfigRequest
+		if err := decodeJSONBody(r, &req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		c, err := UpsertFiscalCountryConfig(r.Context(), pool, FiscalCountryConfigInput{
+			CountryCode: req.CountryCode, VATNumberPattern: req.VATNumberPattern, VATNumberLabel: req.VATNumberLabel,
+			CurrencyCode: req.CurrencyCode, DateFormat: req.DateFormat, FiscalYearStartMonth: req.FiscalYearStartMonth,
+		})
+		if err != nil {
+			writeLocalizationError(w, err)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(toFiscalCountryConfigResponse(c))
+	}
+}
+
+// handleDeleteFiscalCountryConfig serves
+// DELETE /api/fiscal-country-configs/{countryCode} - platform-admin-gated,
+// same posture as handleUpsertFiscalCountryConfig.
+func handleDeleteFiscalCountryConfig(pool *pgxpool.Pool, allow platformadmin.Allowlist) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := identity.FromContext(r.Context())
+		if !ok {
+			http.Error(w, "missing identity", http.StatusInternalServerError)
+			return
+		}
+		if !allow.Contains(id.Email) {
+			http.NotFound(w, r)
+			return
+		}
+
+		if err := DeleteFiscalCountryConfig(r.Context(), pool, r.PathValue("countryCode")); err != nil {
 			writeLocalizationError(w, err)
 			return
 		}

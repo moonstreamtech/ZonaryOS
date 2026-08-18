@@ -15,6 +15,9 @@ import {
 } from "@/lib/accounting";
 import { fetchReceivablesAging } from "@/lib/invoicing";
 import { fetchCostCenterPnL } from "@/lib/costcenter";
+import { fetchFirmMetadata } from "@/lib/firm";
+import { formatCurrency, formatDate, formatNumber } from "@/lib/format";
+import { getCurrentFiscalYearRange } from "@/lib/fiscalYear";
 
 type PageProps = {
   params: Promise<{ locale: string }>;
@@ -40,6 +43,28 @@ function startOfDayUTC(dateOnly?: string): string | undefined {
 function endOfDayUTC(dateOnly?: string): string | undefined {
   if (!dateOnly) return undefined;
   return `${dateOnly}T23:59:59Z`;
+}
+
+// "YYYY-MM-DD" for a UTC Date, matching the plain calendar-day form the
+// ?from=/?to= search params and the <input type="date"> defaultValue
+// already use.
+function dateOnlyUTC(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+// Part 4 of the multi-language UI/localization depth/fiscal compliance
+// batch: when the caller hasn't picked an explicit from/to via the URL,
+// default the range to "this fiscal year" (getCurrentFiscalYearRange)
+// rather than an implicit all-time report - using the firm's own
+// fiscalYearStartMonth hint (undefined defaults to month 1, i.e. the
+// calendar year, same as before this batch for a firm with no country
+// hint). fiscalRange.end is exclusive (one year after start) - the
+// picker's own "to" field wants the last inclusive day, so this
+// subtracts one day back off it.
+function defaultFiscalRange(fiscalYearStartMonth: number | undefined): { from: string; to: string } {
+  const { start, end } = getCurrentFiscalYearRange(fiscalYearStartMonth ?? 1);
+  const lastInclusiveDay = new Date(end.getTime() - 24 * 60 * 60 * 1000);
+  return { from: dateOnlyUTC(start), to: dateOnlyUTC(lastInclusiveDay) };
 }
 
 // Vision §3's financial management core: a functional (not polished)
@@ -72,6 +97,9 @@ export default async function FinancialsPage({ params, searchParams }: PageProps
             : "balances";
 
   const { sessionToken, firm } = await requireFirmContext(locale);
+  const metadata = await fetchFirmMetadata(sessionToken, firm.firmId);
+  const formatLocale = metadata?.defaultLocale || locale;
+  const fiscalDefault = defaultFiscalRange(metadata?.fiscalYearStartMonth);
 
   return (
     <main className="flex flex-1 flex-col items-center gap-10 bg-zinc-50 px-6 py-16 dark:bg-black">
@@ -99,17 +127,36 @@ export default async function FinancialsPage({ params, searchParams }: PageProps
       </div>
 
       {tab === "balances" && (
-        <BalancesTab sessionToken={sessionToken} firmId={firm.firmId} />
+        <BalancesTab sessionToken={sessionToken} firmId={firm.firmId} formatLocale={formatLocale} />
       )}
       {tab === "pnl" && (
-        <PnLTab sessionToken={sessionToken} firmId={firm.firmId} from={sp.from} to={sp.to} />
+        <PnLTab
+          sessionToken={sessionToken}
+          firmId={firm.firmId}
+          from={sp.from ?? fiscalDefault.from}
+          to={sp.to ?? fiscalDefault.to}
+          formatLocale={formatLocale}
+        />
       )}
       {tab === "balance-sheet" && (
-        <BalanceSheetTab sessionToken={sessionToken} firmId={firm.firmId} asOf={sp.asOf} />
+        <BalanceSheetTab
+          sessionToken={sessionToken}
+          firmId={firm.firmId}
+          asOf={sp.asOf}
+          formatLocale={formatLocale}
+        />
       )}
-      {tab === "aging" && <AgingTab sessionToken={sessionToken} firmId={firm.firmId} />}
+      {tab === "aging" && (
+        <AgingTab sessionToken={sessionToken} firmId={firm.firmId} formatLocale={formatLocale} />
+      )}
       {tab === "cost-center-pnl" && (
-        <CostCenterPnLTab sessionToken={sessionToken} firmId={firm.firmId} from={sp.from} to={sp.to} />
+        <CostCenterPnLTab
+          sessionToken={sessionToken}
+          firmId={firm.firmId}
+          from={sp.from ?? fiscalDefault.from}
+          to={sp.to ?? fiscalDefault.to}
+          formatLocale={formatLocale}
+        />
       )}
     </main>
   );
@@ -141,7 +188,15 @@ async function TabLink({
   );
 }
 
-async function BalancesTab({ sessionToken, firmId }: { sessionToken: string; firmId: string }) {
+async function BalancesTab({
+  sessionToken,
+  firmId,
+  formatLocale,
+}: {
+  sessionToken: string;
+  firmId: string;
+  formatLocale: string;
+}) {
   const t = await getTranslations("Financials");
 
   const [accounts, entriesPage] = await Promise.all([
@@ -190,7 +245,9 @@ async function BalancesTab({ sessionToken, firmId }: { sessionToken: string; fir
                     </td>
                     <td className="py-2 pr-4">{account.name}</td>
                     <td className="py-2 font-mono">
-                      {balance !== null ? `${balance} ${account.currency}` : t("loadError")}
+                      {balance !== null
+                        ? formatCurrency(Number(balance), account.currency, formatLocale)
+                        : t("loadError")}
                     </td>
                   </tr>
                 ))}
@@ -220,7 +277,7 @@ async function BalancesTab({ sessionToken, firmId }: { sessionToken: string; fir
                     {entry.description}
                   </span>
                   <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                    {new Date(entry.postedAt).toLocaleString()}
+                    {formatDate(entry.postedAt, formatLocale, "medium")}
                   </span>
                 </div>
                 <ul className="mt-2 flex flex-col gap-1">
@@ -233,9 +290,7 @@ async function BalancesTab({ sessionToken, firmId }: { sessionToken: string; fir
                         {line.side === "debit" ? t("debitLabel") : t("creditLabel")}{" "}
                         {line.accountCode} — {line.accountName}
                       </span>
-                      <span>
-                        {line.amount} {line.currency}
-                      </span>
+                      <span>{formatCurrency(Number(line.amount), line.currency, formatLocale)}</span>
                     </li>
                   ))}
                 </ul>
@@ -248,12 +303,17 @@ async function BalancesTab({ sessionToken, firmId }: { sessionToken: string; fir
   );
 }
 
-function reportLineRows(lines: ReportLine[]) {
+// ReportLine.amount has no currency code of its own (P&L/Balance Sheet
+// report rows are aggregated across accounts, potentially each in a
+// different account currency - see accounting.ts's own doc comment) -
+// formatNumber (not formatCurrency) is the honest choice here, same
+// treatment for every report total below.
+function reportLineRows(lines: ReportLine[], formatLocale: string) {
   return lines.map((l) => (
     <tr key={l.accountId} className="border-b border-zinc-200 text-black dark:border-zinc-800 dark:text-zinc-50">
       <td className="py-2 pr-4 font-mono text-xs whitespace-nowrap">{l.code}</td>
       <td className="py-2 pr-4">{l.name}</td>
-      <td className="py-2 font-mono">{l.amount}</td>
+      <td className="py-2 font-mono">{formatNumber(Number(l.amount), formatLocale, 2)}</td>
     </tr>
   ));
 }
@@ -263,11 +323,13 @@ async function PnLTab({
   firmId,
   from,
   to,
+  formatLocale,
 }: {
   sessionToken: string;
   firmId: string;
   from?: string;
   to?: string;
+  formatLocale: string;
 }) {
   const t = await getTranslations("Financials");
   const report = await fetchPnLReport(sessionToken, firmId, {
@@ -333,13 +395,13 @@ async function PnLTab({
                     </td>
                   </tr>
                 ) : (
-                  reportLineRows(report.revenue)
+                  reportLineRows(report.revenue, formatLocale)
                 )}
                 <tr className="font-medium text-black dark:text-zinc-50">
                   <td className="py-2 pr-4" colSpan={2}>
                     {t("pnlTotalRevenue")}
                   </td>
-                  <td className="py-2 font-mono">{report.totalRevenue}</td>
+                  <td className="py-2 font-mono">{formatNumber(Number(report.totalRevenue), formatLocale, 2)}</td>
                 </tr>
               </tbody>
             </table>
@@ -362,13 +424,13 @@ async function PnLTab({
                     </td>
                   </tr>
                 ) : (
-                  reportLineRows(report.expenses)
+                  reportLineRows(report.expenses, formatLocale)
                 )}
                 <tr className="font-medium text-black dark:text-zinc-50">
                   <td className="py-2 pr-4" colSpan={2}>
                     {t("pnlTotalExpenses")}
                   </td>
-                  <td className="py-2 font-mono">{report.totalExpenses}</td>
+                  <td className="py-2 font-mono">{formatNumber(Number(report.totalExpenses), formatLocale, 2)}</td>
                 </tr>
               </tbody>
             </table>
@@ -376,7 +438,7 @@ async function PnLTab({
 
           <div className="flex items-center justify-between rounded-md border border-zinc-300 p-3 text-sm font-semibold text-black dark:border-zinc-700 dark:text-zinc-50">
             <span>{t("pnlNetIncome")}</span>
-            <span className="font-mono">{report.netIncome}</span>
+            <span className="font-mono">{formatNumber(Number(report.netIncome), formatLocale, 2)}</span>
           </div>
         </>
       )}
@@ -388,10 +450,12 @@ async function BalanceSheetTab({
   sessionToken,
   firmId,
   asOf,
+  formatLocale,
 }: {
   sessionToken: string;
   firmId: string;
   asOf?: string;
+  formatLocale: string;
 }) {
   const t = await getTranslations("Financials");
   const report = await fetchBalanceSheetReport(sessionToken, firmId, { asOf: endOfDayUTC(asOf) });
@@ -428,7 +492,9 @@ async function BalanceSheetTab({
         <>
           {!report.balanced && (
             <p className="rounded-md border border-red-400 bg-red-50 p-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
-              {t("balanceSheetOutOfBalance", { difference: report.difference })}
+              {t("balanceSheetOutOfBalance", {
+                difference: formatNumber(Number(report.difference), formatLocale, 2),
+              })}
             </p>
           )}
 
@@ -449,13 +515,13 @@ async function BalanceSheetTab({
                     </td>
                   </tr>
                 ) : (
-                  reportLineRows(report.assets)
+                  reportLineRows(report.assets, formatLocale)
                 )}
                 <tr className="font-medium text-black dark:text-zinc-50">
                   <td className="py-2 pr-4" colSpan={2}>
                     {t("balanceSheetTotalAssets")}
                   </td>
-                  <td className="py-2 font-mono">{report.totalAssets}</td>
+                  <td className="py-2 font-mono">{formatNumber(Number(report.totalAssets), formatLocale, 2)}</td>
                 </tr>
               </tbody>
             </table>
@@ -478,13 +544,15 @@ async function BalanceSheetTab({
                     </td>
                   </tr>
                 ) : (
-                  reportLineRows(report.liabilities)
+                  reportLineRows(report.liabilities, formatLocale)
                 )}
                 <tr className="font-medium text-black dark:text-zinc-50">
                   <td className="py-2 pr-4" colSpan={2}>
                     {t("balanceSheetTotalLiabilities")}
                   </td>
-                  <td className="py-2 font-mono">{report.totalLiabilities}</td>
+                  <td className="py-2 font-mono">
+                    {formatNumber(Number(report.totalLiabilities), formatLocale, 2)}
+                  </td>
                 </tr>
               </tbody>
             </table>
@@ -507,19 +575,21 @@ async function BalanceSheetTab({
                     </td>
                   </tr>
                 ) : (
-                  reportLineRows(report.equity)
+                  reportLineRows(report.equity, formatLocale)
                 )}
                 <tr className="text-black dark:text-zinc-50">
                   <td className="py-2 pr-4" colSpan={2}>
                     {t("balanceSheetCurrentEarnings")}
                   </td>
-                  <td className="py-2 font-mono">{report.currentEarnings}</td>
+                  <td className="py-2 font-mono">
+                    {formatNumber(Number(report.currentEarnings), formatLocale, 2)}
+                  </td>
                 </tr>
                 <tr className="font-medium text-black dark:text-zinc-50">
                   <td className="py-2 pr-4" colSpan={2}>
                     {t("balanceSheetTotalEquity")}
                   </td>
-                  <td className="py-2 font-mono">{report.totalEquity}</td>
+                  <td className="py-2 font-mono">{formatNumber(Number(report.totalEquity), formatLocale, 2)}</td>
                 </tr>
               </tbody>
             </table>
@@ -548,11 +618,13 @@ async function CostCenterPnLTab({
   firmId,
   from,
   to,
+  formatLocale,
 }: {
   sessionToken: string;
   firmId: string;
   from?: string;
   to?: string;
+  formatLocale: string;
 }) {
   const t = await getTranslations("Financials");
   const lines = await fetchCostCenterPnL(sessionToken, firmId, {
@@ -625,9 +697,9 @@ async function CostCenterPnLTab({
                         on this page. */}
                     {l.name}
                   </td>
-                  <td className="py-2 pr-4 font-mono">{l.revenue}</td>
-                  <td className="py-2 pr-4 font-mono">{l.expenses}</td>
-                  <td className="py-2 font-mono">{l.net}</td>
+                  <td className="py-2 pr-4 font-mono">{formatNumber(Number(l.revenue), formatLocale, 2)}</td>
+                  <td className="py-2 pr-4 font-mono">{formatNumber(Number(l.expenses), formatLocale, 2)}</td>
+                  <td className="py-2 font-mono">{formatNumber(Number(l.net), formatLocale, 2)}</td>
                 </tr>
               ))}
             </tbody>
@@ -638,7 +710,15 @@ async function CostCenterPnLTab({
   );
 }
 
-async function AgingTab({ sessionToken, firmId }: { sessionToken: string; firmId: string }) {
+async function AgingTab({
+  sessionToken,
+  firmId,
+  formatLocale,
+}: {
+  sessionToken: string;
+  firmId: string;
+  formatLocale: string;
+}) {
   const t = await getTranslations("Financials");
   const buckets = await fetchReceivablesAging(sessionToken, firmId);
 
@@ -662,8 +742,8 @@ async function AgingTab({ sessionToken, firmId }: { sessionToken: string; firmId
               {buckets.map((b) => (
                 <tr key={b.label} className="border-b border-zinc-200 text-black dark:border-zinc-800 dark:text-zinc-50">
                   <td className="py-2 pr-4 font-mono">{b.label}</td>
-                  <td className="py-2 pr-4">{b.count}</td>
-                  <td className="py-2 font-mono">{b.outstanding}</td>
+                  <td className="py-2 pr-4">{formatNumber(b.count, formatLocale)}</td>
+                  <td className="py-2 font-mono">{formatNumber(Number(b.outstanding), formatLocale, 2)}</td>
                 </tr>
               ))}
             </tbody>

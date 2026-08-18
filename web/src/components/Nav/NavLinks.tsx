@@ -164,7 +164,7 @@ export default function NavLinks({ isOwner }: Props) {
                   data-permission-public="true"
                   aria-current={active ? "page" : undefined}
                   title={t(item.labelKey)}
-                  className={`group flex items-center justify-center gap-3 rounded-md border-l-2 py-2 text-sm transition-colors lg:justify-start lg:px-3 lg:py-1.5 ${
+                  className={`group flex items-center justify-center gap-3 rounded-md border-s-2 py-2 text-sm transition-colors lg:justify-start lg:px-3 lg:py-1.5 ${
                     active
                       ? "border-[var(--color-sidebar-fg)] bg-[var(--color-sidebar-active)] font-medium text-[var(--color-sidebar-fg)]"
                       : "border-transparent text-[var(--color-sidebar-fg-muted)] hover:bg-[var(--color-sidebar-hover)] hover:text-[var(--color-sidebar-fg)]"

@@ -294,10 +294,12 @@ func main() {
 	// platform-admin-gated writes/reads, same allowlist, plus one
 	// firm-scoped member-gated read (GET /api/firms/{firmID}/group).
 	consolidation.RegisterRoutes(mux, verifier, pool, platformAdminAllowlist)
-	// internal/localization (this batch, Open Points item 24's
-	// foundation-only address/tax data model): owner-gated, firm-scoped
-	// CRUD for addresses and tax rates.
-	localization.RegisterRoutes(mux, verifier, pool)
+	// internal/localization: owner-gated, firm-scoped CRUD for addresses
+	// and tax rates, plus (multi-language UI/localization depth/fiscal
+	// compliance batch, Part 3) platform-wide fiscal country reference
+	// data - unauthenticated reads, platform-admin-gated writes, same
+	// allowlist as internal/currency's own platform-admin-only route.
+	localization.RegisterRoutes(mux, verifier, pool, platformAdminAllowlist)
 	// internal/edgeagent (this batch, Vision §9's Edge Agent protocol
 	// foundation): registers both the ordinary Keycloak-authenticated
 	// firm-scoped routes (register/list agents, issue/list tokens, list

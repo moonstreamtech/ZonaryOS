@@ -32,4 +32,16 @@ var (
 	// ErrInvalidTaxRate means CreateTaxRate/UpdateTaxRate was given a
 	// structurally invalid tax rate (empty name, negative/malformed rate).
 	ErrInvalidTaxRate = errors.New("invalid tax rate")
+
+	// ErrFiscalCountryConfigNotFound means no fiscal_country_configs row
+	// exists for the given country code - platform-wide reference data,
+	// not firm-scoped, so this is never an ErrFirmNotFound-style
+	// membership question.
+	ErrFiscalCountryConfigNotFound = errors.New("fiscal country config not found")
+
+	// ErrInvalidFiscalCountryConfig means Upsert/CreateFiscalCountryConfig
+	// was given a structurally invalid config (empty required field, an
+	// out-of-range fiscal year start month, or a VAT number pattern that
+	// doesn't even compile as a regular expression).
+	ErrInvalidFiscalCountryConfig = errors.New("invalid fiscal country config")
 )

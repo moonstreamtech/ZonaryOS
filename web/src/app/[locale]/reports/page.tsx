@@ -7,6 +7,8 @@ import { setRequestLocale, getTranslations } from "next-intl/server";
 import { Link } from "@/i18n/navigation";
 import { requireFirmContext } from "@/lib/firmContext";
 import { fetchDashboardKPIs, fetchReportDefinitions } from "@/lib/reports";
+import { fetchFirmMetadata } from "@/lib/firm";
+import { formatCurrency, formatNumber } from "@/lib/format";
 import MyReportsPanel from "@/components/Reports/MyReportsPanel";
 
 type PageProps = {
@@ -43,7 +45,7 @@ export default async function ReportsPage({ params, searchParams }: PageProps) {
       </div>
 
       {tab === "dashboard" ? (
-        <DashboardTab sessionToken={sessionToken} firmId={firm.firmId} />
+        <DashboardTab sessionToken={sessionToken} firmId={firm.firmId} locale={locale} />
       ) : (
         <MyReportsTab sessionToken={sessionToken} firmId={firm.firmId} locale={locale} />
       )}
@@ -67,9 +69,26 @@ function TabLink({ locale, tab, active, label }: { locale: string; tab: Tab; act
   );
 }
 
-async function DashboardTab({ sessionToken, firmId }: { sessionToken: string; firmId: string }) {
+async function DashboardTab({
+  sessionToken,
+  firmId,
+  locale,
+}: {
+  sessionToken: string;
+  firmId: string;
+  locale: string;
+}) {
   const t = await getTranslations("Reports");
-  const kpis = await fetchDashboardKPIs(sessionToken, firmId);
+  const [kpis, metadata] = await Promise.all([
+    fetchDashboardKPIs(sessionToken, firmId),
+    fetchFirmMetadata(sessionToken, firmId),
+  ]);
+  const formatLocale = metadata?.defaultLocale || locale;
+  // "TRY" preserves this tile's previous hardcoded currency when the
+  // firm hasn't set its own default_currency - see format.ts's own doc
+  // comment on why the fallback choice is each call site's, not the
+  // formatter's.
+  const currency = metadata?.defaultCurrency || "TRY";
 
   return kpis === null ? (
     <p className="text-red-600 dark:text-red-400">{t("loadError")}</p>
@@ -84,7 +103,9 @@ async function DashboardTab({ sessionToken, firmId }: { sessionToken: string; fi
             {t(`kpi.${kpi.key}`)}
           </span>
           <span className="text-2xl font-semibold text-black dark:text-zinc-50">
-            {kpi.unit === "currency" ? `${kpi.value} TRY` : kpi.value}
+            {kpi.unit === "currency"
+              ? formatCurrency(Number(kpi.value), currency, formatLocale)
+              : formatNumber(Number(kpi.value), formatLocale)}
           </span>
           {/* overdueTasks is a heuristic (task_approval instances open
               >30 days), not a real due-date check - this caveat has to
