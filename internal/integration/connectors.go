@@ -216,22 +216,23 @@ func ListConnectors(ctx context.Context, pool *pgxpool.Pool, enc *cryptutil.Encr
 }
 
 // UpdateConnector replaces connectorID's mutable fields - owner-gated,
-// full-replace, same shape as internal/localization.UpdateTaxRate.
+// full-replace for every field EXCEPT sensitive config fields
+// (apiKey/password/secret/token): a caller who leaves one of those blank
+// or omits it entirely keeps its existing encrypted value unchanged
+// (preserveUnsetSensitiveFields, crypto.go) rather than wiping/
+// overwriting it - a masked value ("...WXYZ") is never re-decryptable
+// client-side, so "resubmit the same value" isn't something a caller can
+// actually do; "leave it blank" is the only signal available, and it must
+// mean "keep the real secret," not "the real secret is empty" (which
+// would silently corrupt the connector on the very next edit that didn't
+// happen to re-type it).
 func UpdateConnector(ctx context.Context, pool *pgxpool.Pool, enc *cryptutil.Encryptor, firmID, userID, connectorID uuid.UUID, input ConnectorInput) (Connector, error) {
 	if err := validateConnectorInput(input); err != nil {
 		return Connector{}, err
 	}
-	encryptedConfig, err := encryptSensitiveConfigFields(enc, input.Config)
-	if err != nil {
-		return Connector{}, err
-	}
-	configJSON, err := json.Marshal(encryptedConfig)
-	if err != nil {
-		return Connector{}, fmt.Errorf("marshal config: %w", err)
-	}
 
 	var connector Connector
-	err = zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+	err := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
 		isMember, err := permission.IsMember(ctx, tx, firmID, userID)
 		if err != nil {
 			return err
@@ -247,6 +248,25 @@ func UpdateConnector(ctx context.Context, pool *pgxpool.Pool, enc *cryptutil.Enc
 			return ErrNotOwner
 		}
 
+		existingRow := tx.QueryRow(ctx, `SELECT `+connectorColumns+` FROM integration_connectors WHERE id = $1 AND firm_id = $2`, connectorID, firmID)
+		existing, err := scanConnector(existingRow)
+		if err != nil {
+			if err == pgx.ErrNoRows {
+				return ErrConnectorNotFound
+			}
+			return fmt.Errorf("read existing connector: %w", err)
+		}
+
+		encryptedConfig, err := encryptSensitiveConfigFields(enc, input.Config)
+		if err != nil {
+			return err
+		}
+		encryptedConfig = preserveUnsetSensitiveFields(encryptedConfig, existing.Config)
+		configJSON, err := json.Marshal(encryptedConfig)
+		if err != nil {
+			return fmt.Errorf("marshal config: %w", err)
+		}
+
 		row := tx.QueryRow(ctx, `
 			UPDATE integration_connectors SET name = $1, type = $2, config = $3, is_active = $4
 			WHERE id = $5 AND firm_id = $6
@@ -255,9 +275,6 @@ func UpdateConnector(ctx context.Context, pool *pgxpool.Pool, enc *cryptutil.Enc
 		)
 		c, err := scanConnector(row)
 		if err != nil {
-			if err == pgx.ErrNoRows {
-				return ErrConnectorNotFound
-			}
 			return fmt.Errorf("update connector: %w", err)
 		}
 		connector = c

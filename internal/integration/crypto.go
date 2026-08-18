@@ -100,6 +100,28 @@ func decryptSensitiveConfigFields(enc *cryptutil.Encryptor, config map[string]an
 	return out, nil
 }
 
+// preserveUnsetSensitiveFields overlays, onto encryptedConfig (the output
+// of encryptSensitiveConfigFields applied to a caller's NEW input), the
+// EXISTING already-encrypted ciphertext for every sensitive key the caller
+// left blank or omitted entirely - UpdateConnector's own "leave a
+// sensitive field blank in the edit form to keep it unchanged" contract.
+// Never re-encrypts the preserved value (it's already ciphertext; doing
+// so would double-encrypt it into an undecryptable value) and never
+// touches a key the caller DID provide a non-empty new value for.
+func preserveUnsetSensitiveFields(encryptedConfig, existingConfig map[string]any) map[string]any {
+	for k := range sensitiveConfigKeys {
+		if s, ok := encryptedConfig[k].(string); ok && s != "" {
+			continue
+		}
+		existing, ok := existingConfig[k].(string)
+		if !ok || existing == "" {
+			continue
+		}
+		encryptedConfig[k] = existing
+	}
+	return encryptedConfig
+}
+
 // maskSensitiveConfigFields returns a copy of config safe to include in
 // an HTTP response - every sensitive key's own value replaced by
 // cryptutil.MaskAPIKey's own "...WXYZ" (last 4 characters only) display form,

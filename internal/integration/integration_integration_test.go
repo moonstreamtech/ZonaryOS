@@ -182,6 +182,65 @@ func TestConnectorCRUD_And_TestConnection(t *testing.T) {
 	}
 }
 
+// TestUpdateConnector_OmittedSensitiveFieldPreservesExistingSecret is a
+// regression test for the "leave a sensitive field blank on edit" UX
+// contract the frontend (IntegrationsManager.tsx) relies on: an edit that
+// omits apiKey entirely from its config must NOT wipe or corrupt the
+// connector's real, already-stored secret - it must decrypt to exactly
+// the same plaintext it did before the edit.
+func TestUpdateConnector_OmittedSensitiveFieldPreservesExistingSecret(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+	firmID, userID := seedOwner(ctx, t, adminPool, appPool, "Preserve Secret Firm", "owner-preserve-secret")
+	enc := testEncryptor(t)
+
+	connector, err := integration.CreateConnector(ctx, appPool, enc, firmID, userID, integration.ConnectorInput{
+		Name: "Secret Holder", Type: integration.ConnectorHTTPWebhook,
+		Config:   map[string]any{"url": "https://example.com/hook", "apiKey": "sk-real-secret-0001"},
+		IsActive: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConnector: %v", err)
+	}
+
+	// Edit without apiKey in the submitted config at all - the exact shape
+	// configRowsToPayload now produces when the apiKey field is left blank.
+	updated, err := integration.UpdateConnector(ctx, appPool, enc, firmID, userID, connector.ID, integration.ConnectorInput{
+		Name: "Secret Holder (renamed)", Type: integration.ConnectorHTTPWebhook,
+		Config:   map[string]any{"url": "https://example.com/hook-v2"},
+		IsActive: true,
+	})
+	if err != nil {
+		t.Fatalf("UpdateConnector: %v", err)
+	}
+	if updated.Config["apiKey"] != "...0001" {
+		t.Fatalf("expected the masked apiKey to still reflect the original secret's own tail \"...0001\", got %v", updated.Config["apiKey"])
+	}
+
+	// Read the raw stored ciphertext directly (bypassing the package's own
+	// exported API, which never returns a decrypted secret) and decrypt it
+	// with the same test encryptor to prove the REAL underlying secret -
+	// not just its masked display form - survived the edit unchanged.
+	var rawConfig []byte
+	if err := zdb.WithFirmContext(ctx, appPool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT config FROM integration_connectors WHERE id = $1`, connector.ID).Scan(&rawConfig)
+	}); err != nil {
+		t.Fatalf("read raw stored config: %v", err)
+	}
+	var configMap map[string]any
+	if err := json.Unmarshal(rawConfig, &configMap); err != nil {
+		t.Fatalf("unmarshal raw stored config: %v", err)
+	}
+	ciphertext, _ := configMap["apiKey"].(string)
+	plaintext, err := enc.Decrypt(ciphertext)
+	if err != nil {
+		t.Fatalf("decrypt stored apiKey: %v", err)
+	}
+	if plaintext != "sk-real-secret-0001" {
+		t.Fatalf("expected the real stored secret to be unchanged after an edit that omitted apiKey, got %q", plaintext)
+	}
+}
+
 // TestTestConnection_NonHTTPWebhookNotImplemented covers Part 1's own "any
 // other connector type returns 'not implemented' for now" contract.
 func TestTestConnection_NonHTTPWebhookNotImplemented(t *testing.T) {
