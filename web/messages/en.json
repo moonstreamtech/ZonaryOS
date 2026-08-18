@@ -342,6 +342,7 @@
     "firmNamePermissionDenied": "Only the firm owner can rename the firm.",
     "addressLabel": "Address",
     "taxIdLabel": "Tax ID",
+    "taxIdLabelWithVatNumber": "{genericLabel} ({vatLabel})",
     "defaultLocaleLabel": "Default locale",
     "defaultCurrencyLabel": "Default currency",
     "defaultCurrencyPlaceholder": "e.g. USD",

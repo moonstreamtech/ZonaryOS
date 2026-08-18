@@ -7,6 +7,7 @@ import { setRequestLocale, getTranslations } from "next-intl/server";
 import { requireFirmContext } from "@/lib/firmContext";
 import { fetchRoleInFirm } from "@/lib/me";
 import { fetchInvoice, fetchPayments } from "@/lib/invoicing";
+import { fetchFirmMetadata } from "@/lib/firm";
 import InvoiceDetail from "@/components/Invoicing/InvoiceDetail";
 
 type PageProps = {
@@ -26,17 +27,25 @@ export default async function InvoiceDetailPage({ params }: PageProps) {
   const role = await fetchRoleInFirm(sessionToken, firm.firmId);
   const isOwner = role?.isOwner ?? false;
 
-  const [invoice, payments] = await Promise.all([
+  const [invoice, payments, metadata] = await Promise.all([
     fetchInvoice(sessionToken, firm.firmId, invoiceId),
     fetchPayments(sessionToken, firm.firmId, invoiceId),
+    fetchFirmMetadata(sessionToken, firm.firmId),
   ]);
+  const formatLocale = metadata?.defaultLocale || locale;
 
   return (
     <main className="flex flex-1 flex-col items-center gap-8 bg-zinc-50 px-6 py-16 dark:bg-black">
       {invoice === null ? (
         <p className="text-red-600 dark:text-red-400">{t("loadError")}</p>
       ) : (
-        <InvoiceDetail firmId={firm.firmId} invoice={invoice} payments={payments ?? []} isOwner={isOwner} />
+        <InvoiceDetail
+          firmId={firm.firmId}
+          invoice={invoice}
+          payments={payments ?? []}
+          isOwner={isOwner}
+          locale={formatLocale}
+        />
       )}
     </main>
   );

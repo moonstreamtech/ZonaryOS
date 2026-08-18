@@ -30,6 +30,13 @@ export function generateStaticParams() {
   return routing.locales.map((locale) => ({ locale }));
 }
 
+// Multi-language UI/localization depth/fiscal compliance batch, Part 2:
+// locales that read right-to-left. Only "ar" today - see
+// docs/DEVELOPMENT.md's "Multi-language UI..." section for why the RTL
+// foundation (dir="rtl" + logical CSS properties) ships ahead of an
+// actual professional Arabic translation.
+const RTL_LOCALES = new Set(["ar"]);
+
 type LayoutProps = {
   children: React.ReactNode;
   params: Promise<{ locale: string }>;
@@ -81,6 +88,7 @@ export default async function RootLayout({ children, params }: LayoutProps) {
   return (
     <html
       lang={locale}
+      dir={RTL_LOCALES.has(locale) ? "rtl" : "ltr"}
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col bg-zinc-50 dark:bg-black">

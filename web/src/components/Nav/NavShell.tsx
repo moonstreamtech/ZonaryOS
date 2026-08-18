@@ -3,6 +3,38 @@
 // file in the root of this repository (draft, pending legal review - see
 // docs/OPEN_POINTS.md item 20).
 
+// RTL layout audit (multi-language UI/localization depth/fiscal
+// compliance batch, Part 2): this batch converts the nav shell/sidebar's
+// own physical-direction Tailwind classes (`border-l-*` -> `border-s-*`
+// in NavLinks.tsx, `text-left` -> `text-start` in NotificationBell.tsx)
+// to logical properties, since this chrome is present on every
+// authenticated page and is the highest-value place to start. Two
+// positioning classes are deliberately left as-is here (NotificationBell
+// .tsx's dropdown `right-0`/`-right-0.5` badge offset, MobileBottomNav
+// .tsx's `inset-x-0` bottom bar - the latter is already direction-
+// agnostic): Tailwind's logical-property utilities cover
+// padding/margin/text-alignment but not absolute-position offsets the
+// same way, so a real RTL flip of dropdown/badge positioning needs
+// either manual `dir`-aware overrides or a future Tailwind version with
+// `start-`/`end-` positioning utilities - out of scope for this batch's
+// structural foundation.
+//
+// Full-codebase RTL conversion is explicitly out of scope for this
+// batch. A grep for the same physical-direction classes
+// (pl-/pr-/ml-/mr-/left-/right-/text-left/text-right/border-l/border-r)
+// across the rest of the frontend turns up hits in (non-exhaustive,
+// as of this batch): components/Accounting, components/Asset,
+// components/Budget, components/Contract, components/Crm,
+// components/EdgeAgents, components/HR, components/Inventory,
+// components/Invoicing, components/Logistics, components/Manufacturing,
+// components/Payroll, components/PlatformAdmin, components/Project,
+// components/Reports, components/SalesOrders, components/Settings,
+// components/TimeTracking, components/Warehouse, components/Workflow,
+// components/ui, and several app/[locale]/... pages directly (audit-log,
+// financials, platform-admin, search, settings/members,
+// settings/permissions, tasks, wizard). Each of those needs its own pass
+// before /ar renders acceptably - tracked as RTL follow-up work, not
+// silently fixed here.
 import { getTranslations } from "next-intl/server";
 import { Link } from "@/i18n/navigation";
 import type { MeResponse } from "@/lib/me";

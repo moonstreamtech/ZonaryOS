@@ -7,6 +7,7 @@ import { setRequestLocale, getTranslations } from "next-intl/server";
 import { requireFirmContext } from "@/lib/firmContext";
 import { fetchRoleInFirm } from "@/lib/me";
 import { fetchProducts, fetchStock, fetchStockMovements } from "@/lib/inventory";
+import { fetchFirmMetadata } from "@/lib/firm";
 import InventoryManager from "@/components/Inventory/InventoryManager";
 import ListPageHeader from "@/components/ui/ListPageHeader";
 
@@ -48,6 +49,8 @@ export default async function InventoryPage({ params }: PageProps) {
       : null;
 
   const movementsResult = await fetchStockMovements(sessionToken, firm.firmId, { limit: 50 });
+  const metadata = await fetchFirmMetadata(sessionToken, firm.firmId);
+  const formatLocale = metadata?.defaultLocale || locale;
 
   return (
     <main className="flex flex-1 flex-col items-center gap-10 px-6 py-10">
@@ -66,6 +69,7 @@ export default async function InventoryPage({ params }: PageProps) {
           products={productsWithStock}
           movements={movementsResult?.movements ?? []}
           isOwner={isOwner}
+          locale={formatLocale}
         />
       )}
     </main>

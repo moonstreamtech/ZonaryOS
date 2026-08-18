@@ -8,6 +8,7 @@ import { requireFirmContext } from "@/lib/firmContext";
 import { fetchRoleInFirm } from "@/lib/me";
 import { fetchInvoices } from "@/lib/invoicing";
 import { fetchCustomers } from "@/lib/crm";
+import { fetchFirmMetadata } from "@/lib/firm";
 import InvoicesManager from "@/components/Invoicing/InvoicesManager";
 import ListPageHeader from "@/components/ui/ListPageHeader";
 
@@ -31,10 +32,16 @@ export default async function InvoicesPage({ params }: PageProps) {
   const role = await fetchRoleInFirm(sessionToken, firm.firmId);
   const isOwner = role?.isOwner ?? false;
 
-  const [invoices, customers] = await Promise.all([
+  const [invoices, customers, metadata] = await Promise.all([
     fetchInvoices(sessionToken, firm.firmId),
     fetchCustomers(sessionToken, firm.firmId),
+    fetchFirmMetadata(sessionToken, firm.firmId),
   ]);
+  // Format numbers/dates the way this firm's own country expects (Part 1
+  // of the multi-language UI/localization depth/fiscal compliance
+  // batch) - falls back to the current UI locale when the firm has no
+  // default_locale set.
+  const formatLocale = metadata?.defaultLocale || locale;
 
   return (
     <main className="flex flex-1 flex-col items-center gap-10 px-6 py-10">
@@ -48,7 +55,13 @@ export default async function InvoicesPage({ params }: PageProps) {
       {invoices === null ? (
         <p className="text-red-600 dark:text-red-400">{t("loadError")}</p>
       ) : (
-        <InvoicesManager firmId={firm.firmId} invoices={invoices} customers={customers ?? []} isOwner={isOwner} />
+        <InvoicesManager
+          firmId={firm.firmId}
+          invoices={invoices}
+          customers={customers ?? []}
+          isOwner={isOwner}
+          locale={formatLocale}
+        />
       )}
     </main>
   );

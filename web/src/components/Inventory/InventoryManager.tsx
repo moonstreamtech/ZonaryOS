@@ -9,6 +9,7 @@ import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import type { Product, StockLevel, StockMovement } from "@/lib/inventory";
 import EmptyState from "@/components/ui/EmptyState";
+import { formatNumber } from "@/lib/format";
 
 type ProductWithStock = Product & { stock: StockLevel[] };
 
@@ -17,6 +18,11 @@ type Props = {
   products: ProductWithStock[];
   movements: StockMovement[];
   isOwner: boolean;
+  // The firm's own default_locale (fallback "en-US") - see
+  // InvoicesManager.tsx's own doc comment on this same prop. Inventory
+  // quantities are plain counts, not currency, hence formatNumber, not
+  // formatCurrency.
+  locale: string;
 };
 
 // isLowStock mirrors internal/reports' own low_stock_products KPI
@@ -37,7 +43,7 @@ function isLowStock(p: ProductWithStock): boolean {
 // by internal/inventory's own CreateProduct/UpdateProduct; isOwner here
 // only controls what renders), mirroring components/HR/PeopleManager.tsx's
 // own create-form/row-action shape.
-export default function InventoryManager({ firmId, products, movements, isOwner }: Props) {
+export default function InventoryManager({ firmId, products, movements, isOwner, locale }: Props) {
   const t = useTranslations("Inventory");
   const router = useRouter();
 
@@ -282,7 +288,7 @@ export default function InventoryManager({ firmId, products, movements, isOwner 
                             className="flex items-center justify-between font-mono text-xs text-zinc-700 dark:text-zinc-300"
                           >
                             <span>{s.location}</span>
-                            <span>{s.quantity}</span>
+                            <span>{formatNumber(Number(s.quantity), locale)}</span>
                           </li>
                         ))}
                       </ul>
@@ -316,7 +322,9 @@ export default function InventoryManager({ firmId, products, movements, isOwner 
                 {movements.map((m) => (
                   <tr key={m.id} className="border-b border-zinc-100 dark:border-zinc-900">
                     <td className="p-2 font-mono text-zinc-700 dark:text-zinc-300">{m.location}</td>
-                    <td className="p-2 font-mono text-zinc-700 dark:text-zinc-300">{m.quantityChange}</td>
+                    <td className="p-2 font-mono text-zinc-700 dark:text-zinc-300">
+                      {formatNumber(Number(m.quantityChange), locale)}
+                    </td>
                     <td className="p-2 text-zinc-500 dark:text-zinc-400">
                       {m.reason === "sale"
                         ? t("movementReasonSale")

@@ -109,12 +109,33 @@ export default function FirmMetadataEditor({ firmId, metadata }: Props) {
           </dd>
         </div>
         <div>
-          <dt className="text-zinc-500 dark:text-zinc-400">{t("taxIdLabel")}</dt>
+          <dt className="text-zinc-500 dark:text-zinc-400">
+            {/* Part 3 of the multi-language UI/localization depth/fiscal
+                compliance batch: internal/firm/handlers.go's
+                applyFiscalHints resolves vatNumberLabel server-side (e.g.
+                "VKN" for a Turkish firm) from the firm's own
+                defaultLocale - shown alongside the generic i18n label
+                rather than replacing it, since vatNumberLabel is
+                server-owned reference data, not a translated UI string of
+                its own. */}
+            {metadata.vatNumberLabel
+              ? t("taxIdLabelWithVatNumber", { genericLabel: t("taxIdLabel"), vatLabel: metadata.vatNumberLabel })
+              : t("taxIdLabel")}
+          </dt>
           <dd className="text-black dark:text-zinc-50">
             {metadata.taxId || (
               <span className="text-zinc-400 dark:text-zinc-600">{t("notSet")}</span>
             )}
           </dd>
+          {/* taxIdWarning (also a server-resolved fiscal hint, never
+              blocking - internal/firm's own "warn, don't block" contract)
+              is dynamic content from the backend, not a static UI string,
+              so it's shown as-is rather than routed through next-intl -
+              same treatment this codebase already gives other
+              backend-returned error/status text. */}
+          {metadata.taxIdWarning && (
+            <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">{metadata.taxIdWarning}</p>
+          )}
         </div>
         <div>
           <dt className="text-zinc-500 dark:text-zinc-400">{t("defaultLocaleLabel")}</dt>
@@ -180,13 +201,23 @@ export default function FirmMetadataEditor({ firmId, metadata }: Props) {
       </label>
 
       <label className="flex flex-col gap-1">
-        <span className="text-zinc-500 dark:text-zinc-400">{t("taxIdLabel")}</span>
+        <span className="text-zinc-500 dark:text-zinc-400">
+          {metadata.vatNumberLabel
+            ? t("taxIdLabelWithVatNumber", { genericLabel: t("taxIdLabel"), vatLabel: metadata.vatNumberLabel })
+            : t("taxIdLabel")}
+        </span>
         <input
           type="text"
           value={taxId}
           onChange={(e) => setTaxId(e.target.value)}
           className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm text-black dark:border-zinc-700 dark:bg-zinc-900 dark:text-white"
         />
+        {/* Non-blocking - the field is still valid to submit even with a
+            warning showing, per Part 3's own "warn, don't block"
+            contract. */}
+        {metadata.taxIdWarning && (
+          <span className="text-xs text-amber-700 dark:text-amber-400">{metadata.taxIdWarning}</span>
+        )}
       </label>
 
       <label className="flex flex-col gap-1">

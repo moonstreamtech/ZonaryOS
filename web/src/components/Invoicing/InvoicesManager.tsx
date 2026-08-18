@@ -11,12 +11,18 @@ import { Link } from "@/i18n/navigation";
 import type { Invoice } from "@/lib/invoicing";
 import type { Customer } from "@/lib/crm";
 import EmptyState from "@/components/ui/EmptyState";
+import { formatCurrency, formatDate } from "@/lib/format";
 
 type Props = {
   firmId: string;
   invoices: Invoice[];
   customers: Customer[];
   isOwner: boolean;
+  // The firm's own default_locale (falling back to "en-US" - see
+  // format.ts's own doc comment on why callers, not the formatters
+  // themselves, own the fallback choice) - invoices format the way this
+  // firm's own country expects, not the viewing user's UI language.
+  locale: string;
 };
 
 // The /invoices page's invoice list - create is owner-gated
@@ -33,7 +39,7 @@ type Props = {
 // distinction beyond its invoiceNumber - clicking through to its own
 // detail page (which shows sourceWorkflowInstance) is where that
 // provenance becomes visible.
-export default function InvoicesManager({ firmId, invoices, customers, isOwner }: Props) {
+export default function InvoicesManager({ firmId, invoices, customers, isOwner, locale }: Props) {
   const t = useTranslations("Invoices");
   const router = useRouter();
 
@@ -228,9 +234,9 @@ export default function InvoicesManager({ firmId, invoices, customers, isOwner }
                     </td>
                     <td className="py-2 pr-4">{t(`status.${inv.status}`)}</td>
                     <td className="py-2 pr-4 font-mono">
-                      {inv.total} {inv.currency}
+                      {formatCurrency(Number(inv.total), inv.currency, locale)}
                     </td>
-                    <td className="py-2 pr-4">{inv.issuedDate}</td>
+                    <td className="py-2 pr-4">{formatDate(inv.issuedDate, locale, "short")}</td>
                   </tr>
                 ))}
               </tbody>

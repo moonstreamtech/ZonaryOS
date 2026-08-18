@@ -131,7 +131,7 @@ export default function NotificationBell({ firmId }: Props) {
                       type="button"
                       data-permission-public="true"
                       onClick={() => handleSelect(n)}
-                      className={`flex w-full flex-col gap-0.5 border-b border-zinc-100 px-3 py-2 text-left text-sm hover:bg-zinc-50 dark:border-zinc-900 dark:hover:bg-zinc-900 ${
+                      className={`flex w-full flex-col gap-0.5 border-b border-zinc-100 px-3 py-2 text-start text-sm hover:bg-zinc-50 dark:border-zinc-900 dark:hover:bg-zinc-900 ${
                         n.readAt ? "opacity-60" : ""
                       }`}
                     >

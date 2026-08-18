@@ -9,12 +9,16 @@ import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { Link } from "@/i18n/navigation";
 import type { Invoice, InvoiceStatus, Payment } from "@/lib/invoicing";
+import { formatCurrency, formatDate, formatNumber } from "@/lib/format";
 
 type Props = {
   firmId: string;
   invoice: Invoice;
   payments: Payment[];
   isOwner: boolean;
+  // The firm's own default_locale (fallback "en-US") - see
+  // InvoicesManager.tsx's own doc comment on this same prop.
+  locale: string;
 };
 
 // A manual status move never includes 'paid' - that status is exclusively
@@ -39,7 +43,7 @@ const MANUAL_STATUS_OPTIONS: Record<InvoiceStatus, InvoiceStatus[]> = {
 // internal/invoicing.RecordPayment via the Next proxy route, which may
 // auto-close the invoice to 'paid' and post a real journal entry (the
 // receivables cycle's closing half).
-export default function InvoiceDetail({ firmId, invoice, payments, isOwner }: Props) {
+export default function InvoiceDetail({ firmId, invoice, payments, isOwner, locale }: Props) {
   const t = useTranslations("Invoices");
   const router = useRouter();
 
@@ -135,22 +139,25 @@ export default function InvoiceDetail({ firmId, invoice, payments, isOwner }: Pr
         <dl className="grid grid-cols-1 gap-2 text-sm sm:grid-cols-2">
           <div>
             <dt className="text-zinc-500 dark:text-zinc-400">{t("issuedDate")}</dt>
-            <dd className="text-black dark:text-zinc-50">{invoice.issuedDate}</dd>
+            <dd className="text-black dark:text-zinc-50">{formatDate(invoice.issuedDate, locale, "short")}</dd>
           </div>
           <div>
             <dt className="text-zinc-500 dark:text-zinc-400">{t("dueDate")}</dt>
-            <dd className="text-black dark:text-zinc-50">{invoice.dueDate ?? "—"}</dd>
+            <dd className="text-black dark:text-zinc-50">
+              {invoice.dueDate ? formatDate(invoice.dueDate, locale, "short") : "—"}
+            </dd>
           </div>
           <div>
             <dt className="text-zinc-500 dark:text-zinc-400">{t("columnTotal")}</dt>
             <dd className="font-mono text-black dark:text-zinc-50">
-              {invoice.total} {invoice.currency}
+              {formatCurrency(Number(invoice.total), invoice.currency, locale)}
             </dd>
           </div>
           <div>
             <dt className="text-zinc-500 dark:text-zinc-400">{t("subtotalAndTax")}</dt>
             <dd className="font-mono text-black dark:text-zinc-50">
-              {invoice.subtotal} + {invoice.taxAmount}
+              {formatCurrency(Number(invoice.subtotal), invoice.currency, locale)} +{" "}
+              {formatCurrency(Number(invoice.taxAmount), invoice.currency, locale)}
             </dd>
           </div>
           {invoice.sourceWorkflowInstance && (
@@ -205,9 +212,13 @@ export default function InvoiceDetail({ firmId, invoice, payments, isOwner }: Pr
               {(invoice.lines ?? []).map((l) => (
                 <tr key={l.id} className="border-b border-zinc-200 text-black dark:border-zinc-800 dark:text-zinc-50">
                   <td className="py-2 pr-4">{l.description}</td>
-                  <td className="py-2 pr-4 font-mono">{l.quantity}</td>
-                  <td className="py-2 pr-4 font-mono">{l.unitPrice}</td>
-                  <td className="py-2 font-mono">{l.lineTotal}</td>
+                  <td className="py-2 pr-4 font-mono">{formatNumber(Number(l.quantity), locale)}</td>
+                  <td className="py-2 pr-4 font-mono">
+                    {formatCurrency(Number(l.unitPrice), invoice.currency, locale)}
+                  </td>
+                  <td className="py-2 font-mono">
+                    {formatCurrency(Number(l.lineTotal), invoice.currency, locale)}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -227,10 +238,10 @@ export default function InvoiceDetail({ firmId, invoice, payments, isOwner }: Pr
                 className="flex items-center justify-between rounded-md border border-zinc-300 p-3 text-sm dark:border-zinc-700"
               >
                 <span className="font-mono text-black dark:text-zinc-50">
-                  {p.amount} {p.currency}
+                  {formatCurrency(Number(p.amount), p.currency, locale)}
                 </span>
                 <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                  {new Date(p.paidAt).toLocaleDateString()} · {p.method ?? "—"}
+                  {formatDate(p.paidAt, locale, "short")} · {p.method ?? "—"}
                 </span>
               </li>
             ))}
