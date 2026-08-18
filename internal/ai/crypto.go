@@ -6,44 +6,33 @@
 package ai
 
 import (
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
-	"encoding/base64"
-	"fmt"
+	"errors"
+
+	"github.com/moonstreamtech/ZonaryOS/internal/cryptutil"
 )
 
 // Encryptor holds the server-side AES-256-GCM key
 // (ZONARYOS_AI_ENCRYPTION_KEY) used to encrypt/decrypt a firm's AI
 // provider API key at rest.
 //
-// AES-256-GCM, not hashing: every other secret-at-rest in this codebase
-// (edge_agent_tokens.token_hash, internal/apikey's own key hash) is a
-// one-way SHA-256 digest, because the only thing ever needed again is an
-// equality check against a caller-presented value. An AI provider API
-// key is different in kind - internal/ai must present the PLAINTEXT key
-// to the provider's own API on every suggest-workflow/suggest-report/
-// anomaly-detection call, so a one-way hash is structurally
-// unusable here; the plaintext must be recoverable, which is exactly
-// what authenticated symmetric encryption (AES-256-GCM: confidentiality
-// AND tamper-detection via its built-in auth tag, not just
-// confidentiality the way plain AES-CBC would give) is for.
+// A thin wrapper around internal/cryptutil.Encryptor (the AES-256-GCM
+// primitive itself, extracted into that dependency-free leaf package so
+// internal/integration's own connector-secret encryption - data
+// pipeline/ETL/system integrations batch - can reuse it without
+// importing this package, which would complete an import cycle: this
+// package imports internal/reports (suggest_report.go), which imports
+// internal/workflow, which imports internal/invoicing, which needs to
+// import internal/integration for its own outbound push). This wrapper
+// exists purely so this package's own public API and error semantics
+// (ErrEncryptionKeyNotSet's own AI-specific wording, mentioning
+// ZONARYOS_AI_ENCRYPTION_KEY by name) stay exactly as they were before
+// the extraction - every other file in this package (config.go,
+// handlers.go, anomaly.go, suggest_workflow.go) is unchanged.
 //
-// Key protection: ZONARYOS_AI_ENCRYPTION_KEY is a 32-byte, base64-
-// encoded value read once at server startup (internal/platform/config)
-// and passed into this package explicitly (never read from os.Getenv
-// inside this package itself, following this codebase's usual
-// config-through-Config-struct convention) - it never touches the
-// database, is never logged, and is not itself stored anywhere: losing
-// it means every stored ai_configurations.api_key_encrypted value
-// becomes permanently unrecoverable (the correct failure mode for a
-// server-side-only secret - there is no key-recovery mechanism, the
-// same posture internal/license's own Ed25519 keypair handling takes
-// for its own asymmetric key). Operators are responsible for backing
-// this value up out-of-band (a secrets manager, not this repository) -
-// see docs/DEVELOPMENT.md's own note on this.
+// See internal/cryptutil.Encryptor's own doc comment for the full
+// AES-256-GCM-vs-hashing design rationale and key-protection posture.
 type Encryptor struct {
-	key []byte
+	inner *cryptutil.Encryptor
 }
 
 // NewEncryptor builds an Encryptor from base64Key (ZONARYOS_AI_ENCRYPTION_KEY's
@@ -65,44 +54,31 @@ type Encryptor struct {
 // wrong is not" posture ZONARYOS_LICENSE_GRACE_PERIOD's own parsing in
 // internal/platform/config.Load already takes.
 func NewEncryptor(base64Key string) (*Encryptor, error) {
-	if base64Key == "" {
+	inner, err := cryptutil.NewEncryptor(base64Key, "ZONARYOS_AI_ENCRYPTION_KEY")
+	if err != nil {
+		return nil, err
+	}
+	if inner == nil {
 		return nil, nil
 	}
-	key, err := base64.StdEncoding.DecodeString(base64Key)
-	if err != nil {
-		return nil, fmt.Errorf("ZONARYOS_AI_ENCRYPTION_KEY is not valid base64: %w", err)
-	}
-	if len(key) != 32 {
-		return nil, fmt.Errorf("ZONARYOS_AI_ENCRYPTION_KEY must decode to exactly 32 bytes (AES-256), got %d", len(key))
-	}
-	return &Encryptor{key: key}, nil
+	return &Encryptor{inner: inner}, nil
 }
 
 // Encrypt returns plaintext encrypted with AES-256-GCM, as a single
-// base64-encoded string (a fresh random nonce, prepended to the
-// ciphertext+auth-tag GCM already produces - the standard
-// crypto/cipher.AEAD.Seal convention, self-contained so Decrypt needs
-// nothing else stored alongside it). Every call generates a fresh
-// nonce (crypto/rand, never reused - GCM's security guarantee depends
-// entirely on nonce uniqueness per key).
+// base64-encoded string. See internal/cryptutil.Encryptor.Encrypt's own
+// doc comment for the nonce/ciphertext format.
 func (e *Encryptor) Encrypt(plaintext string) (string, error) {
 	if e == nil {
 		return "", ErrEncryptionKeyNotSet
 	}
-	block, err := aes.NewCipher(e.key)
+	ciphertext, err := e.inner.Encrypt(plaintext)
 	if err != nil {
-		return "", fmt.Errorf("init AES cipher: %w", err)
+		if errors.Is(err, cryptutil.ErrKeyNotSet) {
+			return "", ErrEncryptionKeyNotSet
+		}
+		return "", err
 	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", fmt.Errorf("init GCM: %w", err)
-	}
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return "", fmt.Errorf("generate nonce: %w", err)
-	}
-	ciphertext := gcm.Seal(nonce, nonce, []byte(plaintext), nil)
-	return base64.StdEncoding.EncodeToString(ciphertext), nil
+	return ciphertext, nil
 }
 
 // Decrypt reverses Encrypt. Returns an error (never a partially-decrypted
@@ -113,28 +89,14 @@ func (e *Encryptor) Decrypt(encoded string) (string, error) {
 	if e == nil {
 		return "", ErrEncryptionKeyNotSet
 	}
-	raw, err := base64.StdEncoding.DecodeString(encoded)
+	plaintext, err := e.inner.Decrypt(encoded)
 	if err != nil {
-		return "", fmt.Errorf("decode ciphertext: %w", err)
+		if errors.Is(err, cryptutil.ErrKeyNotSet) {
+			return "", ErrEncryptionKeyNotSet
+		}
+		return "", err
 	}
-	block, err := aes.NewCipher(e.key)
-	if err != nil {
-		return "", fmt.Errorf("init AES cipher: %w", err)
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", fmt.Errorf("init GCM: %w", err)
-	}
-	nonceSize := gcm.NonceSize()
-	if len(raw) < nonceSize {
-		return "", fmt.Errorf("ciphertext too short")
-	}
-	nonce, ciphertext := raw[:nonceSize], raw[nonceSize:]
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
-	if err != nil {
-		return "", fmt.Errorf("decrypt: %w", err)
-	}
-	return string(plaintext), nil
+	return plaintext, nil
 }
 
 // MaskAPIKey returns a display-safe form of a plaintext API key - "sk-...WXYZ"
@@ -144,9 +106,5 @@ func (e *Encryptor) Decrypt(encoded string) (string, error) {
 // operates on is decrypted server-side and discarded immediately after,
 // never itself sent to the client.
 func MaskAPIKey(plaintext string) string {
-	const visibleSuffixLen = 4
-	if len(plaintext) <= visibleSuffixLen {
-		return "...."
-	}
-	return "..." + plaintext[len(plaintext)-visibleSuffixLen:]
+	return cryptutil.MaskAPIKey(plaintext)
 }

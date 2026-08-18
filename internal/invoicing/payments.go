@@ -18,6 +18,7 @@ import (
 
 	"github.com/moonstreamtech/ZonaryOS/internal/accounting"
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
+	"github.com/moonstreamtech/ZonaryOS/internal/integration"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
 	"github.com/moonstreamtech/ZonaryOS/internal/webhook"
@@ -178,6 +179,22 @@ func RecordPayment(ctx context.Context, pool *pgxpool.Pool, firmID, userID, invo
 	}
 	if justPaid {
 		webhook.Dispatch(pool, firmID, webhook.EventInvoicePaid, map[string]any{
+			"invoiceId":     invoiceID.String(),
+			"invoiceNumber": inv.InvoiceNumber,
+			"total":         inv.Total,
+			"currency":      inv.Currency,
+			"paymentId":     payment.ID.String(),
+		})
+		// integration.DispatchOutbound (data pipeline/ETL/system
+		// integrations batch's own field-mapped entity-sync push) runs
+		// side by side with webhook.Dispatch above - see
+		// internal/integration/outbound.go's own package doc comment for
+		// why the two are kept independent. internal/invoicing can import
+		// internal/integration directly (unlike internal/inventory/
+		// internal/crm, both of which internal/integration's own inbound
+		// pull imports back, which would cycle) - internal/integration
+		// never imports internal/invoicing.
+		integration.DispatchOutbound(pool, firmID, "invoices", map[string]any{
 			"invoiceId":     invoiceID.String(),
 			"invoiceNumber": inv.InvoiceNumber,
 			"total":         inv.Total,

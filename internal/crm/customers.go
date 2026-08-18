@@ -39,6 +39,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
+	"github.com/moonstreamtech/ZonaryOS/internal/webhook"
 )
 
 const customerAuditEntityType = "customer"
@@ -192,6 +193,22 @@ func CreateCustomer(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid
 	if err != nil {
 		return Customer{}, err
 	}
+
+	// webhook.Dispatch (the generic, event-subscription-based webhooks
+	// system) and outboundDispatch (data pipeline/ETL/system integrations
+	// batch's own field-mapped entity-sync push) run side by side here,
+	// after commit - see internal/inventory.CreateProduct's identical
+	// pair of calls for the same "two independent consumers, neither a
+	// replacement for the other" reasoning.
+	webhook.Dispatch(pool, firmID, webhook.EventCustomerCreated, map[string]any{
+		"customerId": customer.ID.String(), "name": name,
+	})
+	outboundDispatch(pool, firmID, "customers", map[string]any{
+		"id": customer.ID.String(), "name": customer.Name, "email": derefStrAny(customer.Email),
+		"phone": derefStrAny(customer.Phone), "address": derefStrAny(customer.Address), "taxId": derefStrAny(customer.TaxID),
+		"creditLimit": derefStrAny(customer.CreditLimit), "currency": customer.Currency,
+	})
+
 	return customer, nil
 }
 

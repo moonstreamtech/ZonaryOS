@@ -181,6 +181,29 @@ func deliverOne(pool *pgxpool.Pool, hook Webhook, eventType Event, payload map[s
 	}
 }
 
+// SendSigned POSTs body to url with an HMAC-SHA256(secret, body)
+// signature header, retrying exactly once immediately on failure - the
+// exact delivery mechanics deliverOne uses for a firm's own subscribed
+// webhooks (sign+send, both otherwise unexported), exported here so
+// another package that needs to push to an arbitrary URL (
+// internal/integration's own outbound connector push, data pipeline/ETL/
+// system integrations batch) reuses this instead of building a second
+// HTTP client - the batch's own explicit "use the existing webhook
+// delivery infrastructure... don't build a new HTTP client" instruction.
+// Unlike deliverOne, this does not itself write any webhook_deliveries
+// row - the caller (internal/integration) records its own outcome into
+// its own integration_sync_logs table instead, since a connector push
+// isn't a webhooks-table row at all.
+func SendSigned(ctx context.Context, url, secret string, body []byte) (status int, respBody string, err error) {
+	signature := sign(secret, body)
+	status, respBody, err = send(ctx, url, body, signature)
+	success := err == nil && status >= 200 && status < 300
+	if !success {
+		status, respBody, err = send(ctx, url, body, signature)
+	}
+	return status, respBody, err
+}
+
 // send performs one outbound POST, returning the response status/body on
 // a completed HTTP round trip, or a non-nil error if the request itself
 // never got a response at all (DNS failure, connection refused, timeout).
