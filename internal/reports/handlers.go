@@ -10,6 +10,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -39,13 +40,14 @@ func RegisterRoutes(mux *http.ServeMux, verifier *identity.Verifier, pool *pgxpo
 	mux.Handle("POST /api/firms/{firmID}/report-definitions", auth(http.HandlerFunc(handleCreateReportDefinition(pool))))
 	mux.Handle("GET /api/firms/{firmID}/report-definitions/{id}", auth(http.HandlerFunc(handleGetReportDefinition(pool))))
 	mux.Handle("POST /api/firms/{firmID}/report-definitions/{id}/run", auth(http.HandlerFunc(handleRunReport(pool))))
+	mux.Handle("GET /api/firms/{firmID}/reports/cohorts", auth(http.HandlerFunc(handleCohortAnalysis(pool))))
 }
 
 func writeReportsError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrFirmNotFound), errors.Is(err, ErrReportDefinitionNotFound):
 		http.Error(w, err.Error(), http.StatusNotFound)
-	case errors.Is(err, ErrInvalidQuerySpec):
+	case errors.Is(err, ErrInvalidQuerySpec), errors.Is(err, ErrCohortSpecNotSupported):
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	default:
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -219,6 +221,56 @@ func handleDashboardKPIs(pool *pgxpool.Pool) http.HandlerFunc {
 		resp := make([]kpiResponse, 0, len(results))
 		for _, r := range results {
 			resp = append(resp, kpiResponse{Key: r.Key, Unit: r.Unit, Value: r.Value})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}
+}
+
+type cohortRowResponse struct {
+	CohortMonth string     `json:"cohortMonth"`
+	CohortSize  int        `json:"cohortSize"`
+	Values      []*float64 `json:"values"`
+}
+
+type cohortTableResponse struct {
+	Periods int                 `json:"periods"`
+	Cohorts []cohortRowResponse `json:"cohorts"`
+}
+
+// handleCohortAnalysis accepts GET .../reports/cohorts?entity=customers&cohort_by=created_at&metric=invoice_total&periods=6
+// - Part 3's own cohort analysis endpoint. See cohort.go's own doc
+// comment for why only that one (entity, cohort_by, metric) combination
+// is supported.
+func handleCohortAnalysis(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		firmID, userID, ok, status, msg := resolveIdentity(r, pool)
+		if !ok {
+			http.Error(w, msg, status)
+			return
+		}
+
+		q := r.URL.Query()
+		periods := 0
+		if raw := q.Get("periods"); raw != "" {
+			if n, err := strconv.Atoi(raw); err == nil {
+				periods = n
+			}
+		}
+
+		table, err := CohortAnalysis(r.Context(), pool, firmID, userID, CohortSpec{
+			Entity: q.Get("entity"), CohortBy: q.Get("cohort_by"), Metric: q.Get("metric"), Periods: periods,
+		})
+		if err != nil {
+			writeReportsError(w, err)
+			return
+		}
+
+		resp := cohortTableResponse{Periods: table.Periods, Cohorts: make([]cohortRowResponse, 0, len(table.Cohorts))}
+		for _, row := range table.Cohorts {
+			resp.Cohorts = append(resp.Cohorts, cohortRowResponse{
+				CohortMonth: row.CohortMonth.Format("2006-01"), CohortSize: row.CohortSize, Values: row.Values,
+			})
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)

@@ -16,6 +16,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/absence"
 	"github.com/moonstreamtech/ZonaryOS/internal/accounting"
 	"github.com/moonstreamtech/ZonaryOS/internal/ai"
+	"github.com/moonstreamtech/ZonaryOS/internal/analytics"
 	"github.com/moonstreamtech/ZonaryOS/internal/apidocs"
 	"github.com/moonstreamtech/ZonaryOS/internal/apikey"
 	"github.com/moonstreamtech/ZonaryOS/internal/asset"
@@ -58,6 +59,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/project"
 	"github.com/moonstreamtech/ZonaryOS/internal/reports"
 	"github.com/moonstreamtech/ZonaryOS/internal/salesorders"
+	"github.com/moonstreamtech/ZonaryOS/internal/scheduledreports"
 	"github.com/moonstreamtech/ZonaryOS/internal/search"
 	"github.com/moonstreamtech/ZonaryOS/internal/telemetry"
 	"github.com/moonstreamtech/ZonaryOS/internal/timetracking"
@@ -205,6 +207,13 @@ func main() {
 	// schedulerCtx/cancelScheduler so all three stop together on shutdown.
 	go contracts.RunExpiryScheduler(schedulerCtx, pool, contracts.ExpirySchedulerPollInterval)
 
+	// scheduledreports.RunScheduler (analytics/BI/advanced reporting
+	// batch, Part 4): same RunX(ctx, pool, pollInterval)/ProcessX(ctx, pool)
+	// shape as the other schedulers above - unconditional (a fast, cheap
+	// per-firm no-op for any firm with no due scheduled report), shares
+	// schedulerCtx/cancelScheduler so it stops together with the rest.
+	go scheduledreports.RunScheduler(schedulerCtx, pool, scheduledreports.DefaultSchedulerPollInterval)
+
 	// edgeagent.NewNATSBridge (NATS JetStream/Edge Agent completion
 	// batch, Part 1): default-off, gated by cfg.NATSURL
 	// (ZONARYOS_NATS_URL) - see that function's own doc comment. Unlike
@@ -343,6 +352,14 @@ func main() {
 	costcenter.RegisterRoutes(mux, verifier, pool)
 	portability.RegisterRoutes(mux, verifier, pool)
 	reports.RegisterRoutes(mux, verifier, pool)
+	// internal/analytics + internal/scheduledreports (analytics/BI/
+	// advanced reporting batch): event ingestion/time-series/top-by-
+	// property queries, and owner-gated CRUD for scheduled_reports - see
+	// scheduledreports' own package doc comment for why it's a separate
+	// package from internal/reports/internal/notification rather than
+	// coupling either of those two together.
+	analytics.RegisterRoutes(mux, verifier, pool)
+	scheduledreports.RegisterRoutes(mux, verifier, pool)
 	documents.RegisterRoutes(mux, verifier, pool)
 	apikey.RegisterRoutes(mux, verifier, pool)
 	webhook.RegisterRoutes(mux, verifier, pool)

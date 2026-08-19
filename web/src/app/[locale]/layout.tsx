@@ -14,6 +14,7 @@ import { fetchMe, fetchRoleInFirm, type MeResponse } from "@/lib/me";
 import { resolveActiveFirm } from "@/lib/activeFirm";
 import NavShell from "@/components/Nav/NavShell";
 import TelemetryClient from "@/components/Telemetry/TelemetryClient";
+import PageViewTracker from "@/components/Analytics/PageViewTracker";
 import ServiceWorkerRegistration from "@/components/ServiceWorkerRegistration";
 import "./globals.css";
 
@@ -112,6 +113,10 @@ export default async function RootLayout({ children, params }: LayoutProps) {
           {/* Renders nothing - see that component's own doc comment for
               its default-off guarantee (NEXT_PUBLIC_ZONARYOS_TELEMETRY_ENABLED). */}
           <TelemetryClient />
+          {/* Renders nothing - fires a page_view analytics event
+              (internal/analytics) on every route change once a firm is
+              resolved; see that component's own doc comment. */}
+          <PageViewTracker firmId={firmId} />
           {/* PWA foundation batch, Part 2: registers public/sw.js -
               renders nothing, see that component's own doc comment. */}
           <ServiceWorkerRegistration />

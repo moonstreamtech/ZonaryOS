@@ -6,17 +6,20 @@
 import { setRequestLocale, getTranslations } from "next-intl/server";
 import { Link } from "@/i18n/navigation";
 import { requireFirmContext } from "@/lib/firmContext";
-import { fetchDashboardKPIs, fetchReportDefinitions } from "@/lib/reports";
+import { fetchDashboardKPIs, fetchReportDefinitions, fetchCohortAnalysis } from "@/lib/reports";
 import { fetchFirmMetadata } from "@/lib/firm";
 import { formatCurrency, formatNumber } from "@/lib/format";
 import MyReportsPanel from "@/components/Reports/MyReportsPanel";
+import CohortTable from "@/components/Reports/CohortTable";
 
 type PageProps = {
   params: Promise<{ locale: string }>;
   searchParams: Promise<{ tab?: string }>;
 };
 
-type Tab = "dashboard" | "my-reports";
+type Tab = "dashboard" | "my-reports" | "cohort-analysis";
+
+const COHORT_PERIODS = 6;
 
 // Vision §3's reporting foundation: a fixed KPI dashboard (unchanged) plus
 // this batch's parametric reporting engine - firms define their own
@@ -28,7 +31,7 @@ export default async function ReportsPage({ params, searchParams }: PageProps) {
   setRequestLocale(locale);
   const t = await getTranslations("Reports");
   const sp = await searchParams;
-  const tab: Tab = sp.tab === "my-reports" ? "my-reports" : "dashboard";
+  const tab: Tab = sp.tab === "my-reports" ? "my-reports" : sp.tab === "cohort-analysis" ? "cohort-analysis" : "dashboard";
 
   const { sessionToken, firm } = await requireFirmContext(locale);
 
@@ -41,13 +44,16 @@ export default async function ReportsPage({ params, searchParams }: PageProps) {
         <nav className="flex gap-2 text-sm">
           <TabLink locale={locale} tab="dashboard" active={tab === "dashboard"} label={t("tabDashboard")} />
           <TabLink locale={locale} tab="my-reports" active={tab === "my-reports"} label={t("tabMyReports")} />
+          <TabLink locale={locale} tab="cohort-analysis" active={tab === "cohort-analysis"} label={t("tabCohortAnalysis")} />
         </nav>
       </div>
 
       {tab === "dashboard" ? (
         <DashboardTab sessionToken={sessionToken} firmId={firm.firmId} locale={locale} />
-      ) : (
+      ) : tab === "my-reports" ? (
         <MyReportsTab sessionToken={sessionToken} firmId={firm.firmId} locale={locale} />
+      ) : (
+        <CohortAnalysisTab sessionToken={sessionToken} firmId={firm.firmId} locale={locale} />
       )}
     </main>
   );
@@ -149,6 +155,50 @@ async function MyReportsTab({
         <p className="text-red-600 dark:text-red-400">{t("loadError")}</p>
       ) : (
         <MyReportsPanel firmId={firmId} definitions={definitions} locale={locale} />
+      )}
+    </div>
+  );
+}
+
+// Part B of the analytics/BI/advanced reporting batch: the Cohort
+// Analysis tab (internal/reports/cohort.go). Only the one combination
+// that endpoint supports today (customers/created_at/invoice_total) - a
+// classic SaaS retention table.
+async function CohortAnalysisTab({
+  sessionToken,
+  firmId,
+  locale,
+}: {
+  sessionToken: string;
+  firmId: string;
+  locale: string;
+}) {
+  const t = await getTranslations("Reports");
+  const [table, metadata] = await Promise.all([
+    fetchCohortAnalysis(sessionToken, firmId, {
+      entity: "customers",
+      cohortBy: "created_at",
+      metric: "invoice_total",
+      periods: COHORT_PERIODS,
+    }),
+    fetchFirmMetadata(sessionToken, firmId),
+  ]);
+  const formatLocale = metadata?.defaultLocale || locale;
+  const currency = metadata?.defaultCurrency || "TRY";
+
+  return (
+    <div className="flex w-full max-w-4xl flex-col gap-4">
+      <div className="flex flex-col gap-1">
+        <h2 className="text-xl font-semibold tracking-tight text-black dark:text-zinc-50">{t("cohortTitle")}</h2>
+        <p className="text-sm text-zinc-600 dark:text-zinc-400">{t("cohortDescription")}</p>
+      </div>
+
+      {table === null ? (
+        <p className="text-red-600 dark:text-red-400">{t("cohortLoadError")}</p>
+      ) : table.cohorts.length === 0 ? (
+        <p className="text-sm text-zinc-600 dark:text-zinc-400">{t("cohortEmpty")}</p>
+      ) : (
+        <CohortTable table={table} currency={currency} locale={formatLocale} />
       )}
     </div>
   );
