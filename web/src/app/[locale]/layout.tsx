@@ -3,7 +3,7 @@
 // file in the root of this repository (draft, pending legal review - see
 // docs/OPEN_POINTS.md item 20).
 
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { cookies } from "next/headers";
 import { NextIntlClientProvider, hasLocale } from "next-intl";
 import { getTranslations, setRequestLocale } from "next-intl/server";
@@ -15,6 +15,7 @@ import { resolveActiveFirm } from "@/lib/activeFirm";
 import NavShell from "@/components/Nav/NavShell";
 import TelemetryClient from "@/components/Telemetry/TelemetryClient";
 import PageViewTracker from "@/components/Analytics/PageViewTracker";
+import ServiceWorkerRegistration from "@/components/ServiceWorkerRegistration";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -51,8 +52,23 @@ export async function generateMetadata({
   return {
     title: t("title"),
     description: t("subtitle"),
+    // PWA foundation batch, Part 2: manifest.json/icon.svg live in
+    // public/ (see docs/DEVELOPMENT.md's PWA section). theme_color here
+    // mirrors manifest.json's own theme_color/background_color, both set
+    // to the sidebar's dark zinc-900 (#18181b - see NavShell.tsx's own
+    // doc comment confirming that hex, and styles/tokens.css's
+    // --color-sidebar-bg).
+    manifest: "/manifest.json",
+    icons: [{ rel: "icon", url: "/icon.svg", type: "image/svg+xml" }],
   };
 }
+
+// theme_color lives in Next's separate Viewport export (not Metadata) as
+// of this Next version - same #18181b as manifest.json's theme_color/
+// background_color, see generateMetadata's own comment above.
+export const viewport: Viewport = {
+  themeColor: "#18181b",
+};
 
 // Resolves just enough identity/role/firm context for the nav shell (see
 // components/Nav/NavShell.tsx, which also carries Permission Audit
@@ -101,6 +117,9 @@ export default async function RootLayout({ children, params }: LayoutProps) {
               (internal/analytics) on every route change once a firm is
               resolved; see that component's own doc comment. */}
           <PageViewTracker firmId={firmId} />
+          {/* PWA foundation batch, Part 2: registers public/sw.js -
+              renders nothing, see that component's own doc comment. */}
+          <ServiceWorkerRegistration />
           <div className="flex min-h-full flex-1">
             <NavShell me={me} activeFirmId={firmId} isOwner={isOwner} />
             <div className="flex min-h-full flex-1 flex-col">

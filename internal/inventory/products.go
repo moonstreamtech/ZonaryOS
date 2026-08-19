@@ -71,6 +71,10 @@ type Product struct {
 	CustomFields map[string]any
 	IsActive     bool
 	CreatedAt    time.Time
+	// UpdatedAt (mobile API optimization batch) backs ?updated_since=
+	// delta sync - bumped to now() on every UpdateProduct, left at its
+	// insert-time default (== CreatedAt) otherwise.
+	UpdatedAt time.Time
 	// StockQuantity is a virtual field (Part 3 of the search/filtering/
 	// enrichment batch): SUM(stock_levels.quantity) across every location
 	// for this product, computed at read time via one extra aggregation
@@ -200,6 +204,7 @@ func CreateProduct(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.
 			}
 			return fmt.Errorf("insert product: %w", err)
 		}
+		product.UpdatedAt = product.CreatedAt
 
 		return auditlog.Write(ctx, tx, firmID, userID, product.ID, productAuditEntityType, createProductAuditAction, map[string]any{
 			"sku": sku, "name": name,
@@ -291,6 +296,7 @@ func CreateProductTx(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, input Cre
 		RETURNING id, created_at
 	`, firmID, sku, name, product.Description, unit, unitPrice, costPrice, taxRate, product.Category, minQuantity, customFieldsJSON,
 	).Scan(&product.ID, &product.CreatedAt)
+	product.UpdatedAt = product.CreatedAt
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == postgresUniqueViolation {
@@ -410,9 +416,10 @@ func UpdateProduct(ctx context.Context, pool *pgxpool.Pool, firmID, userID, prod
 				category = CASE WHEN $11::boolean THEN $12 ELSE category END,
 				min_quantity = CASE WHEN $13::boolean THEN $14::numeric ELSE min_quantity END,
 				is_active = COALESCE($15, is_active),
-				custom_fields = COALESCE($16, custom_fields)
+				custom_fields = COALESCE($16, custom_fields),
+				updated_at = now()
 			WHERE id = $17 AND firm_id = $18
-			RETURNING id, firm_id, sku, name, description, unit, unit_price::text, cost_price::text, tax_rate::text, category, min_quantity::text, custom_fields, is_active, created_at
+			RETURNING id, firm_id, sku, name, description, unit, unit_price::text, cost_price::text, tax_rate::text, category, min_quantity::text, custom_fields, is_active, created_at, updated_at
 		`,
 			update.Name,
 			update.Description != nil, optionalString(derefOr(update.Description, "")),
@@ -427,7 +434,7 @@ func UpdateProduct(ctx context.Context, pool *pgxpool.Pool, firmID, userID, prod
 			productID, firmID,
 		).Scan(&product.ID, &product.FirmID, &product.SKU, &product.Name, &product.Description, &product.Unit,
 			&product.UnitPrice, &product.CostPrice, &product.TaxRate, &product.Category, &product.MinQuantity,
-			&customFieldsRaw, &product.IsActive, &product.CreatedAt)
+			&customFieldsRaw, &product.IsActive, &product.CreatedAt, &product.UpdatedAt)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ErrProductNotFound
@@ -487,6 +494,10 @@ type ListProductsOptions struct {
 	// text via full-text search (plainto_tsquery('simple', ...)), not a
 	// substring ILIKE scan.
 	Search string
+	// UpdatedSince (mobile API optimization batch), when non-nil, keeps
+	// only products with updated_at >= this timestamp - the ?updated_since=
+	// delta sync param.
+	UpdatedSince *time.Time
 }
 
 // ListProducts returns firmID's products, ordered by sku. Member-gated
@@ -504,12 +515,13 @@ func ListProducts(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.U
 		}
 
 		rows, err := tx.Query(ctx, `
-			SELECT id, firm_id, sku, name, description, unit, unit_price::text, cost_price::text, tax_rate::text, category, min_quantity::text, custom_fields, is_active, created_at
+			SELECT id, firm_id, sku, name, description, unit, unit_price::text, cost_price::text, tax_rate::text, category, min_quantity::text, custom_fields, is_active, created_at, updated_at
 			FROM products
 			WHERE ($1 = false OR is_active)
 			  AND ($2 = '' OR search_tsv @@ plainto_tsquery('simple', normalize_search_text($2)))
+			  AND ($3::timestamptz IS NULL OR updated_at >= $3)
 			ORDER BY sku
-		`, opts.ActiveOnly, opts.Search)
+		`, opts.ActiveOnly, opts.Search, opts.UpdatedSince)
 		if err != nil {
 			return fmt.Errorf("list products: %w", err)
 		}
@@ -518,7 +530,7 @@ func ListProducts(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.U
 			var p Product
 			var customFieldsRaw []byte
 			if err := rows.Scan(&p.ID, &p.FirmID, &p.SKU, &p.Name, &p.Description, &p.Unit, &p.UnitPrice, &p.CostPrice,
-				&p.TaxRate, &p.Category, &p.MinQuantity, &customFieldsRaw, &p.IsActive, &p.CreatedAt); err != nil {
+				&p.TaxRate, &p.Category, &p.MinQuantity, &customFieldsRaw, &p.IsActive, &p.CreatedAt, &p.UpdatedAt); err != nil {
 				return err
 			}
 			if err := json.Unmarshal(customFieldsRaw, &p.CustomFields); err != nil {
@@ -549,11 +561,11 @@ func GetProduct(ctx context.Context, pool *pgxpool.Pool, firmID, userID, product
 
 		var customFieldsRaw []byte
 		err = tx.QueryRow(ctx, `
-			SELECT id, firm_id, sku, name, description, unit, unit_price::text, cost_price::text, tax_rate::text, category, min_quantity::text, custom_fields, is_active, created_at
+			SELECT id, firm_id, sku, name, description, unit, unit_price::text, cost_price::text, tax_rate::text, category, min_quantity::text, custom_fields, is_active, created_at, updated_at
 			FROM products WHERE id = $1 AND firm_id = $2
 		`, productID, firmID).Scan(&product.ID, &product.FirmID, &product.SKU, &product.Name, &product.Description, &product.Unit,
 			&product.UnitPrice, &product.CostPrice, &product.TaxRate, &product.Category, &product.MinQuantity,
-			&customFieldsRaw, &product.IsActive, &product.CreatedAt)
+			&customFieldsRaw, &product.IsActive, &product.CreatedAt, &product.UpdatedAt)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ErrProductNotFound

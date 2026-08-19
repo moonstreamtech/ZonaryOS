@@ -1245,6 +1245,13 @@
     "loading": "Loading…",
     "empty": "No notifications yet."
   },
+  "Offline": {
+    "offlineLabel": "You're offline. Changes won't be saved until you're back online.",
+    "offlineIndicator": "Offline",
+    "syncStatusLabel": "Sync status",
+    "syncPending": "{count} change(s) waiting to sync",
+    "syncFailed": "{count} change(s) failed to sync"
+  },
   "Approvals": {
     "title": "Approvals",
     "loadError": "Couldn't load this data. Please try again.",
