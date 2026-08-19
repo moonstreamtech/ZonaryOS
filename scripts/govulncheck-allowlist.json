@@ -1,1 +1,27 @@
-[]
+[
+  {
+    "id": "GO-2026-6166",
+    "reason": "github.com/lib/pq (an indirect/transitive dependency only - this codebase's own Postgres driver is jackc/pgx, not lib/pq) - withdrawn by the Go vulnerability database as a false positive on 2026-08-18, the same day this finding first appeared in CI.",
+    "reviewBy": "2026-11-18"
+  },
+  {
+    "id": "GO-2026-6168",
+    "reason": "github.com/lib/pq/scram (an indirect/transitive dependency only - this codebase's own Postgres driver is jackc/pgx, not lib/pq) - withdrawn by the Go vulnerability database as a false positive on 2026-08-18, the same day this finding first appeared in CI.",
+    "reviewBy": "2026-11-18"
+  },
+  {
+    "id": "GO-2026-6170",
+    "reason": "github.com/lib/pq (an indirect/transitive dependency only - this codebase's own Postgres driver is jackc/pgx, not lib/pq) - withdrawn by the Go vulnerability database as a false positive on 2026-08-18, the same day this finding first appeared in CI.",
+    "reviewBy": "2026-11-18"
+  },
+  {
+    "id": "GO-2026-6171",
+    "reason": "github.com/lib/pq (an indirect/transitive dependency only - this codebase's own Postgres driver is jackc/pgx, not lib/pq) - withdrawn by the Go vulnerability database as a false positive on 2026-08-18, the same day this finding first appeared in CI.",
+    "reviewBy": "2026-11-18"
+  },
+  {
+    "id": "GO-2026-6172",
+    "reason": "github.com/lib/pq (an indirect/transitive dependency only - this codebase's own Postgres driver is jackc/pgx, not lib/pq) - withdrawn by the Go vulnerability database as a false positive on 2026-08-18, the same day this finding first appeared in CI.",
+    "reviewBy": "2026-11-18"
+  }
+]
