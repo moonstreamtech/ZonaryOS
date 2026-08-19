@@ -14,6 +14,7 @@ import { fetchMe, fetchRoleInFirm, type MeResponse } from "@/lib/me";
 import { resolveActiveFirm } from "@/lib/activeFirm";
 import NavShell from "@/components/Nav/NavShell";
 import TelemetryClient from "@/components/Telemetry/TelemetryClient";
+import PageViewTracker from "@/components/Analytics/PageViewTracker";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -96,6 +97,10 @@ export default async function RootLayout({ children, params }: LayoutProps) {
           {/* Renders nothing - see that component's own doc comment for
               its default-off guarantee (NEXT_PUBLIC_ZONARYOS_TELEMETRY_ENABLED). */}
           <TelemetryClient />
+          {/* Renders nothing - fires a page_view analytics event
+              (internal/analytics) on every route change once a firm is
+              resolved; see that component's own doc comment. */}
+          <PageViewTracker firmId={firmId} />
           <div className="flex min-h-full flex-1">
             <NavShell me={me} activeFirmId={firmId} isOwner={isOwner} />
             <div className="flex min-h-full flex-1 flex-col">

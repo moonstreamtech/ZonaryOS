@@ -125,6 +125,60 @@ export async function createReportDefinition(
   }
 }
 
+// Part 3 of the analytics/BI/advanced reporting batch: cohort analysis
+// (internal/reports/cohort.go). Only one (entity, cohort_by, metric)
+// combination is implemented server-side today - see that file's own
+// doc comment - this type mirrors CohortTable/CohortRow's own JSON shape
+// exactly. `values[i]` is `null` at a period with no data yet, a real
+// distinct "no data" signal, not zero (see internal/reports/cohort.go's
+// own CohortRow.Values doc comment) - callers must render that
+// distinctly, never as "0".
+export type CohortRow = {
+  cohortMonth: string;
+  cohortSize: number;
+  values: (number | null)[];
+};
+
+export type CohortTable = {
+  periods: number;
+  cohorts: CohortRow[];
+};
+
+export type CohortSpecInput = {
+  entity: string;
+  cohortBy: string;
+  metric: string;
+  periods?: number;
+};
+
+/**
+ * Calls the Go backend's `GET /api/firms/{firmId}/reports/cohorts` -
+ * the /reports "Cohort Analysis" tab's own data source. Member-gated.
+ * Returns null on failure, same swallow-to-null convention as
+ * fetchDashboardKPIs.
+ */
+export async function fetchCohortAnalysis(
+  token: string,
+  firmId: string,
+  spec: CohortSpecInput,
+): Promise<CohortTable | null> {
+  try {
+    const url = new URL(`${apiBase()}/api/firms/${encodeURIComponent(firmId)}/reports/cohorts`);
+    url.searchParams.set("entity", spec.entity);
+    url.searchParams.set("cohort_by", spec.cohortBy);
+    url.searchParams.set("metric", spec.metric);
+    if (spec.periods) url.searchParams.set("periods", String(spec.periods));
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}` },
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as CohortTable;
+  } catch {
+    return null;
+  }
+}
+
 export async function runReport(
   token: string,
   firmId: string,

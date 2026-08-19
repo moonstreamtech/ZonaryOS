@@ -72,6 +72,8 @@ const GROUPS: NavGroup[] = [
       { href: "/financials/budgets", labelKey: "budgets" },
       { href: "/invoices", labelKey: "invoices" },
       { href: "/reports", labelKey: "reports" },
+      { href: "/reports/scheduled", labelKey: "scheduledReports", ownerOnly: true },
+      { href: "/analytics", labelKey: "analytics" },
       { href: "/hr/payroll", labelKey: "payroll" },
     ],
   },
