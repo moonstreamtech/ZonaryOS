@@ -107,6 +107,10 @@ type Customer struct {
 	CustomFields           map[string]any
 	SourceWorkflowInstance *uuid.UUID
 	CreatedAt              time.Time
+	// UpdatedAt (mobile API optimization batch) backs ?updated_since=
+	// delta sync - bumped to now() on every UpdateCustomer, left at its
+	// insert-time default (== CreatedAt) otherwise.
+	UpdatedAt time.Time
 	// TotalInvoiced/TotalPaid are virtual fields (Part 3 of the search/
 	// filtering/enrichment batch): TotalInvoiced is SUM(invoices.total)
 	// for invoices linked to this customer, TotalPaid is SUM(payments.amount)
@@ -187,6 +191,7 @@ func CreateCustomer(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid
 		).Scan(&customer.ID, &customer.CreatedAt); err != nil {
 			return fmt.Errorf("insert customer: %w", err)
 		}
+		customer.UpdatedAt = customer.CreatedAt
 
 		return auditlog.Write(ctx, tx, firmID, userID, customer.ID, customerAuditEntityType, createCustomerAuditAction, map[string]any{"name": name})
 	})
@@ -280,9 +285,10 @@ func UpdateCustomer(ctx context.Context, pool *pgxpool.Pool, firmID, userID, cus
 				tax_id = CASE WHEN $8::boolean THEN $9 ELSE tax_id END,
 				credit_limit = CASE WHEN $10::boolean THEN $11::numeric ELSE credit_limit END,
 				currency = COALESCE($12, currency),
-				custom_fields = COALESCE($13, custom_fields)
+				custom_fields = COALESCE($13, custom_fields),
+				updated_at = now()
 			WHERE id = $14 AND firm_id = $15
-			RETURNING id, firm_id, name, email, phone, address, tax_id, credit_limit::text, currency, custom_fields, source_workflow_instance, created_at
+			RETURNING id, firm_id, name, email, phone, address, tax_id, credit_limit::text, currency, custom_fields, source_workflow_instance, created_at, updated_at
 		`,
 			update.Name,
 			update.Email != nil, optionalString(derefOr(update.Email, "")),
@@ -294,7 +300,7 @@ func UpdateCustomer(ctx context.Context, pool *pgxpool.Pool, firmID, userID, cus
 			nullableJSON(customFieldsJSON),
 			customerID, firmID,
 		).Scan(&customer.ID, &customer.FirmID, &customer.Name, &customer.Email, &customer.Phone, &customer.Address,
-			&customer.TaxID, &customer.CreditLimit, &customer.Currency, &customFieldsRaw, &customer.SourceWorkflowInstance, &customer.CreatedAt)
+			&customer.TaxID, &customer.CreditLimit, &customer.Currency, &customFieldsRaw, &customer.SourceWorkflowInstance, &customer.CreatedAt, &customer.UpdatedAt)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ErrCustomerNotFound
@@ -325,6 +331,9 @@ type ListCustomersOptions struct {
 	// (migrations/0024 - name/email/phone) matches this text via
 	// full-text search.
 	Search string
+	// UpdatedSince (mobile API optimization batch), when non-nil, keeps
+	// only customers with updated_at >= this timestamp.
+	UpdatedSince *time.Time
 }
 
 // ListCustomers returns firmID's customers, ordered by name. Member-gated
@@ -342,11 +351,12 @@ func ListCustomers(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.
 		}
 
 		rows, err := tx.Query(ctx, `
-			SELECT id, firm_id, name, email, phone, address, tax_id, credit_limit::text, currency, custom_fields, source_workflow_instance, created_at
+			SELECT id, firm_id, name, email, phone, address, tax_id, credit_limit::text, currency, custom_fields, source_workflow_instance, created_at, updated_at
 			FROM customers
 			WHERE ($1 = '' OR search_tsv @@ plainto_tsquery('simple', normalize_search_text($1)))
+			  AND ($2::timestamptz IS NULL OR updated_at >= $2)
 			ORDER BY name
-		`, opts.Search)
+		`, opts.Search, opts.UpdatedSince)
 		if err != nil {
 			return fmt.Errorf("list customers: %w", err)
 		}
@@ -355,7 +365,7 @@ func ListCustomers(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.
 			var c Customer
 			var customFieldsRaw []byte
 			if err := rows.Scan(&c.ID, &c.FirmID, &c.Name, &c.Email, &c.Phone, &c.Address, &c.TaxID,
-				&c.CreditLimit, &c.Currency, &customFieldsRaw, &c.SourceWorkflowInstance, &c.CreatedAt); err != nil {
+				&c.CreditLimit, &c.Currency, &customFieldsRaw, &c.SourceWorkflowInstance, &c.CreatedAt, &c.UpdatedAt); err != nil {
 				return err
 			}
 			if err := json.Unmarshal(customFieldsRaw, &c.CustomFields); err != nil {
@@ -386,10 +396,10 @@ func GetCustomer(ctx context.Context, pool *pgxpool.Pool, firmID, userID, custom
 
 		var customFieldsRaw []byte
 		err = tx.QueryRow(ctx, `
-			SELECT id, firm_id, name, email, phone, address, tax_id, credit_limit::text, currency, custom_fields, source_workflow_instance, created_at
+			SELECT id, firm_id, name, email, phone, address, tax_id, credit_limit::text, currency, custom_fields, source_workflow_instance, created_at, updated_at
 			FROM customers WHERE id = $1 AND firm_id = $2
 		`, customerID, firmID).Scan(&customer.ID, &customer.FirmID, &customer.Name, &customer.Email, &customer.Phone, &customer.Address,
-			&customer.TaxID, &customer.CreditLimit, &customer.Currency, &customFieldsRaw, &customer.SourceWorkflowInstance, &customer.CreatedAt)
+			&customer.TaxID, &customer.CreditLimit, &customer.Currency, &customFieldsRaw, &customer.SourceWorkflowInstance, &customer.CreatedAt, &customer.UpdatedAt)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ErrCustomerNotFound

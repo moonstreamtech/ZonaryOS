@@ -144,7 +144,11 @@ type Invoice struct {
 	Notes                  *string
 	SourceWorkflowInstance *uuid.UUID
 	CreatedAt              time.Time
-	Lines                  []InvoiceLine
+	// UpdatedAt (mobile API optimization batch) backs ?updated_since=
+	// delta sync - bumped to now() on every status/payment-driven update,
+	// left at its insert-time default (== CreatedAt) otherwise.
+	UpdatedAt time.Time
+	Lines     []InvoiceLine
 	// TotalPaid/Outstanding are virtual fields (Part 3 of the search/
 	// filtering/enrichment batch): TotalPaid is SUM(payments.amount) for
 	// this invoice, Outstanding is Total - TotalPaid, both computed at
@@ -350,6 +354,7 @@ func insertInvoiceTx(ctx context.Context, tx pgx.Tx, firmID uuid.UUID, customerI
 		return Invoice{}, err
 	}
 	inv.Subtotal, inv.TaxAmount, inv.Total = totals.Subtotal, totals.TaxAmount, totals.Total
+	inv.UpdatedAt = inv.CreatedAt
 
 	invoiceLines, err := fetchInvoiceLinesTx(ctx, tx, inv.ID)
 	if err != nil {
@@ -480,7 +485,8 @@ func recomputeInvoiceTotalsTx(ctx context.Context, tx pgx.Tx, invoiceID uuid.UUI
 		UPDATE invoices SET
 			subtotal = totals.subtotal,
 			tax_amount = totals.tax_amount,
-			total = totals.subtotal + totals.tax_amount
+			total = totals.subtotal + totals.tax_amount,
+			updated_at = now()
 		FROM totals
 		WHERE invoices.id = $1
 		RETURNING invoices.subtotal::text, invoices.tax_amount::text, invoices.total::text
@@ -514,7 +520,7 @@ func scanInvoiceRow(row pgx.Row) (Invoice, error) {
 	var inv Invoice
 	var status string
 	err := row.Scan(&inv.ID, &inv.FirmID, &inv.InvoiceNumber, &inv.CustomerID, &inv.IssuedDate, &inv.DueDate, &status,
-		&inv.Subtotal, &inv.TaxAmount, &inv.Total, &inv.Currency, &inv.Notes, &inv.SourceWorkflowInstance, &inv.CreatedAt)
+		&inv.Subtotal, &inv.TaxAmount, &inv.Total, &inv.Currency, &inv.Notes, &inv.SourceWorkflowInstance, &inv.CreatedAt, &inv.UpdatedAt)
 	if err != nil {
 		return Invoice{}, err
 	}
@@ -522,7 +528,7 @@ func scanInvoiceRow(row pgx.Row) (Invoice, error) {
 	return inv, nil
 }
 
-const invoiceColumns = `id, firm_id, invoice_number, customer_id, issued_date, due_date, status, subtotal::text, tax_amount::text, total::text, currency, notes, source_workflow_instance, created_at`
+const invoiceColumns = `id, firm_id, invoice_number, customer_id, issued_date, due_date, status, subtotal::text, tax_amount::text, total::text, currency, notes, source_workflow_instance, created_at, updated_at`
 
 // ListOptions controls ListInvoices' optional status filter - a zero
 // value lists every invoice, unfiltered.
@@ -552,6 +558,7 @@ var invoiceFilterFields = map[string]queryfilter.FieldDef{
 	"issued_date":    {Column: "issued_date", Kind: queryfilter.KindTimestamp},
 	"due_date":       {Column: "due_date", Kind: queryfilter.KindTimestamp},
 	"created_at":     {Column: "created_at", Kind: queryfilter.KindTimestamp},
+	"updated_at":     {Column: "updated_at", Kind: queryfilter.KindTimestamp},
 }
 
 // ListInvoices returns firmID's invoices (without their lines - callers
@@ -851,7 +858,7 @@ func updateInvoiceStatusTx(ctx context.Context, tx pgx.Tx, firmID, userID, invoi
 	}
 
 	row := tx.QueryRow(ctx, `
-		UPDATE invoices SET status = $1 WHERE id = $2 AND firm_id = $3
+		UPDATE invoices SET status = $1, updated_at = now() WHERE id = $2 AND firm_id = $3
 		RETURNING `+invoiceColumns, string(newStatus), invoiceID, firmID)
 	inv, err := scanInvoiceRow(row)
 	if err != nil {

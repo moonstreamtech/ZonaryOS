@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/moonstreamtech/ZonaryOS/internal/apifields"
 	"github.com/moonstreamtech/ZonaryOS/internal/identity"
 )
 
@@ -83,10 +84,21 @@ type productResponse struct {
 	CustomFields map[string]any `json:"customFields"`
 	IsActive     bool           `json:"isActive"`
 	CreatedAt    string         `json:"createdAt"`
+	UpdatedAt    string         `json:"updatedAt"`
 	// StockQuantity (Part 3, computed field) is only ever non-nil on
 	// handleGetProduct's own response - see Product.StockQuantity's own
 	// doc comment for why ListProducts leaves it unset.
 	StockQuantity *string `json:"stockQuantity,omitempty"`
+}
+
+// productResponseFields is handleListProducts' own ?fields= allowlist
+// (mobile API optimization batch, Part 1) - every productResponse json
+// tag except stockQuantity, which ListProducts never populates anyway
+// (see that field's own doc comment).
+var productResponseFields = map[string]bool{
+	"id": true, "sku": true, "name": true, "description": true, "unit": true, "unitPrice": true,
+	"costPrice": true, "taxRate": true, "category": true, "minQuantity": true, "customFields": true,
+	"isActive": true, "createdAt": true, "updatedAt": true, "stockQuantity": true,
 }
 
 func toProductResponse(p Product) productResponse {
@@ -94,7 +106,7 @@ func toProductResponse(p Product) productResponse {
 		ID: p.ID.String(), SKU: p.SKU, Name: p.Name, Description: p.Description, Unit: p.Unit,
 		UnitPrice: p.UnitPrice, CostPrice: p.CostPrice, TaxRate: p.TaxRate, Category: p.Category,
 		MinQuantity: p.MinQuantity, CustomFields: p.CustomFields, IsActive: p.IsActive,
-		CreatedAt: p.CreatedAt.Format(time.RFC3339), StockQuantity: p.StockQuantity,
+		CreatedAt: p.CreatedAt.Format(time.RFC3339), UpdatedAt: p.UpdatedAt.Format(time.RFC3339), StockQuantity: p.StockQuantity,
 	}
 }
 
@@ -122,7 +134,12 @@ func handleListProducts(pool *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 
-		opts := ListProductsOptions{ActiveOnly: r.URL.Query().Get("activeOnly") == "true", Search: r.URL.Query().Get("q")}
+		updatedSince, err := apifields.ParseUpdatedSince(r.URL.Query().Get("updated_since"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		opts := ListProductsOptions{ActiveOnly: r.URL.Query().Get("activeOnly") == "true", Search: r.URL.Query().Get("q"), UpdatedSince: updatedSince}
 		products, err := ListProducts(r.Context(), pool, firmID, userID, opts)
 		if err != nil {
 			writeInventoryError(w, err)
@@ -133,8 +150,18 @@ func handleListProducts(pool *pgxpool.Pool) http.HandlerFunc {
 		for _, p := range products {
 			resp = append(resp, toProductResponse(p))
 		}
+
+		projected, err := apifields.Project(resp, apifields.ParseFields(r.URL.Query().Get("fields")), productResponseFields)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
+		// #nosec G705 -- projected is JSON we produced ourselves
+		// (apifields.Project marshals only this handler's own
+		// productResponse values, filtered to productResponseFields' own
+		// closed allowlist) - never raw request input echoed back.
+		_, _ = w.Write(projected)
 	}
 }
 

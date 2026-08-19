@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/moonstreamtech/ZonaryOS/internal/apifields"
 	"github.com/moonstreamtech/ZonaryOS/internal/identity"
 	"github.com/moonstreamtech/ZonaryOS/internal/queryfilter"
 )
@@ -150,6 +151,7 @@ type invoiceResponse struct {
 	Notes                  *string               `json:"notes,omitempty"`
 	SourceWorkflowInstance *string               `json:"sourceWorkflowInstance,omitempty"`
 	CreatedAt              string                `json:"createdAt"`
+	UpdatedAt              string                `json:"updatedAt"`
 	Lines                  []invoiceLineResponse `json:"lines,omitempty"`
 	// TotalPaid/Outstanding (Part 3, computed fields) are only ever
 	// non-nil on handleGetInvoice's own response - see
@@ -157,6 +159,15 @@ type invoiceResponse struct {
 	// them unset.
 	TotalPaid   *string `json:"totalPaid,omitempty"`
 	Outstanding *string `json:"outstanding,omitempty"`
+}
+
+// invoiceResponseFields is handleListInvoices' own ?fields= allowlist
+// (mobile API optimization batch, Part 1).
+var invoiceResponseFields = map[string]bool{
+	"id": true, "invoiceNumber": true, "customerId": true, "issuedDate": true, "dueDate": true,
+	"status": true, "subtotal": true, "taxAmount": true, "total": true, "currency": true, "notes": true,
+	"sourceWorkflowInstance": true, "createdAt": true, "updatedAt": true, "lines": true,
+	"totalPaid": true, "outstanding": true,
 }
 
 func toInvoiceResponse(inv Invoice) invoiceResponse {
@@ -179,7 +190,8 @@ func toInvoiceResponse(inv Invoice) invoiceResponse {
 		ID: inv.ID.String(), InvoiceNumber: inv.InvoiceNumber, CustomerID: customerID,
 		IssuedDate: issued.Format(dateLayout), DueDate: formatDate(inv.DueDate), Status: string(inv.Status),
 		Subtotal: inv.Subtotal, TaxAmount: inv.TaxAmount, Total: inv.Total, Currency: inv.Currency,
-		Notes: inv.Notes, SourceWorkflowInstance: sourceInstance, CreatedAt: inv.CreatedAt.Format(time.RFC3339), Lines: lines,
+		Notes: inv.Notes, SourceWorkflowInstance: sourceInstance, CreatedAt: inv.CreatedAt.Format(time.RFC3339),
+		UpdatedAt: inv.UpdatedAt.Format(time.RFC3339), Lines: lines,
 		TotalPaid: inv.TotalPaid, Outstanding: inv.Outstanding,
 	}
 }
@@ -197,6 +209,18 @@ func handleListInvoices(pool *pgxpool.Pool) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		// ?updated_since= (mobile API optimization batch, Part 1) is a
+		// friendlier alias for the equivalent ?filters= entry - it
+		// translates directly into the same updated_at>=... filter
+		// ListInvoices already knows how to run, rather than adding a
+		// second, parallel filtering path.
+		if raw := r.URL.Query().Get("updated_since"); raw != "" {
+			if _, err := apifields.ParseUpdatedSince(raw); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			filters = append(filters, queryfilter.Filter{Field: "updated_at", Op: queryfilter.OpGte, Value: raw})
+		}
 		opts := ListOptions{Status: InvoiceStatus(r.URL.Query().Get("status")), Filters: filters}
 		invoices, err := ListInvoices(r.Context(), pool, firmID, userID, opts)
 		if err != nil {
@@ -208,8 +232,17 @@ func handleListInvoices(pool *pgxpool.Pool) http.HandlerFunc {
 		for _, inv := range invoices {
 			resp = append(resp, toInvoiceResponse(inv))
 		}
+
+		projected, err := apifields.Project(resp, apifields.ParseFields(r.URL.Query().Get("fields")), invoiceResponseFields)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
+		// #nosec G705 -- see internal/inventory.handleListProducts' own
+		// identical suppression comment; projected is self-produced JSON
+		// filtered to invoiceResponseFields' own closed allowlist.
+		_, _ = w.Write(projected)
 	}
 }
 
