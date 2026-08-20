@@ -7,6 +7,7 @@ import { cookies } from "next/headers";
 import { notFound } from "next/navigation";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import { fetchPlatformAdminFirms } from "@/lib/platformAdmin";
+import PlatformAdminNav from "@/components/PlatformAdmin/PlatformAdminNav";
 
 type PageProps = {
   params: Promise<{ locale: string }>;
@@ -16,9 +17,13 @@ type PageProps = {
 // name/created_at, workflow-definition count, member count - platform
 // metadata only, never tenant business data (see that package's doc
 // comment). Reachable only at this distinct path outside any firm
-// namespace (not /settings/..., not firm-scoped) - there is no in-app
-// link to it; it's meant for the small, hardcoded set of ZonaryOS staff on
+// namespace (not /settings/..., not firm-scoped) - there is no link to
+// this whole area anywhere in the app's own nav (Nav/NavShell.tsx); it's
+// meant for the small, hardcoded set of ZonaryOS staff on
 // internal/platformadmin.Allowlist to navigate to directly.
+// PlatformAdminNav below only cross-links the platform-admin pages to
+// each other once a staff member has already landed on one of them - see
+// that component's own doc comment.
 //
 // Gating deliberately diverges from settings/permissions/page.tsx's and
 // audit-log/page.tsx's pattern (an inline "not authorized" message, which
@@ -70,6 +75,8 @@ export default async function PlatformAdminPage({ params }: PageProps) {
           {t("description")}
         </p>
       </div>
+
+      <PlatformAdminNav locale={locale} active="home" />
 
       {firms.length === 0 ? (
         <p className="text-indigo-200">{t("empty")}</p>

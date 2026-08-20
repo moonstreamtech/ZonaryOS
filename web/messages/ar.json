@@ -1048,7 +1048,12 @@
     "columnCreatedAt": "[AR] Created",
     "columnWorkflowDefinitionCount": "[AR] Workflow definitions",
     "columnMemberCount": "[AR] Members",
-    "badge": "[AR] Platform Admin"
+    "badge": "[AR] Platform Admin",
+    "navHome": "الشركات",
+    "navFirmGroups": "مجموعات الشركات",
+    "navExchangeRates": "أسعار الصرف",
+    "navMetrics": "المقاييس",
+    "navAlerts": "التنبيهات"
   },
   "FirmGroups": {
     "title": "[AR] Firm Groups",
@@ -1913,5 +1918,56 @@
       "partial": "جزئية",
       "failed": "فاشلة"
     }
+  },
+  "PlatformAdminMetrics": {
+    "title": "المقاييس",
+    "description": "أداء الطلبات عبر كل نقطة نهاية في نشر ZonaryOS هذا، خلال آخر 24 ساعة. مرئي فقط لموظفي منصة ZonaryOS.",
+    "loadError": "تعذر تحميل ملخص المقاييس. يرجى المحاولة مرة أخرى.",
+    "empty": "لم يتم تسجيل أي مقاييس بعد.",
+    "endpointsTitle": "أوقات الاستجابة حسب نقطة النهاية",
+    "topSlowestTitle": "أبطأ 10 نقاط نهاية",
+    "volumeTitle": "حجم الطلبات بالساعة (آخر 24 ساعة)",
+    "volumeEmpty": "لم يتم تسجيل أي حجم طلبات بعد.",
+    "columnEndpoint": "نقطة النهاية",
+    "columnP50": "p50",
+    "columnP95": "p95",
+    "columnP99": "p99",
+    "columnErrorRate": "معدل الأخطاء",
+    "columnRequestCount": "الطلبات",
+    "millisecondsValue": "{value} مللي ثانية"
+  },
+  "PlatformAdminAlerts": {
+    "title": "التنبيهات",
+    "description": "قواعد تنبيه حتمية لمعدل الأخطاء ووقت الاستجابة وحجم الطلبات، بالإضافة إلى أحداث التنبيه الأخيرة. مرئي فقط لموظفي منصة ZonaryOS.",
+    "loadError": "تعذر تحميل قواعد أو أحداث التنبيه. يرجى المحاولة مرة أخرى.",
+    "empty": "لا توجد قواعد تنبيه بعد.",
+    "newRuleTitle": "قاعدة تنبيه جديدة",
+    "nameLabel": "الاسم",
+    "metricLabel": "المقياس",
+    "thresholdLabel": "الحد",
+    "windowMinutesLabel": "النافذة (دقائق)",
+    "isActiveLabel": "نشط",
+    "actionsLabel": "الإجراءات",
+    "create": "إنشاء قاعدة",
+    "createRequired": "يرجى إدخال اسم ونافذة موجبة (بالدقائق).",
+    "createError": "تعذر إنشاء قاعدة التنبيه هذه. يرجى المحاولة مرة أخرى.",
+    "updateError": "تعذر تحديث قاعدة التنبيه هذه. يرجى المحاولة مرة أخرى.",
+    "deleteError": "تعذر حذف قاعدة التنبيه هذه. يرجى المحاولة مرة أخرى.",
+    "edit": "تعديل",
+    "save": "حفظ",
+    "cancel": "إلغاء",
+    "delete": "حذف",
+    "active": "نشط",
+    "inactive": "غير نشط",
+    "metric": {
+      "error_rate": "معدل الأخطاء",
+      "response_time_p95": "وقت الاستجابة (p95)",
+      "volume_drop": "انخفاض الحجم"
+    },
+    "recentEventsTitle": "أحداث التنبيه الأخيرة",
+    "recentEventsEmpty": "لا توجد أحداث تنبيه بعد.",
+    "eventRuleLabel": "القاعدة",
+    "eventTriggeredAtLabel": "وقت التفعيل",
+    "eventMetricValueLabel": "قيمة المقياس"
   }
 }

@@ -1048,7 +1048,12 @@
     "columnCreatedAt": "Created",
     "columnWorkflowDefinitionCount": "Workflow definitions",
     "columnMemberCount": "Members",
-    "badge": "Platform Admin"
+    "badge": "Platform Admin",
+    "navHome": "Firms",
+    "navFirmGroups": "Firm Groups",
+    "navExchangeRates": "Exchange Rates",
+    "navMetrics": "Metrics",
+    "navAlerts": "Alerts"
   },
   "FirmGroups": {
     "title": "Firm Groups",
@@ -1913,5 +1918,56 @@
       "partial": "Partial",
       "failed": "Failed"
     }
+  },
+  "PlatformAdminMetrics": {
+    "title": "Metrics",
+    "description": "Request performance across every endpoint on this ZonaryOS deployment, last 24 hours. Visible only to ZonaryOS platform staff.",
+    "loadError": "Couldn't load the metrics summary. Please try again.",
+    "empty": "No metrics recorded yet.",
+    "endpointsTitle": "Response times by endpoint",
+    "topSlowestTitle": "Top 10 slowest endpoints",
+    "volumeTitle": "Request volume by hour (last 24h)",
+    "volumeEmpty": "No request volume recorded yet.",
+    "columnEndpoint": "Endpoint",
+    "columnP50": "p50",
+    "columnP95": "p95",
+    "columnP99": "p99",
+    "columnErrorRate": "Error rate",
+    "columnRequestCount": "Requests",
+    "millisecondsValue": "{value} ms"
+  },
+  "PlatformAdminAlerts": {
+    "title": "Alerts",
+    "description": "Deterministic alert rules on error rate, response time, and request volume, plus recent alert events. Visible only to ZonaryOS platform staff.",
+    "loadError": "Couldn't load alert rules or events. Please try again.",
+    "empty": "No alert rules yet.",
+    "newRuleTitle": "New alert rule",
+    "nameLabel": "Name",
+    "metricLabel": "Metric",
+    "thresholdLabel": "Threshold",
+    "windowMinutesLabel": "Window (minutes)",
+    "isActiveLabel": "Active",
+    "actionsLabel": "Actions",
+    "create": "Create rule",
+    "createRequired": "Please enter a name and a positive window (minutes).",
+    "createError": "Couldn't create this alert rule. Please try again.",
+    "updateError": "Couldn't update this alert rule. Please try again.",
+    "deleteError": "Couldn't delete this alert rule. Please try again.",
+    "edit": "Edit",
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "active": "Active",
+    "inactive": "Inactive",
+    "metric": {
+      "error_rate": "Error rate",
+      "response_time_p95": "Response time (p95)",
+      "volume_drop": "Volume drop"
+    },
+    "recentEventsTitle": "Recent alert events",
+    "recentEventsEmpty": "No alert events yet.",
+    "eventRuleLabel": "Rule",
+    "eventTriggeredAtLabel": "Triggered at",
+    "eventMetricValueLabel": "Metric value"
   }
 }

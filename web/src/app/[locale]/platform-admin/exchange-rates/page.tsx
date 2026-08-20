@@ -9,6 +9,7 @@ import { getTranslations, setRequestLocale } from "next-intl/server";
 import { fetchPlatformAdminFirms } from "@/lib/platformAdmin";
 import { fetchExchangeRates } from "@/lib/exchangeRates";
 import ExchangeRatesManager from "@/components/PlatformAdmin/ExchangeRatesManager";
+import PlatformAdminNav from "@/components/PlatformAdmin/PlatformAdminNav";
 
 type PageProps = {
   params: Promise<{ locale: string }>;
@@ -55,6 +56,8 @@ export default async function ExchangeRatesPage({ params }: PageProps) {
         <h1 className="text-3xl font-semibold tracking-tight text-[var(--color-platform-on-accent)]">{t("title")}</h1>
         <p className="max-w-2xl text-center text-sm text-indigo-200">{t("description")}</p>
       </div>
+
+      <PlatformAdminNav locale={locale} active="exchangeRates" />
 
       {rates === null ? (
         <p className="text-red-300">{t("loadError")}</p>

@@ -21,6 +21,14 @@
 // dependency - no connection strings, no error detail, no stack traces -
 // so it carries no more information-disclosure risk than any other
 // unauthenticated liveness endpoint.
+//
+// Part 3 of the performance monitoring/alerting/operational excellence
+// batch extends this same endpoint (rather than adding a new one) with
+// a `database_detail` block - active connection count, oldest running
+// query, top-5 table bloat estimate, and request_metrics partition
+// health - but ONLY when `?detail=true` is passed, so the plain,
+// unauthenticated GET /health every uptime monitor already polls stays
+// exactly as fast/cheap as before this batch. See buildDatabaseDetail.
 package health
 
 import (
@@ -32,6 +40,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/moonstreamtech/ZonaryOS/internal/apm"
+	"github.com/moonstreamtech/ZonaryOS/internal/pghealth"
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/version"
 )
 
@@ -62,9 +72,64 @@ const (
 )
 
 type response struct {
-	Status  OverallStatus          `json:"status"`
-	Checks  map[string]CheckStatus `json:"checks"`
-	Version string                 `json:"version"`
+	Status         OverallStatus          `json:"status"`
+	Checks         map[string]CheckStatus `json:"checks"`
+	Version        string                 `json:"version"`
+	DatabaseDetail *databaseDetail        `json:"database_detail,omitempty"`
+}
+
+// databaseDetail is Part 3's own "GET /health?detail=true" payload -
+// read-only Postgres system-view queries (internal/pghealth), never
+// returned on a plain GET /health so the fast, unauthenticated liveness
+// check every uptime monitor hits stays cheap - these extra queries only
+// run when a caller explicitly opts in via the query string.
+type databaseDetail struct {
+	ActiveConnections      int              `json:"activeConnections"`
+	OldestRunningQuerySecs *float64         `json:"oldestRunningQuerySeconds"`
+	TableBloat             []tableBloatItem `json:"tableBloatTop5"`
+	PartitionHealth        partitionHealth  `json:"requestMetricsPartitionHealth"`
+}
+
+type tableBloatItem struct {
+	TableName string  `json:"tableName"`
+	DeadRatio float64 `json:"deadRatio"`
+	TotalSize string  `json:"totalSize"`
+}
+
+type partitionHealth struct {
+	Healthy       bool     `json:"healthy"`
+	MissingMonths []string `json:"missingMonths,omitempty"`
+}
+
+const tableBloatTop = 5
+
+// buildDatabaseDetail runs Part 3's own four read-only checks. Errors
+// are logged nowhere here (deliberately) and simply degrade that one
+// field to its zero value - a caller who explicitly opted into
+// ?detail=true is an operator debugging a live problem, and a partial,
+// best-effort detail payload is more useful to them than a 500 that
+// throws away the checks that DID succeed.
+func buildDatabaseDetail(ctx context.Context, pool *pgxpool.Pool) *databaseDetail {
+	if pool == nil {
+		return nil
+	}
+	detail := &databaseDetail{}
+
+	if n, err := pghealth.ActiveConnectionCount(ctx, pool); err == nil {
+		detail.ActiveConnections = n
+	}
+	if secs, err := pghealth.OldestRunningQuerySeconds(ctx, pool); err == nil {
+		detail.OldestRunningQuerySecs = secs
+	}
+	if bloat, err := pghealth.TableBloatEstimate(ctx, pool, tableBloatTop); err == nil {
+		for _, b := range bloat {
+			detail.TableBloat = append(detail.TableBloat, tableBloatItem{TableName: b.TableName, DeadRatio: b.DeadRatio, TotalSize: b.TotalSizeStr})
+		}
+	}
+	if ph, err := apm.CheckPartitionHealth(ctx, pool); err == nil {
+		detail.PartitionHealth = partitionHealth{Healthy: len(ph.MissingMonths) == 0, MissingMonths: ph.MissingMonths}
+	}
+	return detail
 }
 
 // OIDCDiscoveryURL builds the well-known discovery document URL Handler
@@ -111,11 +176,16 @@ func Handler(pool *pgxpool.Pool, discoveryURL string, httpClient *http.Client) h
 			overall = OverallDegraded
 		}
 
+		resp := response{Status: overall, Checks: checks, Version: version.Version}
+		if r.URL.Query().Get("detail") == "true" {
+			resp.DatabaseDetail = buildDatabaseDetail(r.Context(), pool)
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		if overall != OverallOK {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
-		_ = json.NewEncoder(w).Encode(response{Status: overall, Checks: checks, Version: version.Version})
+		_ = json.NewEncoder(w).Encode(resp)
 	}
 }
 

@@ -7,29 +7,30 @@ import { cookies } from "next/headers";
 import { notFound } from "next/navigation";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import { fetchPlatformAdminFirms } from "@/lib/platformAdmin";
-import { fetchFirmGroups } from "@/lib/consolidation";
-import FirmGroupsManager from "@/components/PlatformAdmin/FirmGroupsManager";
+import { fetchAlertRules } from "@/lib/alertRules";
+import { fetchAlerts } from "@/lib/alerts";
+import AlertRulesManager from "@/components/PlatformAdmin/AlertRulesManager";
 import PlatformAdminNav from "@/components/PlatformAdmin/PlatformAdminNav";
 
 type PageProps = {
   params: Promise<{ locale: string }>;
 };
 
-// Multi-company consolidation's platform-admin management page (this
-// batch, internal/consolidation) - firm groups, their members, and
-// inter-company transfers are platform-wide constructs spanning multiple
-// firms, not firm-scoped, so this lives under /platform-admin next to
-// exchange-rates, not /settings. Gating mirrors
-// platform-admin/exchange-rates/page.tsx's own pattern exactly: re-uses
+// Performance monitoring's alerting management page (this batch,
+// GET/POST /api/platform-admin/alert-rules, PATCH/DELETE .../{ruleId},
+// and GET /api/platform-admin/alerts) - deterministic threshold rules on
+// error_rate/response_time_p95/volume_drop, plus the recent alert events
+// they've fired. Platform-wide, not firm-scoped, so this lives under
+// /platform-admin next to firm-groups/exchange-rates/metrics. Gating
+// mirrors those pages' own pattern exactly: re-uses
 // fetchPlatformAdminFirms purely as the allowlist probe (the same
-// internal/platformadmin.Allowlist gates every /firm-groups endpoint), a
-// failed/non-2xx response there already meaning "this caller shouldn't
-// see this feature exist at all" - notFound(), not an inline "not
-// authorized" message, matching the backend's own 404-not-403 posture.
-export default async function FirmGroupsPage({ params }: PageProps) {
+// internal/platformadmin.Allowlist gates every /alert-rules and /alerts
+// endpoint) - notFound(), not an inline "not authorized" message,
+// matching the backend's own 404-not-403 posture.
+export default async function AlertsPage({ params }: PageProps) {
   const { locale } = await params;
   setRequestLocale(locale);
-  const t = await getTranslations("FirmGroups");
+  const t = await getTranslations("PlatformAdminAlerts");
   const tAdmin = await getTranslations("PlatformAdmin");
 
   const sessionToken = (await cookies()).get("zonaryos_session")?.value;
@@ -37,12 +38,13 @@ export default async function FirmGroupsPage({ params }: PageProps) {
     notFound();
   }
 
-  const firms = await fetchPlatformAdminFirms(sessionToken);
-  if (firms === null) {
+  const allowlistProbe = await fetchPlatformAdminFirms(sessionToken);
+  if (allowlistProbe === null) {
     notFound();
   }
 
-  const groups = await fetchFirmGroups(sessionToken);
+  const rules = await fetchAlertRules(sessionToken);
+  const events = await fetchAlerts(sessionToken);
 
   return (
     <main className="flex flex-1 flex-col items-center gap-8 bg-[var(--color-platform-accent)] px-6 py-16">
@@ -59,13 +61,13 @@ export default async function FirmGroupsPage({ params }: PageProps) {
         <p className="max-w-2xl text-center text-sm text-indigo-200">{t("description")}</p>
       </div>
 
-      <PlatformAdminNav locale={locale} active="firmGroups" />
+      <PlatformAdminNav locale={locale} active="alerts" />
 
-      {groups === null ? (
+      {rules === null || events === null ? (
         <p className="text-red-300">{t("loadError")}</p>
       ) : (
         <div className="w-full max-w-4xl rounded-lg border border-indigo-800 bg-white p-4 dark:bg-zinc-950">
-          <FirmGroupsManager groups={groups} firms={firms} locale={locale} />
+          <AlertRulesManager rules={rules} events={events} />
         </div>
       )}
     </main>

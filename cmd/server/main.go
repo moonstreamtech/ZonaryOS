@@ -11,14 +11,18 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/moonstreamtech/ZonaryOS/internal/absence"
 	"github.com/moonstreamtech/ZonaryOS/internal/accounting"
 	"github.com/moonstreamtech/ZonaryOS/internal/ai"
+	"github.com/moonstreamtech/ZonaryOS/internal/alerting"
 	"github.com/moonstreamtech/ZonaryOS/internal/analytics"
 	"github.com/moonstreamtech/ZonaryOS/internal/apidocs"
 	"github.com/moonstreamtech/ZonaryOS/internal/apikey"
+	"github.com/moonstreamtech/ZonaryOS/internal/apm"
 	"github.com/moonstreamtech/ZonaryOS/internal/asset"
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
 	"github.com/moonstreamtech/ZonaryOS/internal/budget"
@@ -90,7 +94,24 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctx := context.Background()
+	// signal.NotifyContext (stdlib, Go 1.16+, no new dependency): ctx is
+	// cancelled the moment this process receives SIGTERM or SIGINT -
+	// every context derived from it below (schedulerCtx, reporterCtx,
+	// ...) is cancelled at the same instant, and main's own final
+	// graceful-shutdown sequence (srv.Shutdown + a final
+	// metricsBuffer.FlushNow, see the bottom of this function) blocks on
+	// this same ctx.Done() rather than on ListenAndServe's own blocking
+	// call. This is genuinely new: before this batch, main() had no
+	// signal handling at all - schedulerCtx/cancelScheduler's own
+	// "stops together on shutdown" doc comments described an intended
+	// behavior nothing actually triggered outside of a test calling
+	// cancel directly, since ListenAndServe never returns on its own and
+	// the process was simply killed out from under every goroutine.
+	// Part 1's own "flush remaining [metrics] on SIGTERM" requirement is
+	// what surfaced this gap - fixing it here benefits every other
+	// scheduler in this file identically, not just internal/apm's own.
+	ctx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stopSignals()
 
 	pool, err := db.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -290,6 +311,44 @@ func main() {
 	// five stop together on shutdown.
 	go integration.RunInboundScheduler(schedulerCtx, pool, integrationEncryptor, cfg.IntegrationInboundPollInterval)
 
+	// internal/apm.Buffer (performance monitoring/alerting/operational
+	// excellence batch, Part 1): the in-memory, goroutine-safe request-
+	// metrics accumulator middleware.MetricsRecorder feeds on every
+	// request - see that package's own doc comment for the buffering
+	// design (30s-or-100-records flush, whichever first). Wired here,
+	// once, at startup - the same func-var hook pattern
+	// inventory.SetOutboundDispatcher establishes above, needed because
+	// internal/platform/middleware cannot import internal/apm directly
+	// (see MetricsRecorder's own doc comment).
+	metricsBuffer := apm.NewBuffer(pool)
+	middleware.MetricsRecorder = metricsBuffer.Record
+	// RunFlushLoop's own periodic tick shares schedulerCtx like every
+	// other scheduler above, but - unlike them - also performs one final
+	// flush the instant schedulerCtx is cancelled (see that method's own
+	// doc comment), which is what actually delivers Part 1's own
+	// "flush remaining on SIGTERM" requirement; main's own final
+	// srv.Shutdown sequence below waits for this goroutine to finish
+	// via schedulerDone before the process exits, so that final flush is
+	// guaranteed to complete, not just be scheduled.
+	schedulerDone := make(chan struct{})
+	go func() {
+		metricsBuffer.RunFlushLoop(schedulerCtx)
+		close(schedulerDone)
+	}()
+	// apm.RunSelfHealingScheduler (Part 4): partition creation (genuine
+	// automatic remediation) and stale-lock detection (monitoring-only,
+	// see that function's own doc comment for why it never auto-kills a
+	// query) - same RunX/ProcessX shape as every other scheduler here.
+	go apm.RunSelfHealingScheduler(schedulerCtx, pool, apm.DefaultSelfHealingPollInterval)
+	// alerting.RunChecker (Part 2): evaluates active alert_rules every 5
+	// minutes against internal/apm's own aggregate queries - see that
+	// package's own doc comment. cfg.PlatformAdminEmails is the same
+	// allowlist source platformAdminAllowlist (below) is built from; a
+	// breach notifies every one of those emails via a structured log
+	// line (Open Points item 17 - email is still deferred, see
+	// internal/alerting's own doc comment on notifyPlatformAdmins).
+	go alerting.RunChecker(schedulerCtx, pool, cfg.PlatformAdminEmails, alerting.DefaultCheckerPollInterval)
+
 	// internal/plugin.Registry (plugin/extension architecture + developer
 	// API/SDK foundation batch): built once, here, before any route is
 	// registered or any request served - Part 2's own "immutable after
@@ -371,6 +430,13 @@ func main() {
 	// independent gate.
 	platformAdminAllowlist := platformadmin.NewAllowlist(cfg.PlatformAdminEmails)
 	platformadmin.RegisterRoutes(mux, verifier, pool, platformAdminAllowlist, licenseVerifier)
+	// internal/apm + internal/alerting (performance monitoring/alerting/
+	// operational excellence batch): GET /api/platform-admin/metrics/summary
+	// and the alert-rules CRUD + GET /api/platform-admin/alerts - same
+	// allowlist as every other platform-admin route group, no separate
+	// gate.
+	apm.RegisterRoutes(mux, verifier, pool, platformAdminAllowlist)
+	alerting.RegisterRoutes(mux, verifier, pool, platformAdminAllowlist)
 	// internal/currency (this batch): the multi-currency foundation -
 	// platform-admin-gated rate creation, unauthenticated rate lookup.
 	currency.RegisterRoutes(mux, verifier, pool, platformAdminAllowlist)
@@ -474,9 +540,36 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	slog.Info("ZonaryOS server listening", "addr", cfg.HTTPAddr, "version", version.Version)
-	if err := srv.ListenAndServe(); err != nil {
-		slog.Error("server stopped", "err", err)
-		os.Exit(1)
+	// srv.ListenAndServe runs in its own goroutine so main can instead
+	// block on ctx.Done() (SIGTERM/SIGINT, see the signal.NotifyContext
+	// call above) and drive an explicit, ordered shutdown: stop
+	// accepting new requests first (srv.Shutdown, which itself waits for
+	// in-flight requests to finish), THEN cancel every background
+	// scheduler (cancelScheduler), THEN wait for metricsBuffer's own
+	// final flush to actually complete (schedulerDone) before the
+	// process exits - so a metric for the very last request this server
+	// handled is never silently dropped.
+	serveErr := make(chan error, 1)
+	go func() {
+		slog.Info("ZonaryOS server listening", "addr", cfg.HTTPAddr, "version", version.Version)
+		serveErr <- srv.ListenAndServe()
+	}()
+
+	select {
+	case err := <-serveErr:
+		if err != nil && err != http.ErrServerClosed {
+			slog.Error("server stopped", "err", err)
+			os.Exit(1)
+		}
+	case <-ctx.Done():
+		slog.Info("shutdown signal received, draining in-flight requests")
+		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 30*time.Second)
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			slog.Error("server shutdown", "err", err)
+		}
+		cancelShutdown()
+		cancelScheduler()
+		<-schedulerDone
+		slog.Info("shutdown complete")
 	}
 }
