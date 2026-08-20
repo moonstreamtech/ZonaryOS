@@ -23,8 +23,9 @@ import (
 const configAuditEntityType = "ai_configuration"
 
 const (
-	createConfigAuditAction = "create"
-	deleteConfigAuditAction = "delete"
+	createConfigAuditAction    = "create"
+	deleteConfigAuditAction    = "delete"
+	rotateKeyConfigAuditAction = "rotate_key"
 )
 
 // Configuration is one ai_configurations row, as returned to a caller -
@@ -250,6 +251,82 @@ func DeleteConfig(ctx context.Context, pool *pgxpool.Pool, firmID, userID, confi
 
 		return auditlog.Write(ctx, tx, firmID, userID, configID, configAuditEntityType, deleteConfigAuditAction, map[string]any{})
 	})
+}
+
+// RotateActiveConfigKey replaces firmID's ACTIVE AI configuration's own
+// encrypted provider API key with newAPIKey, re-encrypted with the same
+// server-side encryptor - unlike internal/apikey.RotateAPIKey (which
+// generates its own new secret, since a ZonaryOS API key is this
+// codebase's own credential), ZonaryOS cannot generate a valid
+// Anthropic/OpenAI/Google API key itself: rotation here means the
+// caller has already rotated the key ON THE PROVIDER'S OWN side and is
+// telling ZonaryOS to start using it, so newAPIKey is caller-supplied,
+// never generated. Returns only the MASKED new key - the caller already
+// has the real plaintext (they just typed it in), so there is nothing
+// this response needs to reveal that isn't already masked everywhere
+// else this package returns a Configuration. Owner-gated, same tier as
+// CreateConfig/DeleteConfig. Operates on "the" active configuration
+// (there is at most one per firm, see CreateConfig's own doc comment on
+// deactivateOtherActiveConfigsTx) rather than taking a configID, mirroring
+// how every /ai/* suggestion endpoint already resolves "the" active
+// config with no id of its own in the request.
+func RotateActiveConfigKey(ctx context.Context, pool *pgxpool.Pool, encryptor *Encryptor, firmID, userID uuid.UUID, newAPIKey string) (Configuration, error) {
+	if encryptor == nil {
+		return Configuration{}, ErrEncryptionKeyNotSet
+	}
+	newAPIKey = strings.TrimSpace(newAPIKey)
+	if newAPIKey == "" {
+		return Configuration{}, fmt.Errorf("%w: apiKey must not be empty", ErrInvalidConfig)
+	}
+	encrypted, err := encryptor.Encrypt(newAPIKey)
+	if err != nil {
+		return Configuration{}, fmt.Errorf("encrypt API key: %w", err)
+	}
+
+	var cfg Configuration
+	txErr := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		isMember, err := permission.IsMember(ctx, tx, firmID, userID)
+		if err != nil {
+			return err
+		}
+		if !isMember {
+			return ErrFirmNotFound
+		}
+		isOwner, err := permission.IsOwner(ctx, tx, firmID, userID)
+		if err != nil {
+			return err
+		}
+		if !isOwner {
+			return ErrNotOwner
+		}
+
+		var providerRaw string
+		var settingsRaw []byte
+		row := tx.QueryRow(ctx, `
+			UPDATE ai_configurations SET api_key_encrypted = $1
+			WHERE firm_id = $2 AND is_active = true
+			RETURNING id, firm_id, provider, model, settings, is_active
+		`, encrypted, firmID)
+		if err := row.Scan(&cfg.ID, &cfg.FirmID, &providerRaw, &cfg.Model, &settingsRaw, &cfg.IsActive); err != nil {
+			if err == pgx.ErrNoRows {
+				return ErrNoActiveConfig
+			}
+			return fmt.Errorf("rotate AI configuration key: %w", err)
+		}
+		cfg.Provider = ProviderName(providerRaw)
+		if err := json.Unmarshal(settingsRaw, &cfg.Settings); err != nil {
+			return fmt.Errorf("unmarshal settings: %w", err)
+		}
+		cfg.APIKeyMasked = MaskAPIKey(newAPIKey)
+
+		return auditlog.Write(ctx, tx, firmID, userID, cfg.ID, configAuditEntityType, rotateKeyConfigAuditAction, map[string]any{
+			"provider": string(cfg.Provider),
+		})
+	})
+	if txErr != nil {
+		return Configuration{}, txErr
+	}
+	return cfg, nil
 }
 
 // getActiveConfigTx fetches the firm's single active AI configuration

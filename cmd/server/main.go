@@ -61,6 +61,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/portability"
 	"github.com/moonstreamtech/ZonaryOS/internal/procurement"
 	"github.com/moonstreamtech/ZonaryOS/internal/project"
+	"github.com/moonstreamtech/ZonaryOS/internal/ratelimit"
 	"github.com/moonstreamtech/ZonaryOS/internal/reports"
 	"github.com/moonstreamtech/ZonaryOS/internal/salesorders"
 	"github.com/moonstreamtech/ZonaryOS/internal/scheduledreports"
@@ -349,6 +350,23 @@ func main() {
 	// internal/alerting's own doc comment on notifyPlatformAdmins).
 	go alerting.RunChecker(schedulerCtx, pool, cfg.PlatformAdminEmails, alerting.DefaultCheckerPollInterval)
 
+	// internal/ratelimit.Limiter (tenant-isolation-hardening/security
+	// batch, Part 2): built unconditionally (the five cfg.RateLimit*
+	// fields all have sensible positive defaults, see
+	// internal/platform/config.Load) - there is no "rate limiting off"
+	// state the way license/telemetry have, since unlike those, an
+	// installation always benefits from a baseline flood ceiling. Wired
+	// into middleware.Chain below (via ratelimit.Middleware(rateLimiter)),
+	// not called directly here - see that package's own doc comment.
+	// RunLogFlushLoop's own aggregate-not-per-request rejection logging
+	// shares schedulerCtx like every other background goroutine above.
+	rateLimiter := ratelimit.NewLimiter(ratelimit.Limits{
+		Standard: cfg.RateLimitStandardPerMinute, Bulk: cfg.RateLimitBulkPerMinute,
+		AI: cfg.RateLimitAIPerMinute, Export: cfg.RateLimitExportPerMinute,
+		AnalyticsIngest: cfg.RateLimitAnalyticsIngestPerMinute,
+	})
+	go ratelimit.RunLogFlushLoop(schedulerCtx, rateLimiter)
+
 	// internal/plugin.Registry (plugin/extension architecture + developer
 	// API/SDK foundation batch): built once, here, before any route is
 	// registered or any request served - Part 2's own "immutable after
@@ -536,7 +554,7 @@ func main() {
 	// comment for the full ordering rationale.
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           middleware.Chain(telemetry.Middleware(telemetryReporter, mux)(mux), cfg.RequestTimeout, cfg.MaxJSONBodyBytes, cfg.MaxUploadBodyBytes),
+		Handler:           middleware.Chain(telemetry.Middleware(telemetryReporter, mux)(mux), cfg.RequestTimeout, cfg.MaxJSONBodyBytes, cfg.MaxUploadBodyBytes, ratelimit.Middleware(rateLimiter)),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

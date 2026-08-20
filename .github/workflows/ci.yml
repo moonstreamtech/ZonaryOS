@@ -145,6 +145,42 @@ jobs:
       - run: go run ./cmd/migrate
       - run: go test -p 1 ./...
 
+  # --- RLS Completeness Check (tenant isolation audit, Part 1) -----------
+  # A second, independent line of defense alongside the static
+  # rls-permission-audit job below: this one queries a real, migrated
+  # Postgres directly (pg_policies) rather than grepping migration SQL
+  # text - see scripts/check_rls_completeness.py's own doc comment for
+  # why both checks exist and what each one catches that the other
+  # can't. Grouped with integration-tests (same "needs a live Postgres"
+  # shape), not the static rls-permission-audit job right below.
+
+  rls-completeness-check:
+    name: RLS Completeness Check
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: zonaryos
+          POSTGRES_PASSWORD: zonaryos
+          POSTGRES_DB: zonaryos
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U zonaryos -d zonaryos"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      ZONARYOS_MIGRATE_DATABASE_URL: postgres://zonaryos:zonaryos@localhost:5432/zonaryos?sslmode=disable
+      ZONARYOS_TEST_ADMIN_DATABASE_URL: postgres://zonaryos:zonaryos@localhost:5432/zonaryos?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "${{ env.GO_VERSION }}" }
+      - run: go run ./cmd/migrate
+      - run: python3 scripts/check_rls_completeness.py
+
   # --- RLS / Permission Drift Audit (CI Checklist item 4) ----------------
 
   rls-permission-audit:

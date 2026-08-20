@@ -180,31 +180,51 @@ type Config struct {
 	// per-connector fetch - this is only the scheduler's own outer tick).
 	// Defaults to internal/integration.DefaultInboundPollInterval (5 min).
 	IntegrationInboundPollInterval time.Duration
+
+	// RateLimit* (tenant-isolation-hardening/security batch, Part 2) are
+	// the per-firm, per-endpoint-category token-bucket limits
+	// internal/ratelimit.Middleware enforces - see that package's own
+	// doc comment for why the key is (firm_id, category) rather than
+	// firm_id alone. Each is "requests per minute" (or, for
+	// RateLimitAnalyticsIngestPerMinute, "events per minute" - Part 1's
+	// own analytics-ingestion batch cap is itself already 100
+	// events/request, so 500/min is ~5 full-size ingest calls/min, not
+	// 500 individual HTTP requests).
+	RateLimitStandardPerMinute        int
+	RateLimitBulkPerMinute            int
+	RateLimitAIPerMinute              int
+	RateLimitExportPerMinute          int
+	RateLimitAnalyticsIngestPerMinute int
 }
 
 // Load reads configuration from environment variables, applying defaults
 // where a variable is not set.
 func Load() (Config, error) {
 	cfg := Config{
-		HTTPAddr:                       getEnv("ZONARYOS_HTTP_ADDR", ":8080"),
-		DatabaseURL:                    os.Getenv("ZONARYOS_DATABASE_URL"),
-		OIDCIssuerURL:                  os.Getenv("ZONARYOS_OIDC_ISSUER_URL"),
-		OIDCClientID:                   getEnv("ZONARYOS_OIDC_CLIENT_ID", "zonaryos-web"),
-		PlatformAdminEmails:            parseEmailList(os.Getenv("ZONARYOS_PLATFORM_ADMIN_EMAILS")),
-		LicenseEnforced:                os.Getenv("ZONARYOS_LICENSE_ENFORCEMENT") == "true",
-		LicensePublicKey:               os.Getenv("ZONARYOS_LICENSE_PUBLIC_KEY"),
-		LicenseToken:                   os.Getenv("ZONARYOS_LICENSE_TOKEN"),
-		PublicURL:                      strings.TrimRight(os.Getenv("ZONARYOS_PUBLIC_URL"), "/"),
-		TelemetryEnabled:               os.Getenv("ZONARYOS_TELEMETRY_ENABLED") == "true",
-		NATSURL:                        os.Getenv("ZONARYOS_NATS_URL"),
-		NATSPollInterval:               5 * time.Second,
-		RequestTimeout:                 30 * time.Second,
-		MaxJSONBodyBytes:               1 << 20,  // 1MB
-		MaxUploadBodyBytes:             10 << 20, // 10MB
-		AIEncryptionKey:                os.Getenv("ZONARYOS_AI_ENCRYPTION_KEY"),
-		AIAnomalySchedulerPollInterval: 24 * time.Hour,
-		IntegrationEncryptionKey:       os.Getenv("ZONARYOS_INTEGRATION_ENCRYPTION_KEY"),
-		IntegrationInboundPollInterval: 5 * time.Minute,
+		HTTPAddr:                          getEnv("ZONARYOS_HTTP_ADDR", ":8080"),
+		DatabaseURL:                       os.Getenv("ZONARYOS_DATABASE_URL"),
+		OIDCIssuerURL:                     os.Getenv("ZONARYOS_OIDC_ISSUER_URL"),
+		OIDCClientID:                      getEnv("ZONARYOS_OIDC_CLIENT_ID", "zonaryos-web"),
+		PlatformAdminEmails:               parseEmailList(os.Getenv("ZONARYOS_PLATFORM_ADMIN_EMAILS")),
+		LicenseEnforced:                   os.Getenv("ZONARYOS_LICENSE_ENFORCEMENT") == "true",
+		LicensePublicKey:                  os.Getenv("ZONARYOS_LICENSE_PUBLIC_KEY"),
+		LicenseToken:                      os.Getenv("ZONARYOS_LICENSE_TOKEN"),
+		PublicURL:                         strings.TrimRight(os.Getenv("ZONARYOS_PUBLIC_URL"), "/"),
+		TelemetryEnabled:                  os.Getenv("ZONARYOS_TELEMETRY_ENABLED") == "true",
+		NATSURL:                           os.Getenv("ZONARYOS_NATS_URL"),
+		NATSPollInterval:                  5 * time.Second,
+		RequestTimeout:                    30 * time.Second,
+		MaxJSONBodyBytes:                  1 << 20,  // 1MB
+		MaxUploadBodyBytes:                10 << 20, // 10MB
+		AIEncryptionKey:                   os.Getenv("ZONARYOS_AI_ENCRYPTION_KEY"),
+		AIAnomalySchedulerPollInterval:    24 * time.Hour,
+		IntegrationEncryptionKey:          os.Getenv("ZONARYOS_INTEGRATION_ENCRYPTION_KEY"),
+		IntegrationInboundPollInterval:    5 * time.Minute,
+		RateLimitStandardPerMinute:        100,
+		RateLimitBulkPerMinute:            10,
+		RateLimitAIPerMinute:              5,
+		RateLimitExportPerMinute:          2,
+		RateLimitAnalyticsIngestPerMinute: 500,
 	}
 	cfg.DiscoveryStartURL = strings.TrimRight(getEnv("ZONARYOS_DISCOVERY_START_URL", cfg.PublicURL), "/")
 
@@ -275,8 +295,41 @@ func Load() (Config, error) {
 		}
 		cfg.IntegrationInboundPollInterval = d
 	}
+	if err := parsePositiveIntEnv("ZONARYOS_RATELIMIT_STANDARD_PER_MINUTE", &cfg.RateLimitStandardPerMinute); err != nil {
+		return Config{}, err
+	}
+	if err := parsePositiveIntEnv("ZONARYOS_RATELIMIT_BULK_PER_MINUTE", &cfg.RateLimitBulkPerMinute); err != nil {
+		return Config{}, err
+	}
+	if err := parsePositiveIntEnv("ZONARYOS_RATELIMIT_AI_PER_MINUTE", &cfg.RateLimitAIPerMinute); err != nil {
+		return Config{}, err
+	}
+	if err := parsePositiveIntEnv("ZONARYOS_RATELIMIT_EXPORT_PER_MINUTE", &cfg.RateLimitExportPerMinute); err != nil {
+		return Config{}, err
+	}
+	if err := parsePositiveIntEnv("ZONARYOS_RATELIMIT_ANALYTICS_INGEST_PER_MINUTE", &cfg.RateLimitAnalyticsIngestPerMinute); err != nil {
+		return Config{}, err
+	}
 
 	return cfg, nil
+}
+
+// parsePositiveIntEnv parses envVar into *dest only if it's set at all -
+// same "unset means keep the default already in dest" convention every
+// other optional-override field in Load follows (RequestTimeout,
+// MaxJSONBodyBytes, ...), just factored out here since this batch adds
+// five near-identical positive-integer overrides in a row.
+func parsePositiveIntEnv(envVar string, dest *int) error {
+	raw := os.Getenv(envVar)
+	if raw == "" {
+		return nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return fmt.Errorf("%s must be a positive integer", envVar)
+	}
+	*dest = n
+	return nil
 }
 
 func getEnv(key, fallback string) string {

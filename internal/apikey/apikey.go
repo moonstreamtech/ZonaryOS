@@ -87,6 +87,7 @@ const auditEntityType = "api_key"
 const (
 	createAuditAction = "create"
 	revokeAuditAction = "revoke"
+	rotateAuditAction = "rotate"
 )
 
 // keyPrefix marks a value as a ZonaryOS API key at a glance (e.g. in logs
@@ -301,4 +302,59 @@ func RevokeAPIKey(ctx context.Context, pool *pgxpool.Pool, firmID, userID, keyID
 
 		return auditlog.Write(ctx, tx, firmID, userID, keyID, auditEntityType, revokeAuditAction, nil)
 	})
+}
+
+// RotateAPIKey replaces keyID's own key_hash in place with a freshly
+// generated one, returning the new plaintext exactly once - same
+// one-time-reveal contract CreateAPIKey's own doc comment establishes.
+// The row's own id/name/scopes/created_by/expires_at are untouched (this
+// is a credential-rotation operation, not a re-creation): a caller that
+// has this key's ID recorded elsewhere (a scheduled job's own config,
+// say) doesn't need to update anything except the plaintext value
+// itself. last_used_at is reset to nil - the newly rotated secret has,
+// by definition, never yet been used. The OLD plaintext is immediately
+// invalidated: nothing about a UPDATE-in-place leaves the previous
+// key_hash valid even for an instant (unlike, say, a dual-active-keys
+// rotation scheme - deliberately not built here, see this batch's own
+// scope boundary). Owner-gated, same tier as CreateAPIKey/RevokeAPIKey.
+func RotateAPIKey(ctx context.Context, pool *pgxpool.Pool, firmID, userID, keyID uuid.UUID) (plaintext string, key APIKey, err error) {
+	plaintext, hash, err := generateKey()
+	if err != nil {
+		return "", APIKey{}, err
+	}
+
+	txErr := zdb.WithFirmContext(ctx, pool, firmID, func(ctx context.Context, tx pgx.Tx) error {
+		isMember, err := permission.IsMember(ctx, tx, firmID, userID)
+		if err != nil {
+			return err
+		}
+		if !isMember {
+			return ErrFirmNotFound
+		}
+		isOwner, err := permission.IsOwner(ctx, tx, firmID, userID)
+		if err != nil {
+			return err
+		}
+		if !isOwner {
+			return ErrNotOwner
+		}
+
+		row := tx.QueryRow(ctx, `
+			UPDATE api_keys SET key_hash = $1, last_used_at = NULL WHERE id = $2 AND firm_id = $3
+			RETURNING `+apiKeyColumns, hash, keyID, firmID)
+		k, err := scanAPIKey(row)
+		if err != nil {
+			if err == pgx.ErrNoRows {
+				return ErrKeyNotFound
+			}
+			return fmt.Errorf("rotate API key: %w", err)
+		}
+		key = k
+
+		return auditlog.Write(ctx, tx, firmID, userID, keyID, auditEntityType, rotateAuditAction, nil)
+	})
+	if txErr != nil {
+		return "", APIKey{}, txErr
+	}
+	return plaintext, key, nil
 }

@@ -257,3 +257,52 @@ func TestAuthenticate_ScopeRestrictionLimitsPermissionHas(t *testing.T) {
 		t.Fatal("expected a resolved identity subject")
 	}
 }
+
+// TestRotateAPIKey_OldKeyRejectedNewKeyWorks is this batch's own
+// required test: "old key rejected after rotation, new key works."
+// RotateAPIKey updates the SAME row in place (see that function's own
+// doc comment) - id/name/scopes are unchanged, only the credential
+// itself and the response's own fresh plaintext differ.
+func TestRotateAPIKey_OldKeyRejectedNewKeyWorks(t *testing.T) {
+	adminPool, appPool := setupTest(t)
+	ctx := context.Background()
+	firmID, userID := seedOwnerWithScopes(ctx, t, adminPool, appPool, "Rotation Firm", "owner-rotation", []string{"view_stock"})
+
+	oldPlaintext, key, err := apikey.CreateAPIKey(ctx, appPool, firmID, userID, apikey.CreateAPIKeyInput{
+		Name:   "rotatable key",
+		Scopes: []string{"view_stock"},
+	})
+	if err != nil {
+		t.Fatalf("create API key: %v", err)
+	}
+
+	newPlaintext, rotated, err := apikey.RotateAPIKey(ctx, appPool, firmID, userID, key.ID)
+	if err != nil {
+		t.Fatalf("rotate API key: %v", err)
+	}
+	if newPlaintext == "" || newPlaintext == oldPlaintext {
+		t.Fatalf("expected a fresh, non-empty plaintext, got %q (old was %q)", newPlaintext, oldPlaintext)
+	}
+	if rotated.ID != key.ID {
+		t.Fatalf("expected rotation to update the SAME row (id %s), got id %s", key.ID, rotated.ID)
+	}
+	if len(rotated.Scopes) != 1 || rotated.Scopes[0] != "view_stock" {
+		t.Fatalf("expected scopes to be preserved across rotation, got %v", rotated.Scopes)
+	}
+
+	fb := &apikey.Fallback{Pool: appPool}
+
+	oldReq := httptest.NewRequest(http.MethodGet, "/api/firms/"+firmID.String()+"/api-keys", nil)
+	oldReq.Header.Set("Authorization", "Bearer "+oldPlaintext)
+	oldReq.SetPathValue("firmID", firmID.String())
+	if _, _, ok := fb.Authenticate(oldReq); ok {
+		t.Fatal("expected the OLD plaintext to be rejected immediately after rotation")
+	}
+
+	newReq := httptest.NewRequest(http.MethodGet, "/api/firms/"+firmID.String()+"/api-keys", nil)
+	newReq.Header.Set("Authorization", "Bearer "+newPlaintext)
+	newReq.SetPathValue("firmID", firmID.String())
+	if _, _, ok := fb.Authenticate(newReq); !ok {
+		t.Fatal("expected the NEW plaintext to authenticate successfully")
+	}
+}

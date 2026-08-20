@@ -106,6 +106,42 @@ func RequestID(next http.Handler) http.Handler {
 	})
 }
 
+// SecurityHeaders is Part 3 of the tenant-isolation-hardening/security
+// batch: defense-in-depth security headers set at the Go application
+// level, for any direct access that bypasses nginx (nginx's own config
+// already sets equivalent headers for the normal deployment path - this
+// is the same "don't rely on a single layer" reasoning
+// internal/platform/middleware.RequestSizeLimit already applies at the
+// app level even though a reverse proxy could also cap body size).
+// Every response from this binary is an API response (this server has
+// no static-asset or HTML-rendering surface of its own - the frontend
+// is a separate Next.js deployment), so these headers apply
+// unconditionally to every route, with no per-route opt-out:
+//
+//   - X-Content-Type-Options: nosniff - a browser must never guess/
+//     override this response's declared Content-Type.
+//   - X-Frame-Options: DENY - this API is never meant to be framed.
+//   - Cache-Control: no-store - no intermediate cache or browser should
+//     ever persist a response that may carry per-firm business data or
+//     an auth-sensitive payload (see internal/apikey.CreateAPIKey's own
+//     one-time-plaintext-reveal contract, which a cached response would
+//     silently defeat the "exactly once" half of).
+//   - Content-Security-Policy: default-src 'none' - the minimal, correct
+//     policy for a pure JSON API that never itself serves executable
+//     content; a browser that ever somehow renders one of these
+//     responses as a document gets no script/style/image/frame
+//     execution at all.
+func SecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Cache-Control", "no-store")
+		h.Set("Content-Security-Policy", "default-src 'none'")
+		next.ServeHTTP(w, r)
+	})
+}
+
 // PanicRecovery recovers a panicking handler, logs it (message and stack
 // trace via slog), and returns a clean 500 - without this, an unhandled
 // panic in ANY of this codebase's ~40 route-registering packages would
@@ -196,31 +232,61 @@ func RequestTimeout(d time.Duration) func(http.Handler) http.Handler {
 	}
 }
 
-// Chain composes RequestID, PanicRecovery, RequestSizeLimit, and
-// RequestTimeout around next, in that specific order (outermost to
-// innermost, i.e. the order requests pass through on the way IN):
+// Chain composes RequestID, SecurityHeaders, PanicRecovery,
+// RequestSizeLimit, RequestTimeout, and rateLimit around next, in that
+// specific order (outermost to innermost, i.e. the order requests pass
+// through on the way IN) - this is the tenant-isolation-hardening/
+// security batch's own audited final chain order (Part 3):
 //
-//  1. RequestID - every request gets an ID and a correlation log line,
-//     even one that later panics or times out; must run before
-//     PanicRecovery logs anything so that log line already carries the
-//     request ID.
-//  2. PanicRecovery - must be outside everything else it needs to
-//     protect (see its own doc comment for why outermost-after-
-//     RequestID).
-//  3. RequestSizeLimit - reject an oversized body before any handler
-//     (or the timeout deadline's clock) does real work reading it.
-//  4. RequestTimeout - innermost: the actual route handler runs with a
-//     bounded context.
+//		RequestID -> SecurityHeaders -> PanicRecovery -> RequestSizeLimit
+//		  -> RequestTimeout -> RateLimit -> Auth -> Handler
+//
+//	 1. RequestID - every request gets an ID and a correlation log line,
+//	    even one that later panics or times out; must run before
+//	    PanicRecovery logs anything so that log line already carries the
+//	    request ID.
+//	 2. SecurityHeaders - set on every response regardless of what
+//	    happens later in the chain (including a PanicRecovery-caught
+//	    panic's own error response), so a security header is never
+//	    accidentally skipped for an unusual response path.
+//	 3. PanicRecovery - must be outside everything else it needs to
+//	    protect (see its own doc comment for why outermost-after-
+//	    RequestID/SecurityHeaders).
+//	 4. RequestSizeLimit - reject an oversized body before any handler
+//	    (or the timeout deadline's clock) does real work reading it.
+//	 5. RequestTimeout - the route handler runs with a bounded context.
+//	 6. rateLimit (internal/ratelimit.Middleware, passed in rather than
+//	    imported directly - see this parameter's own doc note below) -
+//	    innermost: runs immediately before internal/identity.Middleware
+//	    (per-route "Auth", applied inside each module's own RegisterRoutes,
+//	    inside the mux this Chain wraps) and the route handler itself.
+//
+// rateLimit may be nil, in which case this position in the chain is a
+// pure pass-through (the same "wrap or no-op on nil" convention
+// telemetry.Middleware already establishes for its own optional
+// wrapping) - a caller that doesn't want rate limiting at all (e.g. a
+// unit test building its own minimal chain) pays no cost for the
+// feature existing. It is accepted as a parameter, not called via a
+// direct import of internal/ratelimit, so this package - imported
+// transitively by nearly every other package via cmd/server/main.go's
+// own Chain call - stays exactly as dependency-free as its own package
+// doc comment already promises; cmd/server/main.go is the one place
+// that constructs a real internal/ratelimit.Limiter and passes
+// ratelimit.Middleware(limiter) in.
 //
 // internal/identity.Middleware (per-route Keycloak auth, applied inside
 // each module's own RegisterRoutes, before the mux this Chain wraps is
-// even fully built) still runs AFTER all four of these on the way in -
-// unauthenticated requests still get a request ID/panic recovery/size
-// limit/timeout, which is the right default (a malformed or oversized
-// unauthenticated request should never be able to crash or hang the
-// server either).
-func Chain(next http.Handler, requestTimeout time.Duration, maxJSONBytes, maxUploadBytes int64) http.Handler {
-	return RequestID(PanicRecovery(RequestSizeLimit(maxJSONBytes, maxUploadBytes)(RequestTimeout(requestTimeout)(APIVersionAlias(next)))))
+// even fully built) still runs AFTER every layer above on the way in -
+// unauthenticated requests still get a request ID/security headers/
+// panic recovery/size limit/timeout/rate limit, which is the right
+// default (a malformed, oversized, or floodingly-frequent unauthenticated
+// request should never be able to crash, hang, or overwhelm the server
+// either).
+func Chain(next http.Handler, requestTimeout time.Duration, maxJSONBytes, maxUploadBytes int64, rateLimit func(http.Handler) http.Handler) http.Handler {
+	if rateLimit == nil {
+		rateLimit = func(h http.Handler) http.Handler { return h }
+	}
+	return RequestID(SecurityHeaders(PanicRecovery(RequestSizeLimit(maxJSONBytes, maxUploadBytes)(RequestTimeout(requestTimeout)(rateLimit(APIVersionAlias(next)))))))
 }
 
 // apiV1Prefix is the versioned alias APIVersionAlias rewrites off every

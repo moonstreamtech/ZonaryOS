@@ -48,6 +48,11 @@ func RegisterRoutes(mux *http.ServeMux, verifier *identity.Verifier, pool *pgxpo
 	mux.Handle("POST /api/firms/{firmID}/ai-config", auth(http.HandlerFunc(handleCreateConfig(pool, encryptor))))
 	mux.Handle("GET /api/firms/{firmID}/ai-config", auth(http.HandlerFunc(handleListConfigs(pool, encryptor))))
 	mux.Handle("DELETE /api/firms/{firmID}/ai-config/{configID}", auth(http.HandlerFunc(handleDeleteConfig(pool))))
+	// Secrets rotation batch, Part 4: re-encrypts the firm's active
+	// configuration's own provider API key with a caller-supplied new
+	// plaintext - see RotateActiveConfigKey's own doc comment for why
+	// this is caller-supplied rather than ZonaryOS-generated.
+	mux.Handle("POST /api/firms/{firmID}/ai-config/rotate-key", auth(http.HandlerFunc(handleRotateConfigKey(pool, encryptor))))
 	mux.Handle("POST /api/firms/{firmID}/ai/suggest-workflow", auth(http.HandlerFunc(handleSuggestWorkflow(pool, encryptor))))
 	mux.Handle("POST /api/firms/{firmID}/ai/suggest-report", auth(http.HandlerFunc(handleSuggestReport(pool, encryptor))))
 }
@@ -195,6 +200,40 @@ func handleDeleteConfig(pool *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+type rotateConfigKeyRequest struct {
+	APIKey string `json:"apiKey"`
+}
+
+// handleRotateConfigKey serves POST .../ai-config/rotate-key (owner-
+// gated). Unlike handleCreateConfig, the response never includes a "key"
+// field at all - the caller already supplied the real plaintext in the
+// request body, so echoing it back (masked or not) would add nothing;
+// only the resulting Configuration (with its own now-updated
+// APIKeyMasked) is returned.
+func handleRotateConfigKey(pool *pgxpool.Pool, encryptor *Encryptor) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		firmID, userID, ok, status, msg := resolveIdentity(r, pool)
+		if !ok {
+			http.Error(w, msg, status)
+			return
+		}
+		var req rotateConfigKeyRequest
+		if err := decodeJSONBody(r, &req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		cfg, err := RotateActiveConfigKey(r.Context(), pool, encryptor, firmID, userID, req.APIKey)
+		if err != nil {
+			writeAIError(w, err)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(toConfigResponse(cfg))
 	}
 }
 
