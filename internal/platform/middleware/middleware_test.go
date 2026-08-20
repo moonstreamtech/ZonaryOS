@@ -206,7 +206,7 @@ func TestChain_ComposesAllFourMiddlewareInOrder(t *testing.T) {
 	panicking := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		panic("boom")
 	})
-	handler := middleware.Chain(panicking, time.Second, 1<<20, 10<<20)
+	handler := middleware.Chain(panicking, time.Second, 1<<20, 10<<20, nil)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/whatever", nil)
@@ -217,6 +217,50 @@ func TestChain_ComposesAllFourMiddlewareInOrder(t *testing.T) {
 	}
 	if rec.Header().Get(middleware.RequestIDHeader) == "" {
 		t.Error("expected a request ID header even on a panicking request")
+	}
+}
+
+// TestSecurityHeaders_SetsAllRequiredHeaders is this batch's own
+// required test: "every API response has the required headers."
+func TestSecurityHeaders_SetsAllRequiredHeaders(t *testing.T) {
+	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := middleware.SecurityHeaders(ok)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/whatever", nil)
+	handler.ServeHTTP(rec, req)
+
+	tests := map[string]string{
+		"X-Content-Type-Options":  "nosniff",
+		"X-Frame-Options":         "DENY",
+		"Cache-Control":           "no-store",
+		"Content-Security-Policy": "default-src 'none'",
+	}
+	for header, want := range tests {
+		if got := rec.Header().Get(header); got != want {
+			t.Errorf("header %q = %q, want %q", header, got, want)
+		}
+	}
+}
+
+// TestChain_SetsSecurityHeadersEvenOnAPanickingRequest confirms
+// SecurityHeaders is applied outside PanicRecovery in the real Chain -
+// a caught panic's own 500 response still carries every security
+// header, not just a normal 200 response.
+func TestChain_SetsSecurityHeadersEvenOnAPanickingRequest(t *testing.T) {
+	panicking := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic("boom")
+	})
+	handler := middleware.Chain(panicking, time.Second, 1<<20, 10<<20, nil)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/whatever", nil)
+	handler.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("expected Cache-Control: no-store even on a panicking request, got %q", got)
 	}
 }
 

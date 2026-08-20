@@ -43,6 +43,10 @@ func RegisterRoutes(mux *http.ServeMux, verifier *identity.Verifier, pool *pgxpo
 	mux.Handle("GET /api/firms/{firmID}/api-keys", auth(http.HandlerFunc(handleListAPIKeys(pool))))
 	mux.Handle("POST /api/firms/{firmID}/api-keys", auth(http.HandlerFunc(handleCreateAPIKey(pool))))
 	mux.Handle("DELETE /api/firms/{firmID}/api-keys/{keyID}", auth(http.HandlerFunc(handleRevokeAPIKey(pool))))
+	// Secrets rotation batch, Part 4: rotate a key in place rather than
+	// forcing a delete+recreate cycle (which would also lose the key's
+	// own id/scopes/created_by for anything referencing it elsewhere).
+	mux.Handle("POST /api/firms/{firmID}/api-keys/{keyID}/rotate", auth(http.HandlerFunc(handleRotateAPIKey(pool))))
 }
 
 func writeAPIKeyError(w http.ResponseWriter, err error) {
@@ -175,5 +179,35 @@ func handleRevokeAPIKey(pool *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// handleRotateAPIKey is Part 4's own "rotation without a delete+recreate
+// cycle" endpoint - see RotateAPIKey's own doc comment. Response shape
+// matches handleCreateAPIKey's (the one-time plaintext under "key"),
+// since this is functionally the same "here is a new secret, exactly
+// once" contract, just against an existing key's own id.
+func handleRotateAPIKey(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		firmID, userID, ok, status, msg := resolveIdentity(r, pool)
+		if !ok {
+			http.Error(w, msg, status)
+			return
+		}
+		keyID, err := uuid.Parse(r.PathValue("keyID"))
+		if err != nil {
+			http.Error(w, "invalid API key id", http.StatusBadRequest)
+			return
+		}
+		plaintext, key, err := RotateAPIKey(r.Context(), pool, firmID, userID, keyID)
+		if err != nil {
+			writeAPIKeyError(w, err)
+			return
+		}
+
+		resp := toAPIKeyResponse(key)
+		resp.Key = &plaintext
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
 	}
 }
