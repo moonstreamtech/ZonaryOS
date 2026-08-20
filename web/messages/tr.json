@@ -1048,7 +1048,12 @@
     "columnCreatedAt": "Oluşturulma",
     "columnWorkflowDefinitionCount": "İş akışı tanımları",
     "columnMemberCount": "Üyeler",
-    "badge": "Platform Yöneticisi"
+    "badge": "Platform Yöneticisi",
+    "navHome": "Firmalar",
+    "navFirmGroups": "Firma Grupları",
+    "navExchangeRates": "Döviz Kurları",
+    "navMetrics": "Metrikler",
+    "navAlerts": "Uyarılar"
   },
   "FirmGroups": {
     "title": "Firma Grupları",
@@ -1913,5 +1918,56 @@
       "partial": "Kısmi",
       "failed": "Başarısız"
     }
+  },
+  "PlatformAdminMetrics": {
+    "title": "Metrikler",
+    "description": "Bu ZonaryOS dağıtımındaki her uç nokta için son 24 saatteki istek performansı. Yalnızca ZonaryOS platform ekibi tarafından görülebilir.",
+    "loadError": "Metrik özeti yüklenemedi. Lütfen tekrar deneyin.",
+    "empty": "Henüz metrik kaydedilmedi.",
+    "endpointsTitle": "Uç noktalara göre yanıt süreleri",
+    "topSlowestTitle": "En yavaş 10 uç nokta",
+    "volumeTitle": "Saatlik istek hacmi (son 24 saat)",
+    "volumeEmpty": "Henüz istek hacmi kaydedilmedi.",
+    "columnEndpoint": "Uç nokta",
+    "columnP50": "p50",
+    "columnP95": "p95",
+    "columnP99": "p99",
+    "columnErrorRate": "Hata oranı",
+    "columnRequestCount": "İstekler",
+    "millisecondsValue": "{value} ms"
+  },
+  "PlatformAdminAlerts": {
+    "title": "Uyarılar",
+    "description": "Hata oranı, yanıt süresi ve istek hacmi için deterministik uyarı kuralları ile son uyarı olayları. Yalnızca ZonaryOS platform ekibi tarafından görülebilir.",
+    "loadError": "Uyarı kuralları veya olayları yüklenemedi. Lütfen tekrar deneyin.",
+    "empty": "Henüz uyarı kuralı yok.",
+    "newRuleTitle": "Yeni uyarı kuralı",
+    "nameLabel": "Ad",
+    "metricLabel": "Metrik",
+    "thresholdLabel": "Eşik",
+    "windowMinutesLabel": "Pencere (dakika)",
+    "isActiveLabel": "Etkin",
+    "actionsLabel": "İşlemler",
+    "create": "Kural oluştur",
+    "createRequired": "Lütfen bir ad ve pozitif bir pencere (dakika) girin.",
+    "createError": "Bu uyarı kuralı oluşturulamadı. Lütfen tekrar deneyin.",
+    "updateError": "Bu uyarı kuralı güncellenemedi. Lütfen tekrar deneyin.",
+    "deleteError": "Bu uyarı kuralı silinemedi. Lütfen tekrar deneyin.",
+    "edit": "Düzenle",
+    "save": "Kaydet",
+    "cancel": "Vazgeç",
+    "delete": "Sil",
+    "active": "Etkin",
+    "inactive": "Devre dışı",
+    "metric": {
+      "error_rate": "Hata oranı",
+      "response_time_p95": "Yanıt süresi (p95)",
+      "volume_drop": "Hacim düşüşü"
+    },
+    "recentEventsTitle": "Son uyarı olayları",
+    "recentEventsEmpty": "Henüz uyarı olayı yok.",
+    "eventRuleLabel": "Kural",
+    "eventTriggeredAtLabel": "Tetiklenme zamanı",
+    "eventMetricValueLabel": "Metrik değeri"
   }
 }

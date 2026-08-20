@@ -7,29 +7,29 @@ import { cookies } from "next/headers";
 import { notFound } from "next/navigation";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import { fetchPlatformAdminFirms } from "@/lib/platformAdmin";
-import { fetchFirmGroups } from "@/lib/consolidation";
-import FirmGroupsManager from "@/components/PlatformAdmin/FirmGroupsManager";
+import { fetchMetricsSummary } from "@/lib/perfMetrics";
+import MetricsDashboard from "@/components/PlatformAdmin/MetricsDashboard";
 import PlatformAdminNav from "@/components/PlatformAdmin/PlatformAdminNav";
 
 type PageProps = {
   params: Promise<{ locale: string }>;
 };
 
-// Multi-company consolidation's platform-admin management page (this
-// batch, internal/consolidation) - firm groups, their members, and
-// inter-company transfers are platform-wide constructs spanning multiple
-// firms, not firm-scoped, so this lives under /platform-admin next to
-// exchange-rates, not /settings. Gating mirrors
-// platform-admin/exchange-rates/page.tsx's own pattern exactly: re-uses
-// fetchPlatformAdminFirms purely as the allowlist probe (the same
-// internal/platformadmin.Allowlist gates every /firm-groups endpoint), a
+// Performance monitoring's platform-admin dashboard (this batch,
+// GET /api/platform-admin/metrics/summary) - a fixed last-24h window
+// covering per-endpoint p50/p95/p99 response times, error rate, the top
+// 10 slowest endpoints, and request volume by hour. Platform-wide, not
+// firm-scoped, so this lives under /platform-admin next to firm-groups
+// and exchange-rates. Gating mirrors those pages' own pattern exactly:
+// re-uses fetchPlatformAdminFirms purely as the allowlist probe (the same
+// internal/platformadmin.Allowlist gates every /metrics endpoint), a
 // failed/non-2xx response there already meaning "this caller shouldn't
 // see this feature exist at all" - notFound(), not an inline "not
 // authorized" message, matching the backend's own 404-not-403 posture.
-export default async function FirmGroupsPage({ params }: PageProps) {
+export default async function MetricsPage({ params }: PageProps) {
   const { locale } = await params;
   setRequestLocale(locale);
-  const t = await getTranslations("FirmGroups");
+  const t = await getTranslations("PlatformAdminMetrics");
   const tAdmin = await getTranslations("PlatformAdmin");
 
   const sessionToken = (await cookies()).get("zonaryos_session")?.value;
@@ -37,12 +37,12 @@ export default async function FirmGroupsPage({ params }: PageProps) {
     notFound();
   }
 
-  const firms = await fetchPlatformAdminFirms(sessionToken);
-  if (firms === null) {
+  const allowlistProbe = await fetchPlatformAdminFirms(sessionToken);
+  if (allowlistProbe === null) {
     notFound();
   }
 
-  const groups = await fetchFirmGroups(sessionToken);
+  const summary = await fetchMetricsSummary(sessionToken);
 
   return (
     <main className="flex flex-1 flex-col items-center gap-8 bg-[var(--color-platform-accent)] px-6 py-16">
@@ -59,14 +59,12 @@ export default async function FirmGroupsPage({ params }: PageProps) {
         <p className="max-w-2xl text-center text-sm text-indigo-200">{t("description")}</p>
       </div>
 
-      <PlatformAdminNav locale={locale} active="firmGroups" />
+      <PlatformAdminNav locale={locale} active="metrics" />
 
-      {groups === null ? (
+      {summary === null ? (
         <p className="text-red-300">{t("loadError")}</p>
       ) : (
-        <div className="w-full max-w-4xl rounded-lg border border-indigo-800 bg-white p-4 dark:bg-zinc-950">
-          <FirmGroupsManager groups={groups} firms={firms} locale={locale} />
-        </div>
+        <MetricsDashboard summary={summary} />
       )}
     </main>
   );
