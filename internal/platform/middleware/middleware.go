@@ -47,6 +47,25 @@ func RequestIDFromContext(ctx context.Context) string {
 // authorization decision.
 const RequestIDHeader = "X-Request-Id"
 
+// MetricsRecorder, when non-nil, is called by RequestID after every
+// request completes with (method, path, statusCode, durationMs) - the
+// performance monitoring/alerting/operational excellence batch's own
+// Part 1 requirement to "wire the existing RequestID middleware to also
+// record metrics after each request completes". A package-level func
+// var (not a parameter threaded through RequestID/Chain's own already-
+// public signatures) is the same wiring pattern
+// internal/inventory.SetOutboundDispatcher/internal/crm.SetOutboundDispatcher
+// already establish for a cross-cutting hook set once at startup
+// (cmd/server/main.go, to internal/apm.Buffer.Record) - internal/platform/middleware
+// cannot import internal/apm directly (internal/apm would need this
+// package's own RequestIDFromContext-style plumbing, and more
+// importantly this package is intentionally dependency-free, imported by
+// nearly every other package in this codebase transitively via
+// cmd/server/main.go's own Chain call). Defaults to nil (a no-op) so
+// every existing caller/test of RequestID that never wires this is
+// completely unaffected.
+var MetricsRecorder func(method, path string, statusCode, durationMs int)
+
 type statusRecorder struct {
 	http.ResponseWriter
 	status int
@@ -79,7 +98,11 @@ func RequestID(next http.Handler) http.Handler {
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		start := time.Now()
 		next.ServeHTTP(rec, r.WithContext(ctx))
-		slog.Info("request", "requestId", id, "method", r.Method, "path", r.URL.Path, "status", rec.status, "durationMs", time.Since(start).Milliseconds())
+		durationMs := time.Since(start).Milliseconds()
+		slog.Info("request", "requestId", id, "method", r.Method, "path", r.URL.Path, "status", rec.status, "durationMs", durationMs)
+		if MetricsRecorder != nil {
+			MetricsRecorder(r.Method, r.URL.Path, rec.status, int(durationMs))
+		}
 	})
 }
 
