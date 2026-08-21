@@ -10,6 +10,7 @@ import { useTranslations } from "next-intl";
 import { Link } from "@/i18n/navigation";
 import type { InstanceState } from "@/lib/workflow";
 import { formatPayload } from "./format";
+import EmptyState from "@/components/ui/EmptyState";
 
 type Props = {
   firmId: string;
@@ -131,9 +132,7 @@ export default function WorkflowInstanceList({
       )}
 
       {instances.length === 0 ? (
-        <p className="text-zinc-600 dark:text-zinc-400">
-          {q ? t("searchEmpty") : t("empty")}
-        </p>
+        <EmptyState message={q ? t("searchEmpty") : t("empty")} />
       ) : (
         <div className="panel w-full overflow-x-auto p-0">
           <table className="w-full border-collapse text-left text-sm">

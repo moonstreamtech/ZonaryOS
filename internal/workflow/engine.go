@@ -28,6 +28,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/inventory"
 	"github.com/moonstreamtech/ZonaryOS/internal/invoicing"
 	"github.com/moonstreamtech/ZonaryOS/internal/logistics"
+	"github.com/moonstreamtech/ZonaryOS/internal/onboarding"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
 	"github.com/moonstreamtech/ZonaryOS/internal/procurement"
@@ -1044,6 +1045,10 @@ func DefineWorkflowForFirm(ctx context.Context, pool *pgxpool.Pool, firmID, user
 	if err != nil {
 		return uuid.UUID{}, err
 	}
+	// onboarding.CompleteStep (see that package's own doc comment): fire-
+	// and-forget, never allowed to fail this request - the
+	// create_first_workflow onboarding checklist item.
+	onboarding.CompleteStep(pool, firmID, userID, onboarding.StepCreateFirstWorkflow)
 	return definitionID, nil
 }
 

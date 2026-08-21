@@ -45,6 +45,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
+	"github.com/moonstreamtech/ZonaryOS/internal/onboarding"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
 )
@@ -238,6 +239,10 @@ func CreateWebhook(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.
 	if err != nil {
 		return Webhook{}, err
 	}
+	// onboarding.CompleteStep (see that package's own doc comment): fire-
+	// and-forget, never allowed to fail this request - the
+	// configure_webhook onboarding checklist item.
+	onboarding.CompleteStep(pool, firmID, userID, onboarding.StepConfigureWebhook)
 	return hook, nil
 }
 

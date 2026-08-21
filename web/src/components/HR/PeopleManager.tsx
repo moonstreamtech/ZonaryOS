@@ -8,6 +8,7 @@ import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import type { Contract, Person, PersonType } from "@/lib/hr";
+import EmptyState from "@/components/ui/EmptyState";
 
 type PersonWithContracts = Person & { contracts: Contract[] };
 
@@ -168,7 +169,21 @@ export default function PeopleManager({ firmId, people, isOwner }: Props) {
       )}
 
       {people.length === 0 ? (
-        <p className="text-zinc-600 dark:text-zinc-400">{t("empty")}</p>
+        <EmptyState
+          message={t("empty")}
+          action={
+            isOwner && !creating ? (
+              <button
+                type="button"
+                data-permission-key="hr.person.create"
+                onClick={() => setCreating(true)}
+                className="rounded-md bg-black px-3 py-1.5 text-sm font-medium text-white dark:bg-zinc-50 dark:text-black"
+              >
+                {t("newPerson")}
+              </button>
+            ) : undefined
+          }
+        />
       ) : (
         <div className="flex flex-col gap-2">
           {people.map((person) => (

@@ -10,8 +10,10 @@ import { fetchMe, fetchRoleInFirm } from "@/lib/me";
 import { resolveActiveFirm } from "@/lib/activeFirm";
 import { fetchDefinitions, fetchInstanceCounts } from "@/lib/workflow";
 import { fetchAuditLogPage, type AuditLogEntry } from "@/lib/auditlog";
+import { fetchOnboardingProgress } from "@/lib/onboarding";
 import { Link } from "@/i18n/navigation";
 import QuickCreatePanel from "@/components/Workflow/QuickCreatePanel";
+import OnboardingChecklist from "@/components/Onboarding/OnboardingChecklist";
 import Panel from "@/components/ui/Panel";
 
 type PageProps = {
@@ -269,10 +271,11 @@ export default async function Home({ params }: PageProps) {
   const role = await fetchRoleInFirm(sessionToken!, firm.firmId);
   const isOwner = role?.isOwner ?? false;
 
-  const [definitions, counts, recentActivity] = await Promise.all([
+  const [definitions, counts, recentActivity, onboardingProgress] = await Promise.all([
     fetchDefinitions(sessionToken!, firm.firmId),
     fetchInstanceCounts(sessionToken!, firm.firmId),
     isOwner ? fetchRecentActivity(sessionToken!, firm.firmId) : Promise.resolve(null),
+    fetchOnboardingProgress(sessionToken!, firm.firmId),
   ]);
 
   return (
@@ -295,6 +298,15 @@ export default async function Home({ params }: PageProps) {
           {tDash("roleLabel")}: {role?.roleName ?? tDash("roleUnavailable")}
         </p>
       </div>
+
+      {/* First-run onboarding checklist (Part 1 of the onboarding/help/UX
+          batch) - renders nothing once every step is done or the user has
+          dismissed it (see OnboardingChecklist's own early-return). */}
+      {onboardingProgress && (
+        <div className="w-full max-w-5xl">
+          <OnboardingChecklist firmId={firm.firmId} progress={onboardingProgress} />
+        </div>
+      )}
 
       {/* Quick create - moved into a prominent card near the top of the
           dashboard per item 3 (a FAB was considered scope creep for this

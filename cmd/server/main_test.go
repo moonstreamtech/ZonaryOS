@@ -11,8 +11,10 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/absence"
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
 	"github.com/moonstreamtech/ZonaryOS/internal/firm"
+	"github.com/moonstreamtech/ZonaryOS/internal/helparticles"
 	"github.com/moonstreamtech/ZonaryOS/internal/identity"
 	"github.com/moonstreamtech/ZonaryOS/internal/invite"
+	"github.com/moonstreamtech/ZonaryOS/internal/onboarding"
 	"github.com/moonstreamtech/ZonaryOS/internal/payroll"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/httpapi"
@@ -48,4 +50,6 @@ func TestRegisterRoutes_DoesNotPanic(t *testing.T) {
 	payroll.RegisterRoutes(mux, verifier, nil)
 	timetracking.RegisterRoutes(mux, verifier, nil)
 	absence.RegisterRoutes(mux, verifier, nil)
+	onboarding.RegisterRoutes(mux, verifier, nil)
+	helparticles.RegisterRoutes(mux, verifier, nil)
 }

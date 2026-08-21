@@ -37,6 +37,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/edgeagent"
 	"github.com/moonstreamtech/ZonaryOS/internal/firm"
 	"github.com/moonstreamtech/ZonaryOS/internal/health"
+	"github.com/moonstreamtech/ZonaryOS/internal/helparticles"
 	"github.com/moonstreamtech/ZonaryOS/internal/hr"
 	"github.com/moonstreamtech/ZonaryOS/internal/identity"
 	"github.com/moonstreamtech/ZonaryOS/internal/integration"
@@ -48,6 +49,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/logistics"
 	"github.com/moonstreamtech/ZonaryOS/internal/manufacturing"
 	"github.com/moonstreamtech/ZonaryOS/internal/notification"
+	"github.com/moonstreamtech/ZonaryOS/internal/onboarding"
 	"github.com/moonstreamtech/ZonaryOS/internal/payroll"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	"github.com/moonstreamtech/ZonaryOS/internal/platform/config"
@@ -441,6 +443,12 @@ func main() {
 	apikey.RegisterRoutes(mux, verifier, pool)
 	webhook.RegisterRoutes(mux, verifier, pool)
 	search.RegisterRoutes(mux, verifier, pool)
+	// internal/onboarding + internal/helparticles (user experience
+	// improvements/onboarding flow/help system batch): first-run
+	// onboarding checklist progress and the contextual help article
+	// library - see their own package doc comments.
+	onboarding.RegisterRoutes(mux, verifier, pool)
+	helparticles.RegisterRoutes(mux, verifier, pool)
 	// platformAdminAllowlist is shared between internal/platformadmin's
 	// own routes and internal/currency's platform-admin-only
 	// POST /api/exchange-rates - one allowlist, the same "which real
