@@ -47,6 +47,7 @@ import SyncStatusIndicator from "./SyncStatusIndicator";
 import MobileBottomNav from "./MobileBottomNav";
 import { IconSearch, IconLogout } from "./icons";
 import AuditModeClient from "@/components/AuditMode/AuditModeClient";
+import HelpPanel from "@/components/Help/HelpPanel";
 
 type Props = {
   me: MeResponse | null;
@@ -152,6 +153,11 @@ export default async function NavShell({ me, activeFirmId, isOwner }: Props) {
                     render nothing when there's nothing to show. */}
                 <OfflineIndicator />
                 <SyncStatusIndicator />
+                {/* Contextual help panel (Part 2 of the onboarding/help/UX
+                    batch) - desktop-only (HelpPanel's own trigger button
+                    is `hidden lg:flex`, same space-constraint reasoning as
+                    GlobalSearchBox's own inline-vs-icon split above). */}
+                <HelpPanel />
               </div>
 
               <div className="hidden px-1 lg:block">

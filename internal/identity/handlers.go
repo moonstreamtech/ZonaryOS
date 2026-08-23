@@ -7,6 +7,7 @@ package identity
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/google/uuid"
@@ -22,6 +23,8 @@ func RegisterRoutes(mux *http.ServeMux, verifier *Verifier, pool *pgxpool.Pool) 
 
 	mux.Handle("GET /api/me", auth(http.HandlerFunc(handleMe(pool))))
 	mux.Handle("GET /api/me/firms/{firmID}/role", auth(http.HandlerFunc(handleRoleInFirm(pool))))
+	mux.Handle("GET /api/me/preferences", auth(http.HandlerFunc(handleGetPreferences(pool))))
+	mux.Handle("PATCH /api/me/preferences", auth(http.HandlerFunc(handlePatchPreferences(pool))))
 }
 
 type meFirmResponse struct {
@@ -127,5 +130,82 @@ func handleRoleInFirm(pool *pgxpool.Pool) http.HandlerFunc {
 			RoleName: detail.RoleName,
 			IsOwner:  detail.IsOwner,
 		})
+	}
+}
+
+type preferencesResponse struct {
+	Theme         *string `json:"theme,omitempty"`
+	Density       *string `json:"density,omitempty"`
+	DefaultLocale *string `json:"defaultLocale,omitempty"`
+}
+
+func toPreferencesResponse(p Preferences) preferencesResponse {
+	return preferencesResponse{Theme: p.Theme, Density: p.Density, DefaultLocale: p.DefaultLocale}
+}
+
+// handleGetPreferences implements GET /api/me/preferences - gated only
+// by identity.Middleware's bearer-token check (unauthenticated-blocked,
+// per the design brief), not by any firm membership: a user has
+// preferences regardless of which firm they're currently viewing, the
+// same "no firm context at all" shape handleMe itself already has.
+func handleGetPreferences(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := FromContext(r.Context())
+		if !ok {
+			http.Error(w, "missing identity", http.StatusInternalServerError)
+			return
+		}
+		userID, err := ResolveOrCreateUser(r.Context(), pool, id)
+		if err != nil {
+			http.Error(w, "failed to resolve user", http.StatusInternalServerError)
+			return
+		}
+
+		prefs, err := GetPreferences(r.Context(), pool, userID)
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(toPreferencesResponse(prefs))
+	}
+}
+
+// handlePatchPreferences implements PATCH /api/me/preferences - a
+// partial update, same semantics as PatchPreferences itself.
+func handlePatchPreferences(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := FromContext(r.Context())
+		if !ok {
+			http.Error(w, "missing identity", http.StatusInternalServerError)
+			return
+		}
+		userID, err := ResolveOrCreateUser(r.Context(), pool, id)
+		if err != nil {
+			http.Error(w, "failed to resolve user", http.StatusInternalServerError)
+			return
+		}
+
+		var patch Preferences
+		if r.Body != nil {
+			if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+				http.Error(w, "invalid request body", http.StatusBadRequest)
+				return
+			}
+		}
+
+		prefs, err := PatchPreferences(r.Context(), pool, userID, patch)
+		if err != nil {
+			if errors.Is(err, ErrInvalidPreferences) {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(toPreferencesResponse(prefs))
 	}
 }

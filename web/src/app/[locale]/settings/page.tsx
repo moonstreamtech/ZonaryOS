@@ -9,8 +9,10 @@ import { fetchRoleInFirm } from "@/lib/me";
 import { fetchDefinitions } from "@/lib/workflow";
 import { fetchFirmMetadata } from "@/lib/firm";
 import { fetchFirmGroupForFirm } from "@/lib/consolidation";
+import { fetchPreferences } from "@/lib/preferences";
 import FirmMetadataEditor from "./FirmMetadataEditor";
 import PortabilityPanel from "./PortabilityPanel";
+import PreferencesEditor from "./PreferencesEditor";
 
 type PageProps = {
   params: Promise<{ locale: string }>;
@@ -36,6 +38,7 @@ export default async function SettingsPage({ params }: PageProps) {
   const definitions = await fetchDefinitions(sessionToken, firm.firmId);
   const metadata = await fetchFirmMetadata(sessionToken, firm.firmId);
   const firmGroupResult = await fetchFirmGroupForFirm(sessionToken, firm.firmId);
+  const preferences = await fetchPreferences(sessionToken);
 
   return (
     <main className="flex flex-1 flex-col items-center gap-8 bg-zinc-50 px-6 py-16 dark:bg-black">
@@ -171,6 +174,16 @@ export default async function SettingsPage({ params }: PageProps) {
           <PortabilityPanel firmId={firm.firmId} />
         </div>
       ) : null}
+
+      {/* Part 4 of the onboarding/help/UX batch: user-scoped, not
+          firm-scoped (see internal/identity's own preferences.go doc
+          comment) - visible to every firm member regardless of role. */}
+      <div className="w-full max-w-md rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
+        <h2 className="mb-3 text-lg font-semibold text-black dark:text-zinc-50">
+          {t("preferencesTitle")}
+        </h2>
+        <PreferencesEditor preferences={preferences ?? {}} />
+      </div>
     </main>
   );
 }

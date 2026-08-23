@@ -380,7 +380,8 @@
       "parent": "Parent",
       "subsidiary": "Subsidiary",
       "affiliate": "Affiliate"
-    }
+    },
+    "preferencesTitle": "Preferences"
   },
   "AuditLog": {
     "title": "Audit Log",
@@ -1969,5 +1970,40 @@
     "eventRuleLabel": "Rule",
     "eventTriggeredAtLabel": "Triggered at",
     "eventMetricValueLabel": "Metric value"
+  },
+  "Onboarding": {
+    "title": "Get started with ZonaryOS",
+    "progressLabel": "{completed} of {total} complete",
+    "collapse": "Collapse",
+    "expand": "Expand",
+    "dismiss": "Dismiss",
+    "goTo": "Go",
+    "step": {
+      "create_first_workflow": "Define your first workflow",
+      "add_first_product": "Add your first product",
+      "invite_team_member": "Invite a team member",
+      "run_first_report": "Run your first report",
+      "configure_webhook": "Set up a webhook"
+    }
+  },
+  "Help": {
+    "openButton": "Help",
+    "closeButton": "Close",
+    "title": "Help",
+    "searchPlaceholder": "Search help articles…",
+    "back": "Back to list",
+    "loading": "Loading…",
+    "empty": "No help articles for this page yet."
+  },
+  "Preferences": {
+    "themeLabel": "Theme",
+    "themeSystem": "System",
+    "themeLight": "Light",
+    "themeDark": "Dark",
+    "densityLabel": "Density",
+    "densityCompact": "Compact",
+    "densityDefault": "Default",
+    "densityComfortable": "Comfortable",
+    "saveError": "Couldn't save your preference. Please try again."
   }
 }

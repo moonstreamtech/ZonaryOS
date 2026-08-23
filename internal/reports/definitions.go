@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/moonstreamtech/ZonaryOS/internal/onboarding"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
 )
@@ -263,6 +264,10 @@ func RunReport(ctx context.Context, pool *pgxpool.Pool, firmID, userID, definiti
 	if err != nil {
 		return nil, err
 	}
+	// onboarding.CompleteStep (see that package's own doc comment): fire-
+	// and-forget, never allowed to fail this request - the
+	// run_first_report onboarding checklist item.
+	onboarding.CompleteStep(pool, firmID, userID, onboarding.StepRunFirstReport)
 	return rows, nil
 }
 

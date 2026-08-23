@@ -380,7 +380,8 @@
       "parent": "[AR] Parent",
       "subsidiary": "[AR] Subsidiary",
       "affiliate": "[AR] Affiliate"
-    }
+    },
+    "preferencesTitle": "[AR] Preferences"
   },
   "AuditLog": {
     "title": "[AR] Audit Log",
@@ -1969,5 +1970,40 @@
     "eventRuleLabel": "القاعدة",
     "eventTriggeredAtLabel": "وقت التفعيل",
     "eventMetricValueLabel": "قيمة المقياس"
+  },
+  "Onboarding": {
+    "title": "[AR] Get started with ZonaryOS",
+    "progressLabel": "[AR] {completed} of {total} complete",
+    "collapse": "[AR] Collapse",
+    "expand": "[AR] Expand",
+    "dismiss": "[AR] Dismiss",
+    "goTo": "[AR] Go",
+    "step": {
+      "create_first_workflow": "[AR] Define your first workflow",
+      "add_first_product": "[AR] Add your first product",
+      "invite_team_member": "[AR] Invite a team member",
+      "run_first_report": "[AR] Run your first report",
+      "configure_webhook": "[AR] Set up a webhook"
+    }
+  },
+  "Help": {
+    "openButton": "[AR] Help",
+    "closeButton": "[AR] Close",
+    "title": "[AR] Help",
+    "searchPlaceholder": "[AR] Search help articles…",
+    "back": "[AR] Back to list",
+    "loading": "[AR] Loading…",
+    "empty": "[AR] No help articles for this page yet."
+  },
+  "Preferences": {
+    "themeLabel": "[AR] Theme",
+    "themeSystem": "[AR] System",
+    "themeLight": "[AR] Light",
+    "themeDark": "[AR] Dark",
+    "densityLabel": "[AR] Density",
+    "densityCompact": "[AR] Compact",
+    "densityDefault": "[AR] Default",
+    "densityComfortable": "[AR] Comfortable",
+    "saveError": "[AR] Couldn't save your preference. Please try again."
   }
 }

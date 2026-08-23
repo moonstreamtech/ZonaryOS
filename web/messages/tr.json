@@ -380,7 +380,8 @@
       "parent": "Ana firma",
       "subsidiary": "Bağlı ortaklık",
       "affiliate": "İştirak"
-    }
+    },
+    "preferencesTitle": "Tercihler"
   },
   "AuditLog": {
     "title": "Denetim Kaydı",
@@ -1969,5 +1970,40 @@
     "eventRuleLabel": "Kural",
     "eventTriggeredAtLabel": "Tetiklenme zamanı",
     "eventMetricValueLabel": "Metrik değeri"
+  },
+  "Onboarding": {
+    "title": "ZonaryOS'a başlayın",
+    "progressLabel": "{total} adımdan {completed} tamamlandı",
+    "collapse": "Daralt",
+    "expand": "Genişlet",
+    "dismiss": "Kapat",
+    "goTo": "Git",
+    "step": {
+      "create_first_workflow": "İlk iş akışınızı tanımlayın",
+      "add_first_product": "İlk ürününüzü ekleyin",
+      "invite_team_member": "Bir ekip üyesi davet edin",
+      "run_first_report": "İlk raporunuzu çalıştırın",
+      "configure_webhook": "Bir webhook kurun"
+    }
+  },
+  "Help": {
+    "openButton": "Yardım",
+    "closeButton": "Kapat",
+    "title": "Yardım",
+    "searchPlaceholder": "Yardım makalelerinde ara…",
+    "back": "Listeye dön",
+    "loading": "Yükleniyor…",
+    "empty": "Bu sayfa için henüz bir yardım makalesi yok."
+  },
+  "Preferences": {
+    "themeLabel": "Tema",
+    "themeSystem": "Sistem",
+    "themeLight": "Açık",
+    "themeDark": "Koyu",
+    "densityLabel": "Yoğunluk",
+    "densityCompact": "Sıkışık",
+    "densityDefault": "Varsayılan",
+    "densityComfortable": "Ferah",
+    "saveError": "Tercihiniz kaydedilemedi. Lütfen tekrar deneyin."
   }
 }

@@ -25,6 +25,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
+	"github.com/moonstreamtech/ZonaryOS/internal/onboarding"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
 )
@@ -157,6 +158,10 @@ func Generate(ctx context.Context, pool *pgxpool.Pool, firmID, userID, roleID uu
 	if err != nil {
 		return Invite{}, err
 	}
+	// onboarding.CompleteStep (see that package's own doc comment): fire-
+	// and-forget, never allowed to fail this request - the
+	// invite_team_member onboarding checklist item.
+	onboarding.CompleteStep(pool, firmID, userID, onboarding.StepInviteTeamMember)
 	return result, nil
 }
 

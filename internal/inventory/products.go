@@ -37,6 +37,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/moonstreamtech/ZonaryOS/internal/auditlog"
+	"github.com/moonstreamtech/ZonaryOS/internal/onboarding"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
 	zdb "github.com/moonstreamtech/ZonaryOS/internal/platform/db"
 	"github.com/moonstreamtech/ZonaryOS/internal/webhook"
@@ -229,6 +230,10 @@ func CreateProduct(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.
 		"unitPrice": derefStrAny(product.UnitPrice), "costPrice": derefStrAny(product.CostPrice), "taxRate": derefStrAny(product.TaxRate),
 		"category": derefStrAny(product.Category), "minQuantity": product.MinQuantity, "isActive": product.IsActive,
 	})
+	// onboarding.CompleteStep (see that package's own doc comment): fire-
+	// and-forget, never allowed to fail this request - the
+	// add_first_product onboarding checklist item.
+	onboarding.CompleteStep(pool, firmID, userID, onboarding.StepAddFirstProduct)
 
 	return product, nil
 }

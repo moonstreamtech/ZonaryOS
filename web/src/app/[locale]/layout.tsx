@@ -11,6 +11,7 @@ import { notFound } from "next/navigation";
 import { Geist, Geist_Mono } from "next/font/google";
 import { routing } from "@/i18n/routing";
 import { fetchMe, fetchRoleInFirm, type MeResponse } from "@/lib/me";
+import { fetchPreferences } from "@/lib/preferences";
 import { resolveActiveFirm } from "@/lib/activeFirm";
 import NavShell from "@/components/Nav/NavShell";
 import TelemetryClient from "@/components/Telemetry/TelemetryClient";
@@ -81,16 +82,25 @@ async function resolveNavContext(): Promise<{
   me: MeResponse | null;
   firmId: string | null;
   isOwner: boolean;
+  density: string;
 }> {
   const sessionToken = (await cookies()).get("zonaryos_session")?.value;
-  if (!sessionToken) return { me: null, firmId: null, isOwner: false };
+  if (!sessionToken) return { me: null, firmId: null, isOwner: false, density: "default" };
+
+  // Part 4 of the onboarding/help/UX batch: user-scoped density
+  // preference, applied as a data-density attribute below regardless of
+  // whether the caller has a firm yet - the same "resolves for the wizard's
+  // pre-firm screen too" reasoning this function's own doc comment
+  // already applies to me/firmId/isOwner.
+  const preferences = await fetchPreferences(sessionToken);
+  const density = preferences?.density ?? "default";
 
   const me = await fetchMe(sessionToken);
-  if (!me || me.firms.length === 0) return { me, firmId: null, isOwner: false };
+  if (!me || me.firms.length === 0) return { me, firmId: null, isOwner: false, density };
 
   const activeFirm = await resolveActiveFirm(me);
   const role = await fetchRoleInFirm(sessionToken, activeFirm.firmId);
-  return { me, firmId: activeFirm.firmId, isOwner: role?.isOwner ?? false };
+  return { me, firmId: activeFirm.firmId, isOwner: role?.isOwner ?? false, density };
 }
 
 export default async function RootLayout({ children, params }: LayoutProps) {
@@ -100,7 +110,7 @@ export default async function RootLayout({ children, params }: LayoutProps) {
   }
   setRequestLocale(locale);
 
-  const { me, firmId, isOwner } = await resolveNavContext();
+  const { me, firmId, isOwner, density } = await resolveNavContext();
 
   return (
     <html
@@ -108,7 +118,11 @@ export default async function RootLayout({ children, params }: LayoutProps) {
       dir={RTL_LOCALES.has(locale) ? "rtl" : "ltr"}
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col bg-zinc-50 dark:bg-black">
+      {/* data-density (Part 4 of the onboarding/help/UX batch): a plain
+          data attribute, not a Tailwind class toggle - styles/tokens.css
+          (or any component) can key off `[data-density="compact"]`
+          without this layout needing to know which components care. */}
+      <body data-density={density} className="min-h-full flex flex-col bg-zinc-50 dark:bg-black">
         <NextIntlClientProvider>
           {/* Renders nothing - see that component's own doc comment for
               its default-off guarantee (NEXT_PUBLIC_ZONARYOS_TELEMETRY_ENABLED). */}

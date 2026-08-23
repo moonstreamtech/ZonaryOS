@@ -202,6 +202,149 @@ paths:
         "403":
           description: Caller has no membership in firmID
 
+  /api/me/preferences:
+    get:
+      summary: Read the caller's own display preferences (theme, density, default locale)
+      description: >
+        Unauthenticated-blocked, not firm-scoped - a user has preferences
+        regardless of which firm they're currently viewing. user_preferences
+        has no firm_id column and no RLS policy (same global-identity tier
+        as the `users` table itself).
+      responses:
+        "200":
+          description: The caller's stored preferences (unset fields omitted)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserPreferences"
+        "401":
+          description: Missing or invalid bearer token
+    patch:
+      summary: Partially update the caller's own display preferences
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserPreferences"
+      responses:
+        "200":
+          description: The caller's preferences after the patch
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserPreferences"
+        "400":
+          description: An unsupported theme/density/defaultLocale value
+        "401":
+          description: Missing or invalid bearer token
+
+  /api/help:
+    get:
+      summary: List help articles relevant to a given route
+      description: >
+        Global, read-only content (see internal/helparticles' own package
+        doc comment) - not firm-scoped. locale falls back to English for
+        any locale other than "tr".
+      parameters:
+        - name: route
+          in: query
+          schema:
+            type: string
+        - name: locale
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Matching help articles
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/HelpArticle"
+        "401":
+          description: Missing or invalid bearer token
+
+  /api/help/search:
+    get:
+      summary: Full-text search across every help article
+      parameters:
+        - name: q
+          in: query
+          schema:
+            type: string
+        - name: locale
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Matching help articles
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/HelpArticle"
+        "401":
+          description: Missing or invalid bearer token
+
+  /api/firms/{firmID}/onboarding:
+    get:
+      summary: Read the caller's first-run onboarding checklist progress within firmID
+      description: >
+        Member-gated. Creates an empty progress row on first read if none
+        exists yet. Step completion is entirely automatic - see
+        internal/onboarding.CompleteStep's own doc comment - there is no
+        endpoint to mark an individual step complete.
+      parameters:
+        - name: firmID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The caller's onboarding progress within firmID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OnboardingProgress"
+        "400":
+          description: firmID is not a valid UUID
+        "401":
+          description: Missing or invalid bearer token
+        "404":
+          description: Caller has no membership in firmID
+    patch:
+      summary: Dismiss the onboarding checklist for the caller within firmID
+      description: >
+        Once dismissed, the dashboard checklist widget never shows again
+        for this user/firm pair, regardless of how many steps remain
+        incomplete.
+      parameters:
+        - name: firmID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The caller's onboarding progress after dismissal
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OnboardingProgress"
+        "400":
+          description: firmID is not a valid UUID
+        "401":
+          description: Missing or invalid bearer token
+        "404":
+          description: Caller has no membership in firmID
+
   /api/firms/{firmID}:
     get:
       summary: Read a firm's name and broader metadata (member-gated)
@@ -1479,6 +1622,51 @@ components:
           type: boolean
           description: Mirrors roles.is_owner - cosmetic only, never a permission bypass. The frontend uses this to decide whether to show the Permission Audit Mode toggle.
       required: [firmId, roleId, roleKey, roleName, isOwner]
+    UserPreferences:
+      type: object
+      properties:
+        theme:
+          type: string
+          enum: [light, dark, system]
+        density:
+          type: string
+          enum: [compact, default, comfortable]
+        defaultLocale:
+          type: string
+          enum: [en, tr, ar]
+    HelpArticle:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        slug:
+          type: string
+        title:
+          type: string
+          description: title_en or title_tr, resolved to the requested locale (falls back to English).
+        content:
+          type: string
+          description: Markdown.
+        relatedRoute:
+          type: string
+      required: [id, slug, title, content]
+    OnboardingProgress:
+      type: object
+      properties:
+        completedSteps:
+          type: array
+          items:
+            type: string
+        steps:
+          type: array
+          items:
+            type: string
+          description: The fixed, ordered checklist (internal/onboarding.Steps).
+        dismissedAt:
+          type: string
+          format: date-time
+      required: [completedSteps, steps]
     StateInfo:
       type: object
       properties:

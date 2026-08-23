@@ -141,3 +141,17 @@ button.panel:hover,
   border-color: var(--color-border-strong);
   box-shadow: var(--shadow-card-hover);
 }
+
+/* User preferences (Part 4 of the onboarding/help/UX batch): density,
+ * applied as a data-density attribute on <body> (see
+ * app/[locale]/layout.tsx) rather than a component-level prop, so any
+ * .panel anywhere in the tree responds without each component needing to
+ * know the caller's preference. "default" needs no override - it's
+ * exactly .panel's own base padding above. */
+[data-density="compact"] .panel {
+  padding: var(--space-3);
+}
+
+[data-density="comfortable"] .panel {
+  padding: var(--space-6);
+}
