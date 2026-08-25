@@ -49,6 +49,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/logistics"
 	"github.com/moonstreamtech/ZonaryOS/internal/manufacturing"
 	"github.com/moonstreamtech/ZonaryOS/internal/notification"
+	"github.com/moonstreamtech/ZonaryOS/internal/notificationprefs"
 	"github.com/moonstreamtech/ZonaryOS/internal/onboarding"
 	"github.com/moonstreamtech/ZonaryOS/internal/payroll"
 	"github.com/moonstreamtech/ZonaryOS/internal/permission"
@@ -516,6 +517,7 @@ func main() {
 	// comment for its scope boundaries (no email/push, no WebSocket
 	// push).
 	notification.RegisterRoutes(mux, verifier, pool)
+	notificationprefs.RegisterRoutes(mux, verifier, pool)
 	// Only actually registers the two /telemetry/* endpoints when
 	// telemetryReporter is non-nil (enabled) - see
 	// telemetry.RegisterRoutes's own comment: a disabled installation
