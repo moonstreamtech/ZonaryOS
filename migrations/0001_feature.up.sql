@@ -1,0 +1,2 @@
+-- Add user activity dashboard widget (Issue #59)
+-- No schema changes required
