@@ -1832,6 +1832,10 @@ go test ./internal/identity/... -run TestPatchPreferences -v
 
 Frontend: `cd web && npm test -- EmptyState` (a `renderToStaticMarkup`-based test - this codebase has no React Testing Library convention yet, see this section's own note) plus the usual `npm run build && npm run lint && npm run check:i18n && npm run check:permission-tags`.
 
+## Reverted: unreviewed compliance module pushed directly to main
+
+Twelve commits (`81199c6`..`5ae5c57`) landed directly on `main` outside the PR process during n8n automation testing - no branch, no PR, no CI run. They added `internal/pkg/models.go`, `internal/api/{retention_policies,erasure_requests,data_processing_records}.go`, `internal/background/{retention_job,erasure_processor}.go`, two frontend settings pages, a root-level `OPEN_POINTS.md` shadowing `docs/OPEN_POINTS.md`, and three migrations all numbered `0001` (a direct collision with the existing `migrations/0001_core_schema.up.sql`). None of it had license headers, none of it had `.down.sql` files, and this section was never written for it - the CI that would have caught all of that (this very Doc Sync Check included) never ran because the commits bypassed the PR pipeline entirely. This revert removes all thirteen files; `main` is back to its state as of PR #47.
+
 ## Continuous Integration
 
 `.github/workflows/ci.yml` turns most of the CI Checklist categories (CLAUDE.md's "How to Verify a Change") from manual PR-by-PR discipline into automated checks on every PR (and on push to `main`). Every job here existed as a manual step some earlier PR ran by hand - this file doesn't introduce new verification steps, it just stops trusting a human to remember to run them. **Canary/Rollback Trigger** remains the one item intentionally "Not Set Up": there is no ZonaryOS deployment target or infrastructure decided yet (see `docs/OPEN_POINTS.md` item 34) for a rollback trigger to hook into.
