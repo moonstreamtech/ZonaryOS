@@ -71,6 +71,7 @@ import (
 	"github.com/moonstreamtech/ZonaryOS/internal/search"
 	"github.com/moonstreamtech/ZonaryOS/internal/telemetry"
 	"github.com/moonstreamtech/ZonaryOS/internal/timetracking"
+	"github.com/moonstreamtech/ZonaryOS/internal/useractivity"
 	"github.com/moonstreamtech/ZonaryOS/internal/warehouse"
 	"github.com/moonstreamtech/ZonaryOS/internal/webhook"
 	"github.com/moonstreamtech/ZonaryOS/internal/wizard"
@@ -518,6 +519,11 @@ func main() {
 	// push).
 	notification.RegisterRoutes(mux, verifier, pool)
 	notificationprefs.RegisterRoutes(mux, verifier, pool)
+	// GET .../activity: the dashboard's recent-user-activity widget
+	// (Issue #59) - member-gated, read-only, paginated/filterable. See
+	// internal/useractivity's own doc comment for how this differs from
+	// internal/auditlog's compliance-gated trail.
+	useractivity.RegisterRoutes(mux, verifier, pool)
 	// Only actually registers the two /telemetry/* endpoints when
 	// telemetryReporter is non-nil (enabled) - see
 	// telemetry.RegisterRoutes's own comment: a disabled installation
