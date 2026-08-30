@@ -1,0 +1,92 @@
+# Explicit aider model settings for the Gemini free-tier models this agent
+# pipeline pools across (see .github/workflows/agent-smoke.yml).
+#
+# Why this file exists: aider 0.86.2 (the newest release on PyPI as of this
+# writing) ships with zero Gemini 3.x entries in its built-in model-settings
+# table (aider/resources/model-settings.yml has 47 gemini/gemma entries, none
+# of them 3.x). For any model aider doesn't recognize, ModelSettings.edit_format
+# defaults to "whole" - the format that demands the model re-emit an entire
+# file verbatim to make one change. Run 33320566501 hit exactly this: Gemini
+# 3.5 Flash Lite understood the task and wrote a correct doc comment, but
+# replied with a unified-diff hunk instead of the full file aider's silent
+# "whole" fallback demanded, so aider had nothing it could apply. This is
+# expected behavior for an unknown model, not a bug to wait out - upstream
+# has no reason to add 3.x support to an already-released version, so this
+# file is how we tell aider what these models actually need, permanently.
+#
+# Schema: each entry is unpacked directly as ModelSettings(**entry) (see
+# register_models() in aider/models.py), so keys must match the ModelSettings
+# dataclass fields in that file exactly - confirmed against aider 0.86.2's
+# actual source, not guessed. Relevant fields used below:
+#   name: str                        - must match the model id passed via
+#                                       --model exactly (e.g. "gemini/...")
+#   edit_format: str                 - which coder format to expect back
+#   use_repo_map: bool               - let aider build/send a repo map
+#   use_temperature: bool            - whether to send a temperature param
+#   use_system_prompt: bool          - whether to send a system-role message
+#   accepts_settings: list[str]      - which extra request params are safe
+#                                       to send to this model
+#
+# edit_format choice, Flash/Flash Lite/Pro tiers: aider's own shipped table
+# (checked directly, not inferred) shows every 2.5-generation-and-newer
+# Gemini entry - gemini-2.5-flash, gemini-2.5-flash-lite, gemini-2.5-pro,
+# gemini-3-pro-preview, gemini-3-flash-preview - uses "diff-fenced", not
+# plain "diff". Plain "diff" only appears on pre-2.5 entries (gemini-2.0-flash,
+# gemini-1.5-pro-002, gemini-exp-1206). Our 3.5/3.6/3.7 targets are newer
+# siblings of the diff-fenced generation, so diff-fenced is the closest
+# empirical precedent for them - not diff, despite diff being the workflow's
+# CLI default. Both are worth A/B testing via the edit_format workflow input,
+# which overrides these settings for whichever model that input targets;
+# these entries are what a future run or a pool router hits if it selects
+# a model without pinning --edit-format itself.
+#
+# overeager: true is copied from aider's own gemini-2.5-flash-lite and
+# gemini-3-flash-preview entries (gemini-3-flash-preview is the only Gemini
+# 3.x entry aider ships at all, so it's the closest precedent there is).
+# When true, aider appends a scope-guardrail reminder to the system prompt:
+# "Pay careful attention to the scope of the user's request. Do what they
+# ask, but no more. Do not improve, comment, fix or modify unrelated parts
+# of the code in any way!" (see aider/coders/base_prompts.py). Matters more
+# once step 3 feeds task text from issue bodies than it does here, since
+# scope creep on an untrusted instruction is otherwise a failure mode we'd
+# have to police ourselves - aider already has the guardrail for this model
+# family, so use it.
+- name: gemini/gemini-3.5-flash-lite
+  edit_format: diff-fenced
+  use_repo_map: true
+  use_temperature: false
+  overeager: true
+  accepts_settings: [thinking_tokens]
+
+- name: gemini/gemini-3.6-flash
+  edit_format: diff-fenced
+  use_repo_map: true
+  use_temperature: false
+  overeager: true
+  accepts_settings: [thinking_tokens]
+
+- name: gemini/gemini-3.7-flash
+  edit_format: diff-fenced
+  use_repo_map: true
+  use_temperature: false
+  overeager: true
+  accepts_settings: [thinking_tokens]
+
+# Gemma tier: unlike the Flash/Pro entries above, this is NOT backed by an
+# aider-shipped precedent for a matching generation. aider's own newest
+# Gemma entry (gemini/gemma-3-27b-it) sets only use_system_prompt: false
+# and leaves edit_format on the "whole" default - the same fallback that
+# just failed us on Flash Lite. We don't have empirical evidence either way
+# for gemma-4-*, so "diff" is a deliberate guess, not a confirmed-safe
+# choice: it degrades more gracefully than "whole" for a small model (an
+# incomplete/malformed SEARCH/REPLACE block still lets aider apply the
+# hunks it did parse; a malformed "whole" reply applies nothing, as we saw).
+# use_system_prompt: false is kept because it's the one thing aider's own
+# table says about this model family, not a guess.
+- name: gemini/gemma-4-26b-a4b-it
+  edit_format: diff
+  use_system_prompt: false
+
+- name: gemini/gemma-4-31b-it
+  edit_format: diff
+  use_system_prompt: false
