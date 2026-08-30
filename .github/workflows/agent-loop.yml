@@ -1,0 +1,95 @@
+# Agent pipeline - step 3a: the self-triggering agent loop (plumbing only).
+#
+# Builds on step 1 (.github/workflows/agent-smoke.yml, run 33324419346:
+# green, one Gemini request, one applied edit) by wiring aider into a loop
+# that drives one GitHub issue's hand-written checklist to completion, one
+# item per run, with no LLM planning in this step - the checklist is
+# authored by a human, aider only ever executes one already-specified
+# item per turn. Research, discovery, and checklist authoring are step 3b;
+# deliberately not built here so a break in this step is unambiguously a
+# plumbing bug, not an intelligence one.
+#
+# One issue = one feature = one branch = one draft PR. The agent commits,
+# pushes, and marks the PR ready for review - it never merges. All state
+# and checklist handling lives in .github/agent/lib.sh (unit-tested
+# offline, see .github/agent/tests/); this workflow and .github/agent/
+# loop.sh are the thin, only-testable-via-a-real-run parts: checkout,
+# language setup, aider install, then one call into the script.
+
+name: Agent Loop
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: "Issue number to work on (optional - omit to let the loop find the single open issue labelled agent:go)"
+        required: false
+        default: ""
+  # Safety net only: if a turn chain dies mid-way (runner crash, quota
+  # exhaustion that stopped a re-trigger, a cancelled run), this cron
+  # picks the same active issue back up on its next tick. It runs the
+  # exact same loop.sh with no issue input, i.e. the same "find the
+  # single active issue" path a workflow_dispatch with no input would
+  # take - not a second implementation of the loop.
+  schedule:
+    - cron: "*/30 * * * *"
+
+env:
+  GO_VERSION: "1.25"
+
+# All runs of this workflow - manual, self-triggered, or scheduled -
+# share one group, so at most one is ever actually executing; a second
+# trigger queues rather than overlapping. loop.sh additionally checks
+# for another in-progress/queued run itself (see its own comment on why
+# that is not redundant with this).
+concurrency:
+  group: agent-loop
+  cancel-in-progress: false
+
+permissions:
+  # Push commits to the agent/issue-<n> branch.
+  contents: write
+  # Create the draft PR, mark it ready for review when the checklist is
+  # done.
+  pull-requests: write
+  # Read/edit the issue body (checklist + state), add/remove agent:*
+  # labels, post progress comments.
+  issues: write
+  # Re-trigger this workflow (`gh workflow run`). workflow_dispatch is
+  # one of the two documented exceptions to "runs started by the default
+  # GITHUB_TOKEN cannot trigger another workflow run" (the other is
+  # repository_dispatch) - this is what lets the loop continue itself
+  # with no PAT and no GitHub App. Missing this scope fails silently
+  # right at the end of an otherwise-successful turn, so it is called
+  # out here deliberately: do not remove it.
+  actions: write
+
+jobs:
+  agent-loop:
+    name: Agent Loop (one checklist item)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # aider's repo map wants full git history
+
+      - uses: actions/setup-go@v5
+        with: { go-version: "${{ env.GO_VERSION }}" }
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install aider
+        # Pinned for the same reason agent-smoke.yml pins it: every flag
+        # this loop uses was verified against this exact release.
+        run: python3 -m pip install aider-chat==0.86.2
+
+      - name: Run the agent loop (one turn)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          INPUT_ISSUE: ${{ inputs.issue }}
+        run: .github/agent/loop.sh
