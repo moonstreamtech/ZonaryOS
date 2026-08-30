@@ -33,6 +33,26 @@ on:
         description: "Gemini editor model id (applies the diff) - default is Flash Lite, the only model with a daily quota (500 RPD) that survives running in a loop; confirm the exact id against the 'List available Gemini models' step's log"
         required: false
         default: "gemini/gemini-3.5-flash-lite"
+      edit_format:
+        # aider 0.86.2 (newest on PyPI) has zero Gemini 3.x entries in its
+        # built-in model-settings table, so an unrecognized model like
+        # gemini-3.5-flash-lite silently falls back to ModelSettings'
+        # edit_format default: "whole" (re-emit the entire file verbatim).
+        # Run 33320566501 hit this exactly: the model wrote a correct doc
+        # comment but replied with a diff hunk, not a whole file, so aider
+        # could apply nothing - zero errors, zero edits. This input, plus
+        # .github/aider-model-settings.yml (which sets edit_format per
+        # pooled model for runs that don't override it here), is the fix.
+        # Made an input rather than hardcoded so diff / diff-fenced / udiff
+        # can be A/B'd by re-dispatching, no code change, no PR - quota is
+        # cheap enough now (2 of 500 daily requests for run 2) to make that
+        # worth doing. Valid values are aider 0.86.2's actual registered
+        # coder formats (confirmed via aider.coders, not guessed): diff,
+        # diff-fenced, udiff, udiff-simple, whole, patch, context, ask,
+        # architect, editor-diff, editor-diff-fenced, editor-whole, help.
+        description: "aider --edit-format to request from the model (see comment above the input for why this exists and the exact accepted values)"
+        required: false
+        default: "diff-fenced"
       architect_model:
         # Defined but unused for now - see the "Run aider" step's comment.
         # gemini-3.7-flash is 5 RPM / 20 RPD; run 33313795551 spent 9 of
@@ -78,6 +98,7 @@ jobs:
         env:
           TASK: ${{ inputs.task }}
           FILES: ${{ inputs.files }}
+          EDIT_FORMAT: ${{ inputs.edit_format }}
         run: |
           read -ra FILE_ARGS <<< "$FILES"
           for f in "${FILE_ARGS[@]}"; do
@@ -96,6 +117,17 @@ jobs:
             echo "task and files look swapped: task has no spaces and looks like a file path, not an instruction." >&2
             echo "task was: $TASK" >&2
             echo "files was: $FILES" >&2
+            exit 1
+          fi
+
+          # aider 0.86.2's actual registered coder edit formats (aider.coders),
+          # confirmed by import, not guessed - a typo here would otherwise
+          # only surface as an aider argparse error after Install aider has
+          # already spent ~35s.
+          valid_edit_formats="architect ask context diff diff-fenced editor-diff editor-diff-fenced editor-whole help patch udiff udiff-simple whole"
+          if [[ ! " $valid_edit_formats " == *" $EDIT_FORMAT "* ]]; then
+            echo "edit_format '$EDIT_FORMAT' is not one of aider 0.86.2's registered edit formats:" >&2
+            echo "  $valid_edit_formats" >&2
             exit 1
           fi
 
@@ -170,6 +202,8 @@ jobs:
           # input needs a real guard before that lands, not just this check.
           aider \
             --model "${{ inputs.model }}" \
+            --edit-format "${{ inputs.edit_format }}" \
+            --model-settings-file .github/aider-model-settings.yml \
             --message-file /tmp/agent-task.txt \
             --no-auto-commits \
             --yes-always \
@@ -225,6 +259,26 @@ jobs:
           name: agent-diff
           path: /tmp/agent-diff.patch
           if-no-files-found: ignore
+
+      - name: Print resolved dispatch inputs
+        # Diagnosing run 33320566501 needed the literal task/files/model
+        # values, but get_job_logs (the tool used to pull this workflow's
+        # logs for review) clamps to the last ~5000 lines of a job log, and
+        # this job's early steps - where those values are normally first
+        # printed via each step's own env: dump - had already scrolled out
+        # of that window by the time the dense repo-map debug output ran.
+        # The raw log-download URL is also blocked by egress policy for
+        # whoever is diagnosing a failure this way. Printing everything as
+        # one compact line near the end of the job, after the log-heavy
+        # steps, keeps it inside whatever tail is actually reachable.
+        if: always()
+        env:
+          TASK: ${{ inputs.task }}
+          FILES: ${{ inputs.files }}
+          MODEL: ${{ inputs.model }}
+          EDIT_FORMAT: ${{ inputs.edit_format }}
+        run: |
+          echo "RESOLVED INPUTS: model=$MODEL edit_format=$EDIT_FORMAT files=[$FILES] task=[$TASK]"
 
       - name: Reset working tree
         if: always()
