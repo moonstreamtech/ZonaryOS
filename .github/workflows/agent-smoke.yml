@@ -1,0 +1,186 @@
+# Agent pipeline - step 1 of 5: smoke test.
+#
+# This workflow answers exactly one question: can aider, driven by Google
+# Gemini's free API tier, read this repository and produce a diff that
+# still compiles? It is deliberately read-only - it never commits, never
+# pushes, and never opens a pull request. `permissions: contents: read`
+# makes the job structurally incapable of writing back to the repository;
+# any edits aider makes land only in the ephemeral runner's working tree
+# and are discarded when the job ends (or explicitly reset in the final
+# step below).
+#
+# Later steps in the agent pipeline (the autonomous loop, the issue queue,
+# the label state machine, the scheduled trigger) build on top of what
+# this step proves works. None of that is wired up here.
+
+name: Agent Smoke Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "Natural-language instruction to hand to aider"
+        required: true
+        default: >-
+          Add a short doc comment to one existing exported Go function that
+          does not already have one. Pick a single small, low-risk function.
+          Do not touch anything else.
+      files:
+        description: "Space-separated paths to place in aider's editable context (optional; leave empty to rely on aider's repo map)"
+        required: false
+        default: ""
+      model:
+        description: "Gemini editor model id (applies the diff) - default is Flash Lite, the only model with a daily quota (500 RPD) that survives running in a loop; confirm the exact id against the 'List available Gemini models' step's log"
+        required: false
+        default: "gemini/gemini-3.5-flash-lite"
+      architect_model:
+        # gemini-3.7-flash is 20 requests/day - fine for the handful of
+        # manual runs this smoke test gets, but a scheduled loop (step 3)
+        # cannot run architect mode against a 20 RPD model as-is; that step
+        # will need to either move the architect to a Flash Lite model too,
+        # or call the planner once per issue and cache its output.
+        description: "Gemini architect model id (plans the change; the editor model above applies it) - confirm the exact id against the 'List available Gemini models' step's log"
+        required: false
+        default: "gemini/gemini-3.7-flash"
+
+env:
+  GO_VERSION: "1.25"
+
+# Only one manual smoke-test run at a time.
+concurrency:
+  group: agent-smoke-test
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  agent-smoke-test:
+    name: Agent Smoke Test (aider + Gemini)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # aider's repo map wants full git history
+
+      - uses: actions/setup-go@v5
+        with: { go-version: "${{ env.GO_VERSION }}" }
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install aider
+        # Pinned: we verified every flag this workflow uses against this
+        # exact release. A future aider release changing a flag name should
+        # not silently break this workflow.
+        run: python3 -m pip install aider-chat==0.86.2
+
+      - name: Print aider version
+        run: aider --version
+
+      - name: List available Gemini models
+        # --no-gitignore matters here too: aider appends `.aider*` to
+        # .gitignore on startup, and this repo's .gitignore has no such
+        # entry yet. Without this flag, even this listing-only step would
+        # modify a tracked file before the real run below has done anything.
+        run: aider --no-gitignore --list-models gemini/
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+      - name: Assert working tree is still clean before the real run
+        # Nothing above this point should have touched the working tree.
+        # If it has, the diff read at the end would no longer be
+        # attributable to aider's actual run - which is the one thing this
+        # smoke test exists to measure.
+        run: |
+          if ! git diff --quiet; then
+            echo "Working tree was modified before aider's real run started:" >&2
+            git --no-pager diff >&2
+            exit 1
+          fi
+
+      - name: Write task instruction to file
+        env:
+          TASK: ${{ inputs.task }}
+        run: printf '%s' "$TASK" > /tmp/agent-task.txt
+
+      - name: Run aider
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Makes litellm (aider's LLM client) log the raw HTTP request/
+          # response for every call, headers included - the only way to see
+          # whatever rate-limit info Gemini's API surfaces. GitHub Actions
+          # masks the literal GEMINI_API_KEY value anywhere it appears in
+          # this log, so this does not leak the secret.
+          LITELLM_LOG: DEBUG
+          FILES: ${{ inputs.files }}
+        run: |
+          set -o pipefail
+          read -ra FILE_ARGS <<< "$FILES"
+          aider \
+            --architect \
+            --model "${{ inputs.architect_model }}" \
+            --editor-model "${{ inputs.model }}" \
+            --message-file /tmp/agent-task.txt \
+            --no-auto-commits \
+            --yes-always \
+            --no-check-update \
+            --no-analytics \
+            --no-gitignore \
+            --no-pretty \
+            --no-stream \
+            --map-tokens 2048 \
+            --verbose \
+            "${FILE_ARGS[@]}" \
+            | tee /tmp/aider-run.log
+
+      - name: Show rate-limit info surfaced by this run
+        if: always()
+        run: |
+          if [ -f /tmp/aider-run.log ] && grep -iE 'ratelimit|rate-limit|retry-after|quota' /tmp/aider-run.log; then
+            :
+          else
+            echo "No rate-limit headers or quota info were surfaced in this run's log."
+          fi
+
+      - name: Show diff stat
+        run: git --no-pager diff --stat
+
+      - name: Show diff
+        run: git --no-pager diff
+
+      - name: Fail if aider produced no changes
+        run: |
+          if git diff --quiet; then
+            echo "aider produced no changes - this is a smoke test failure, not a pass." >&2
+            exit 1
+          fi
+
+      - name: go build
+        run: go build ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: License header check
+        run: python3 scripts/license_headers.py --check
+
+      - name: Save diff for the artifact upload
+        if: always()
+        run: git --no-pager diff > /tmp/agent-diff.patch
+
+      - name: Upload diff artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-diff
+          path: /tmp/agent-diff.patch
+          if-no-files-found: ignore
+
+      - name: Reset working tree
+        if: always()
+        run: |
+          git reset --hard HEAD
+          git clean -fd
