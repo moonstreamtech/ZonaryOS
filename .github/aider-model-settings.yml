@@ -39,22 +39,37 @@
 # which overrides these settings for whichever model that input targets;
 # these entries are what a future run or a pool router hits if it selects
 # a model without pinning --edit-format itself.
+#
+# overeager: true is copied from aider's own gemini-2.5-flash-lite and
+# gemini-3-flash-preview entries (gemini-3-flash-preview is the only Gemini
+# 3.x entry aider ships at all, so it's the closest precedent there is).
+# When true, aider appends a scope-guardrail reminder to the system prompt:
+# "Pay careful attention to the scope of the user's request. Do what they
+# ask, but no more. Do not improve, comment, fix or modify unrelated parts
+# of the code in any way!" (see aider/coders/base_prompts.py). Matters more
+# once step 3 feeds task text from issue bodies than it does here, since
+# scope creep on an untrusted instruction is otherwise a failure mode we'd
+# have to police ourselves - aider already has the guardrail for this model
+# family, so use it.
 - name: gemini/gemini-3.5-flash-lite
   edit_format: diff-fenced
   use_repo_map: true
   use_temperature: false
+  overeager: true
   accepts_settings: [thinking_tokens]
 
 - name: gemini/gemini-3.6-flash
   edit_format: diff-fenced
   use_repo_map: true
   use_temperature: false
+  overeager: true
   accepts_settings: [thinking_tokens]
 
 - name: gemini/gemini-3.7-flash
   edit_format: diff-fenced
   use_repo_map: true
   use_temperature: false
+  overeager: true
   accepts_settings: [thinking_tokens]
 
 # Gemma tier: unlike the Flash/Pro entries above, this is NOT backed by an
