@@ -1,0 +1,138 @@
+# Agent pipeline - step 1 of 5: smoke test.
+#
+# This workflow answers exactly one question: can aider, driven by Google
+# Gemini's free API tier, read this repository and produce a diff that
+# still compiles? It is deliberately read-only - it never commits, never
+# pushes, and never opens a pull request. `permissions: contents: read`
+# makes the job structurally incapable of writing back to the repository;
+# any edits aider makes land only in the ephemeral runner's working tree
+# and are discarded when the job ends (or explicitly reset in the final
+# step below).
+#
+# Later steps in the agent pipeline (the autonomous loop, the issue queue,
+# the label state machine, the scheduled trigger) build on top of what
+# this step proves works. None of that is wired up here.
+
+name: Agent Smoke Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "Natural-language instruction to hand to aider"
+        required: true
+        default: >-
+          Add a short doc comment to one existing exported Go function that
+          does not already have one. Pick a single small, low-risk function.
+          Do not touch anything else.
+      files:
+        description: "Space-separated paths to place in aider's editable context (optional; leave empty to rely on aider's repo map)"
+        required: false
+        default: ""
+      model:
+        description: "Gemini model id for aider (see the 'List available Gemini models' step's log if unsure)"
+        required: false
+        default: "gemini/gemini-2.5-flash"
+
+env:
+  GO_VERSION: "1.25"
+
+# Only one manual smoke-test run at a time.
+concurrency:
+  group: agent-smoke-test
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  agent-smoke-test:
+    name: Agent Smoke Test (aider + Gemini)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # aider's repo map wants full git history
+
+      - uses: actions/setup-go@v5
+        with: { go-version: "${{ env.GO_VERSION }}" }
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install aider
+        run: python3 -m pip install aider-chat
+
+      - name: Print aider version
+        run: aider --version
+
+      - name: List available Gemini models
+        run: aider --list-models gemini/
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+      - name: Write task instruction to file
+        run: |
+          cat > /tmp/agent-task.txt <<'AGENT_TASK_EOF'
+          ${{ inputs.task }}
+          AGENT_TASK_EOF
+
+      - name: Run aider
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          aider \
+            --model "${{ inputs.model }}" \
+            --message-file /tmp/agent-task.txt \
+            --no-auto-commits \
+            --yes-always \
+            --no-check-update \
+            --no-analytics \
+            --no-gitignore \
+            --no-pretty \
+            --no-stream \
+            --map-tokens 2048 \
+            ${{ inputs.files }}
+
+      - name: Show diff stat
+        run: git --no-pager diff --stat
+
+      - name: Show diff
+        run: git --no-pager diff
+
+      - name: Fail if aider produced no changes
+        run: |
+          if git diff --quiet; then
+            echo "aider produced no changes - this is a smoke test failure, not a pass." >&2
+            exit 1
+          fi
+
+      - name: go build
+        run: go build ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: License header check
+        run: python3 scripts/license_headers.py --check
+
+      - name: Save diff for the artifact upload
+        if: always()
+        run: git --no-pager diff > /tmp/agent-diff.patch
+
+      - name: Upload diff artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-diff
+          path: /tmp/agent-diff.patch
+          if-no-files-found: ignore
+
+      - name: Reset working tree
+        if: always()
+        run: |
+          git reset --hard HEAD
+          git clean -fd
