@@ -34,6 +34,11 @@ on:
         required: false
         default: "gemini/gemini-3.5-flash-lite"
       architect_model:
+        # gemini-3.7-flash is 20 requests/day - fine for the handful of
+        # manual runs this smoke test gets, but a scheduled loop (step 3)
+        # cannot run architect mode against a 20 RPD model as-is; that step
+        # will need to either move the architect to a Flash Lite model too,
+        # or call the planner once per issue and cache its output.
         description: "Gemini architect model id (plans the change; the editor model above applies it) - confirm the exact id against the 'List available Gemini models' step's log"
         required: false
         default: "gemini/gemini-3.7-flash"
@@ -65,24 +70,41 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: "pip"
 
       - name: Install aider
-        run: python3 -m pip install aider-chat
+        # Pinned: we verified every flag this workflow uses against this
+        # exact release. A future aider release changing a flag name should
+        # not silently break this workflow.
+        run: python3 -m pip install aider-chat==0.86.2
 
       - name: Print aider version
         run: aider --version
 
       - name: List available Gemini models
-        run: aider --list-models gemini/
+        # --no-gitignore matters here too: aider appends `.aider*` to
+        # .gitignore on startup, and this repo's .gitignore has no such
+        # entry yet. Without this flag, even this listing-only step would
+        # modify a tracked file before the real run below has done anything.
+        run: aider --no-gitignore --list-models gemini/
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
-      - name: Write task instruction to file
+      - name: Assert working tree is still clean before the real run
+        # Nothing above this point should have touched the working tree.
+        # If it has, the diff read at the end would no longer be
+        # attributable to aider's actual run - which is the one thing this
+        # smoke test exists to measure.
         run: |
-          cat > /tmp/agent-task.txt <<'AGENT_TASK_EOF'
-          ${{ inputs.task }}
-          AGENT_TASK_EOF
+          if ! git diff --quiet; then
+            echo "Working tree was modified before aider's real run started:" >&2
+            git --no-pager diff >&2
+            exit 1
+          fi
+
+      - name: Write task instruction to file
+        env:
+          TASK: ${{ inputs.task }}
+        run: printf '%s' "$TASK" > /tmp/agent-task.txt
 
       - name: Run aider
         env:
@@ -93,8 +115,10 @@ jobs:
           # masks the literal GEMINI_API_KEY value anywhere it appears in
           # this log, so this does not leak the secret.
           LITELLM_LOG: DEBUG
+          FILES: ${{ inputs.files }}
         run: |
           set -o pipefail
+          read -ra FILE_ARGS <<< "$FILES"
           aider \
             --architect \
             --model "${{ inputs.architect_model }}" \
@@ -109,7 +133,7 @@ jobs:
             --no-stream \
             --map-tokens 2048 \
             --verbose \
-            ${{ inputs.files }} \
+            "${FILE_ARGS[@]}" \
             | tee /tmp/aider-run.log
 
       - name: Show rate-limit info surfaced by this run
