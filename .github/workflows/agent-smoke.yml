@@ -30,9 +30,13 @@ on:
         required: false
         default: ""
       model:
-        description: "Gemini model id for aider (see the 'List available Gemini models' step's log if unsure)"
+        description: "Gemini editor model id (applies the diff) - default is Flash Lite, the only model with a daily quota (500 RPD) that survives running in a loop; confirm the exact id against the 'List available Gemini models' step's log"
         required: false
-        default: "gemini/gemini-2.5-flash"
+        default: "gemini/gemini-3.5-flash-lite"
+      architect_model:
+        description: "Gemini architect model id (plans the change; the editor model above applies it) - confirm the exact id against the 'List available Gemini models' step's log"
+        required: false
+        default: "gemini/gemini-3.7-flash"
 
 env:
   GO_VERSION: "1.25"
@@ -83,9 +87,18 @@ jobs:
       - name: Run aider
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Makes litellm (aider's LLM client) log the raw HTTP request/
+          # response for every call, headers included - the only way to see
+          # whatever rate-limit info Gemini's API surfaces. GitHub Actions
+          # masks the literal GEMINI_API_KEY value anywhere it appears in
+          # this log, so this does not leak the secret.
+          LITELLM_LOG: DEBUG
         run: |
+          set -o pipefail
           aider \
-            --model "${{ inputs.model }}" \
+            --architect \
+            --model "${{ inputs.architect_model }}" \
+            --editor-model "${{ inputs.model }}" \
             --message-file /tmp/agent-task.txt \
             --no-auto-commits \
             --yes-always \
@@ -95,7 +108,18 @@ jobs:
             --no-pretty \
             --no-stream \
             --map-tokens 2048 \
-            ${{ inputs.files }}
+            --verbose \
+            ${{ inputs.files }} \
+            | tee /tmp/aider-run.log
+
+      - name: Show rate-limit info surfaced by this run
+        if: always()
+        run: |
+          if [ -f /tmp/aider-run.log ] && grep -iE 'ratelimit|rate-limit|retry-after|quota' /tmp/aider-run.log; then
+            :
+          else
+            echo "No rate-limit headers or quota info were surfaced in this run's log."
+          fi
 
       - name: Show diff stat
         run: git --no-pager diff --stat
