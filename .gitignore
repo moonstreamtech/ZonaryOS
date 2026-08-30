@@ -51,3 +51,9 @@ coverage/
 
 # --- scripts/dev-up-standalone.sh (downloaded Keycloak distribution, logs, pid) ---
 .zonaryos/
+
+# --- aider (agent-smoke.yml / agent-loop.yml run this with --no-gitignore
+# so it never rewrites this file at runtime; this entry is the deliberate,
+# reviewed alternative - aider's own chat history/input history/tag cache
+# scratch files should never land in a commit) ---
+.aider*

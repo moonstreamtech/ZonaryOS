@@ -100,15 +100,42 @@ block_issue() {
   RETRIGGER="false"
 }
 
+# Prints the PR number for $1's head branch, or nothing if none exists yet
+# (gh's -q on an empty match set prints the literal string "null", which
+# callers must check for explicitly - see ensure_pr and main()'s finished
+# branch).
 pr_number_for_branch() {
-  gh pr list --repo "$REPO" --head "$1" --json number -q '.[0].number'
+  local n
+  n="$(gh pr list --repo "$REPO" --head "$1" --json number -q '.[0].number')"
+  [ "$n" = "null" ] && return
+  printf '%s' "$n"
 }
 
-create_branch_and_draft_pr() {
+# Idempotent: safe to call on every turn, not just the first. Creates the
+# branch if it doesn't exist on the remote yet, otherwise fetches and
+# switches to what's already there. This is what lets a turn that died
+# between "branch pushed" and "PR created" recover cleanly on its next
+# attempt (self-retrigger or the cron safety net) instead of getting
+# stuck with a branch and no PR forever - see ensure_pr for the other
+# half of that.
+ensure_branch() {
+  local branch="$1"
+  if git fetch origin "$branch" 2>/dev/null; then
+    git switch "$branch"
+  else
+    git switch -c "$branch"
+    git commit --allow-empty -m "agent: start work on #$ISSUE_NUMBER"
+    git push -u origin "$branch"
+  fi
+}
+
+# Idempotent: safe to call on every turn. Creates the draft PR only if
+# the branch doesn't already have one.
+ensure_pr() {
   local issue="$1" branch="$2"
-  git switch -c "$branch"
-  git commit --allow-empty -m "agent: start work on #$issue"
-  git push -u origin "$branch"
+  if [ -n "$(pr_number_for_branch "$branch")" ]; then
+    return
+  fi
   gh pr create --repo "$REPO" --draft --base main --head "$branch" \
     --title "Agent: issue #$issue" \
     --body "Closes #$issue
@@ -148,6 +175,19 @@ aider_hit_quota_wall() {
 
 run_fast_gate() {
   go build ./... && go vet ./... && go test ./... && python3 scripts/license_headers.py --check
+}
+
+# `git diff --quiet` only compares tracked files against the index, so a
+# turn whose entire contribution is a brand-new file (a migration, a new
+# package) reads as "no changes" and the loop would record a false
+# failed attempt. `git status --porcelain` covers untracked files too.
+# The .aider* entry in .gitignore is what keeps this a truthful signal -
+# without it, aider's own scratch files (.aider.chat.history.md etc.,
+# left behind because aider runs with --no-gitignore) would always show
+# up here, making every turn look like it produced a change even when it
+# didn't.
+worktree_has_changes() {
+  [ -n "$(git status --porcelain)" ]
 }
 
 # --- main -----------------------------------------------------------------
@@ -230,18 +270,21 @@ main() {
   git config user.name "zonaryos-agent"
   git config user.email "agent@users.noreply.github.com"
 
-  if [ "$TURN" -eq 1 ]; then
-    create_branch_and_draft_pr "$ISSUE_NUMBER" "$branch"
-  else
-    git fetch origin "$branch"
-    git switch "$branch"
-  fi
+  # Both idempotent: safe on every turn, which is what lets a chain that
+  # died between "branch pushed" and "PR created" - on turn 1 or any
+  # other turn - recover on its next attempt instead of getting stuck.
+  ensure_branch "$branch"
+  ensure_pr "$ISSUE_NUMBER" "$branch"
 
   # Finished?
   local item_index
   if ! item_index="$(first_unchecked_index "$body")"; then
     local pr_num
     pr_num="$(pr_number_for_branch "$branch")"
+    if [ -z "$pr_num" ]; then
+      block_issue "$ISSUE_NUMBER" "every checklist item is checked, but no PR could be found for $branch even after ensure_pr. This should not happen - investigate manually."
+      exit 0
+    fi
     if run_fast_gate; then
       gh pr ready "$pr_num" --repo "$REPO"
       body="$(set_turn "$body" "$TURN")"
@@ -272,7 +315,7 @@ main() {
 
   run_aider_on_item "$item_text"
 
-  if git diff --quiet; then
+  if ! worktree_has_changes; then
     # aider produced no changes at all this turn.
     if aider_hit_quota_wall; then
       echo "Gemini returned a persistent quota error this turn. Stopping without retrigger; the schedule trigger will pick this issue back up."
