@@ -162,6 +162,9 @@ func DeliveryEffect(dt DeliveryTemplate) TransitionEffect { return newEffect(Eff
 // CustomerEffect wraps a CustomerTemplate into a TransitionEffect ready to
 // append to TransitionSpec.Effects.
 func CustomerEffect(ct CustomerTemplate) TransitionEffect { return newEffect(EffectKindCustomer, ct) }
+
+// InvoiceEffect wraps an InvoiceTemplate into a TransitionEffect ready to
+// append to TransitionSpec.Effects.
 func InvoiceEffect(it InvoiceTemplate) TransitionEffect   { return newEffect(EffectKindInvoice, it) }
 
 // SalesOrderEffect/PurchaseOrderEffect (sixth/seventh bridges) wrap
