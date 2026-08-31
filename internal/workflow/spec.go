@@ -174,6 +174,9 @@ func InvoiceEffect(it InvoiceTemplate) TransitionEffect   { return newEffect(Eff
 func SalesOrderEffect(sot SalesOrderTemplate) TransitionEffect {
 	return newEffect(EffectKindSalesOrder, sot)
 }
+
+// PurchaseOrderEffect wraps a PurchaseOrderTemplate into a TransitionEffect ready to
+// append to TransitionSpec.Effects.
 func PurchaseOrderEffect(pot PurchaseOrderTemplate) TransitionEffect {
 	return newEffect(EffectKindPurchaseOrder, pot)
 }
