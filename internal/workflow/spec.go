@@ -151,11 +151,20 @@ func newEffect(kind string, payload any) TransitionEffect {
 // append to TransitionSpec.Effects - see stock_to_sale.go's record_sale
 // for the concrete multi-effect example.
 func JournalEffect(jt JournalTemplate) TransitionEffect { return newEffect(EffectKindJournal, jt) }
+// StockEffect wraps a StockAdjustmentTemplate into a TransitionEffect ready to
+// append to TransitionSpec.Effects.
 func StockEffect(sat StockAdjustmentTemplate) TransitionEffect {
 	return newEffect(EffectKindStock, sat)
 }
+// DeliveryEffect wraps a DeliveryTemplate into a TransitionEffect ready to
+// append to TransitionSpec.Effects.
 func DeliveryEffect(dt DeliveryTemplate) TransitionEffect { return newEffect(EffectKindDelivery, dt) }
+// CustomerEffect wraps a CustomerTemplate into a TransitionEffect ready to
+// append to TransitionSpec.Effects.
 func CustomerEffect(ct CustomerTemplate) TransitionEffect { return newEffect(EffectKindCustomer, ct) }
+
+// InvoiceEffect wraps an InvoiceTemplate into a TransitionEffect ready to
+// append to TransitionSpec.Effects.
 func InvoiceEffect(it InvoiceTemplate) TransitionEffect   { return newEffect(EffectKindInvoice, it) }
 
 // SalesOrderEffect/PurchaseOrderEffect (sixth/seventh bridges) wrap
@@ -165,6 +174,9 @@ func InvoiceEffect(it InvoiceTemplate) TransitionEffect   { return newEffect(Eff
 func SalesOrderEffect(sot SalesOrderTemplate) TransitionEffect {
 	return newEffect(EffectKindSalesOrder, sot)
 }
+
+// PurchaseOrderEffect wraps a PurchaseOrderTemplate into a TransitionEffect ready to
+// append to TransitionSpec.Effects.
 func PurchaseOrderEffect(pot PurchaseOrderTemplate) TransitionEffect {
 	return newEffect(EffectKindPurchaseOrder, pot)
 }
