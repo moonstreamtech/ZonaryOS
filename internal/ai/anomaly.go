@@ -20,6 +20,7 @@
 // journal_lines row, never any instance/customer/product payload value.
 // See buildAnomalyPrompt's own doc comment for the exact SQL this is
 // built from.
+// Package ai provides AI provider integrations and background financial anomaly checks.
 package ai
 
 import (
