@@ -1,0 +1,66 @@
+## Checklist
+- [ ] Item number 1.
+- [ ] Item number 2.
+- [ ] Item number 3.
+- [ ] Item number 4.
+- [ ] Item number 5.
+- [ ] Item number 6.
+- [ ] Item number 7.
+- [ ] Item number 8.
+- [ ] Item number 9.
+- [ ] Item number 10.
+- [ ] Item number 11.
+- [ ] Item number 12.
+- [ ] Item number 13.
+- [ ] Item number 14.
+- [ ] Item number 15.
+- [ ] Item number 16.
+- [ ] Item number 17.
+- [ ] Item number 18.
+- [ ] Item number 19.
+- [ ] Item number 20.
+- [ ] Item number 21.
+- [ ] Item number 22.
+- [ ] Item number 23.
+- [ ] Item number 24.
+- [ ] Item number 25.
+- [ ] Item number 26.
+- [ ] Item number 27.
+- [ ] Item number 28.
+- [ ] Item number 29.
+- [ ] Item number 30.
+- [ ] Item number 31.
+- [ ] Item number 32.
+- [ ] Item number 33.
+- [ ] Item number 34.
+- [ ] Item number 35.
+- [ ] Item number 36.
+- [ ] Item number 37.
+- [ ] Item number 38.
+- [ ] Item number 39.
+- [ ] Item number 40.
+- [ ] Item number 41.
+- [ ] Item number 42.
+- [ ] Item number 43.
+- [ ] Item number 44.
+- [ ] Item number 45.
+- [ ] Item number 46.
+- [ ] Item number 47.
+- [ ] Item number 48.
+- [ ] Item number 49.
+- [ ] Item number 50.
+- [ ] Item number 51.
+- [ ] Item number 52.
+- [ ] Item number 53.
+- [ ] Item number 54.
+- [ ] Item number 55.
+- [ ] Item number 56.
+- [ ] Item number 57.
+- [ ] Item number 58.
+- [ ] Item number 59.
+- [ ] Item number 60.
+- [ ] Item number 61.
+
+<!-- agent-state
+turn=0
+-->
