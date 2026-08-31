@@ -159,6 +159,8 @@ func StockEffect(sat StockAdjustmentTemplate) TransitionEffect {
 // DeliveryEffect wraps a DeliveryTemplate into a TransitionEffect ready to
 // append to TransitionSpec.Effects.
 func DeliveryEffect(dt DeliveryTemplate) TransitionEffect { return newEffect(EffectKindDelivery, dt) }
+// CustomerEffect wraps a CustomerTemplate into a TransitionEffect ready to
+// append to TransitionSpec.Effects.
 func CustomerEffect(ct CustomerTemplate) TransitionEffect { return newEffect(EffectKindCustomer, ct) }
 func InvoiceEffect(it InvoiceTemplate) TransitionEffect   { return newEffect(EffectKindInvoice, it) }
 
