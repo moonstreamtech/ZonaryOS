@@ -6,7 +6,11 @@
 # then either re-triggers itself via `gh workflow run` or stops. All
 # checklist/state text handling lives in lib.sh, which is unit-tested
 # offline (.github/agent/tests/run_tests.sh) - this file is the thin,
-# untestable-without-a-real-run part: gh/git/aider calls only.
+# mostly-untestable-without-a-real-run part: gh/git/aider calls. The one
+# exception is gh_or_block/block_issue's failure-handling control flow,
+# which IS covered offline against a mocked `gh`
+# (.github/agent/tests/test_gh_or_block.sh) - see that file's header for
+# exactly what it does and does not prove.
 #
 # Deliberately NOT here (step 3b): any LLM planning, checklist authoring,
 # or research. The checklist is hand-written in the issue body; aider
@@ -57,9 +61,10 @@ ITEM_TOTAL=""
 ITEM_ATTEMPTS=""
 ACTION="unknown"
 RETRIGGER="false"
+LAST_GH_CMD=""
 
 print_resolved_state() {
-  echo "RESOLVED STATE: issue=#${ISSUE_NUMBER:-none} turn=${TURN:-?} item=${ITEM_INDEX:-?}/${ITEM_TOTAL:-?} attempts=${ITEM_ATTEMPTS:-?} action=${ACTION} retrigger=${RETRIGGER}"
+  echo "RESOLVED STATE: issue=#${ISSUE_NUMBER:-none} turn=${TURN:-?} item=${ITEM_INDEX:-?}/${ITEM_TOTAL:-?} attempts=${ITEM_ATTEMPTS:-?} action=${ACTION} retrigger=${RETRIGGER} last_gh_cmd=[${LAST_GH_CMD:-none}]"
 }
 trap print_resolved_state EXIT
 
@@ -82,22 +87,78 @@ find_active_issue() {
 issue_body() { gh issue view "$1" --repo "$REPO" --json body -q .body; }
 issue_labels() { gh issue view "$1" --repo "$REPO" --json labels -q '.labels[].name'; }
 
+# Best-effort: try to move the issue to agent:blocked and leave a comment
+# explaining why. Deliberately makes its own raw `gh` calls rather than
+# going through gh_or_block below - it exists specifically to be what
+# gh_or_block falls back to when a gh mutation fails, and if it went
+# through gh_or_block too, a failure here would call itself again
+# (infinite recursion) the moment the underlying problem is something
+# systemic like a revoked token, where every gh call fails the same way.
+# Failures here are logged loudly and swallowed, never masking whatever
+# the caller already reported as the real error.
+block_issue() {
+  local issue="$1" reason="$2"
+  if ! gh issue edit "$issue" --repo "$REPO" --remove-label "$LABEL_GO" --add-label "$LABEL_BLOCKED" >/dev/null 2>&1; then
+    echo "block_issue: could not swap labels on #$issue (agent:go -> agent:blocked). Continuing to at least try the comment." >&2
+  fi
+  if ! gh issue comment "$issue" --repo "$REPO" --body "🛑 Blocked: $reason" >/dev/null 2>&1; then
+    echo "block_issue: could not post the blocking comment on #$issue either. This issue may be left in an undiagnosable agent:go state - check it manually." >&2
+  fi
+  ACTION="blocked"
+  RETRIGGER="false"
+}
+
+# Every mutating gh call this script makes (pr create, pr ready, issue
+# edit, issue comment, the self-retrigger workflow run) goes through
+# here. Run 33366155853 showed why: gh pr create failed on a repo-policy
+# rejection, that failure was an uncaught `set -e` death, and because it
+# happened before any state got persisted, the turn counter never
+# advanced and the cron would have retried the identical failure every
+# 30 minutes indefinitely. Routing every mutation through one place
+# means every one of them now degrades the same way: log the real
+# failure, best-effort block_issue (which DOES persist state - swapping
+# agent:go for agent:blocked is what makes the next run's kill-switch
+# check actually stop the chain), then exit non-zero reporting the
+# ORIGINAL failure - never block_issue's own, even if block_issue's
+# calls fail too (see its comment on why it can't recurse back here).
+gh_or_block() {
+  LAST_GH_CMD="gh $*"
+  local output status=0
+  # `|| status=$?` is load-bearing under `set -e`: a bare
+  # `output="$(gh ... )"` assignment with no fallback would let a
+  # failing gh call kill this function (and the whole script) via set -e
+  # BEFORE the status/output check below ever ran - the exact class of
+  # bug this function exists to stop happening anywhere else.
+  output="$(gh "$@" 2>&1)" || status=$?
+  if [ "$status" -eq 0 ]; then
+    if [ -n "$output" ]; then
+      printf '%s\n' "$output"
+    fi
+    return 0
+  fi
+
+  echo "gh command failed (exit $status): $LAST_GH_CMD" >&2
+  echo "$output" >&2
+
+  if [ -n "$ISSUE_NUMBER" ]; then
+    block_issue "$ISSUE_NUMBER" "an automated gh command failed: \`$LAST_GH_CMD\`. See this turn's job log for the full error."
+  else
+    echo "No issue number resolved yet - nothing to block." >&2
+  fi
+
+  ACTION="gh_command_failed"
+  RETRIGGER="false"
+  exit 1
+}
+
 set_issue_body() {
   local issue="$1" body="$2"
-  gh issue edit "$issue" --repo "$REPO" --body "$body"
+  gh_or_block issue edit "$issue" --repo "$REPO" --body "$body"
 }
 
 post_comment() {
   local issue="$1" text="$2"
-  gh issue comment "$issue" --repo "$REPO" --body "$text"
-}
-
-block_issue() {
-  local issue="$1" reason="$2"
-  gh issue edit "$issue" --repo "$REPO" --remove-label "$LABEL_GO" --add-label "$LABEL_BLOCKED" || true
-  post_comment "$issue" "🛑 Blocked: $reason"
-  ACTION="blocked"
-  RETRIGGER="false"
+  gh_or_block issue comment "$issue" --repo "$REPO" --body "$text"
 }
 
 # Prints the PR number for $1's head branch, or nothing if none exists yet
@@ -136,7 +197,7 @@ ensure_pr() {
   if [ -n "$(pr_number_for_branch "$branch")" ]; then
     return
   fi
-  gh pr create --repo "$REPO" --draft --base main --head "$branch" \
+  gh_or_block pr create --repo "$REPO" --draft --base main --head "$branch" \
     --title "Agent: issue #$issue" \
     --body "Closes #$issue
 
@@ -286,10 +347,10 @@ main() {
       exit 0
     fi
     if run_fast_gate; then
-      gh pr ready "$pr_num" --repo "$REPO"
+      gh_or_block pr ready "$pr_num" --repo "$REPO"
       body="$(set_turn "$body" "$TURN")"
       set_issue_body "$ISSUE_NUMBER" "$body"
-      gh issue edit "$ISSUE_NUMBER" --repo "$REPO" --remove-label "$LABEL_GO" --add-label "$LABEL_DONE"
+      gh_or_block issue edit "$ISSUE_NUMBER" --repo "$REPO" --remove-label "$LABEL_GO" --add-label "$LABEL_DONE"
       post_comment "$ISSUE_NUMBER" "✅ All checklist items complete after $TURN turns. PR #$pr_num is marked ready for review. The agent stops here - merging is your call."
       ACTION="finished"
     else
@@ -378,7 +439,12 @@ main() {
 # to "the default GITHUB_TOKEN cannot start another workflow run", which
 # is what makes this work with no PAT and no GitHub App.
 retrigger_self() {
-  gh workflow run "$WORKFLOW_FILE" --repo "$REPO" -f "issue=$ISSUE_NUMBER"
+  gh_or_block workflow run "$WORKFLOW_FILE" --repo "$REPO" -f "issue=$ISSUE_NUMBER"
 }
 
-main "$@"
+# Guarded so this file can be `source`d by a test harness (see
+# tests/test_gh_or_block.sh) to reach gh_or_block/block_issue without
+# running the whole loop.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi
