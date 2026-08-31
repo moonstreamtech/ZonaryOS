@@ -73,7 +73,7 @@ run_scenario() {
   (
     set -uo pipefail
     gh() {
-      echo "$*" >>"$CALLS_LOG"
+      printf 'CALL: %s\n' "$*" >>"$CALLS_LOG"
       case "$1 $2" in
         "issue edit")
           if [ "${GH_MOCK_FAIL_ORIGINAL:-0}" = "1" ] && [[ "$*" != *"--add-label agent:blocked"* ]]; then
@@ -126,7 +126,7 @@ assert_contains "scenario 1: gh_or_block reports the exact failing command" \
 assert_contains "scenario 1: gh_or_block reports the exact failing command" \
   "$out1" "issue edit 42 --repo acme/example"
 assert "scenario 1: block_issue was attempted (label edit + comment = 2 more gh calls beyond the original)" \
-  "$([ "$(wc -l </tmp/gh_or_block_calls_1.log)" -eq 3 ] && echo 1 || echo 0)"
+  "$([ "$(grep -c '^CALL: ' /tmp/gh_or_block_calls_1.log)" -eq 3 ] && echo 1 || echo 0)"
 assert_contains "scenario 1: block_issue's label swap was actually attempted" \
   "$(cat /tmp/gh_or_block_calls_1.log)" "--add-label agent:blocked"
 assert_contains "scenario 1: block_issue's comment was actually attempted" \
@@ -156,7 +156,7 @@ assert_contains "scenario 2: block_issue's own edit failure is logged loudly, no
 assert_contains "scenario 2: block_issue's own comment failure is logged loudly too" \
   "$out2" "could not post the blocking comment on #42"
 assert "scenario 2: exactly 3 gh calls total - original + block's edit + block's comment, no recursion" \
-  "$([ "$(wc -l </tmp/gh_or_block_calls_2.log)" -eq 3 ] && echo 1 || echo 0)"
+  "$([ "$(grep -c '^CALL: ' /tmp/gh_or_block_calls_2.log)" -eq 3 ] && echo 1 || echo 0)"
 # The strongest evidence against recursion: this scenario completed at
 # all (no hang) and made a small, bounded number of gh calls rather than
 # looping. If gh_or_block's failure path called itself instead of the
@@ -171,7 +171,7 @@ rc3=$?
 assert "scenario 3: exits zero when the underlying gh call succeeds" \
   "$([ "$rc3" -eq 0 ] && echo 1 || echo 0)"
 assert "scenario 3: block_issue is never invoked on the success path (only the 1 original call)" \
-  "$([ "$(wc -l </tmp/gh_or_block_calls_3.log)" -eq 1 ] && echo 1 || echo 0)"
+  "$([ "$(grep -c '^CALL: ' /tmp/gh_or_block_calls_3.log)" -eq 1 ] && echo 1 || echo 0)"
 assert_not_contains "scenario 3: no 'gh command failed' noise on success" \
   "$out3" "gh command failed"
 assert_contains "scenario 3: RESOLVED STATE still records the last gh command attempted, even on success" \

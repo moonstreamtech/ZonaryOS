@@ -6,11 +6,13 @@
 # then either re-triggers itself via `gh workflow run` or stops. All
 # checklist/state text handling lives in lib.sh, which is unit-tested
 # offline (.github/agent/tests/run_tests.sh) - this file is the thin,
-# mostly-untestable-without-a-real-run part: gh/git/aider calls. The one
-# exception is gh_or_block/block_issue's failure-handling control flow,
-# which IS covered offline against a mocked `gh`
-# (.github/agent/tests/test_gh_or_block.sh) - see that file's header for
-# exactly what it does and does not prove.
+# mostly-untestable-without-a-real-run part: gh/git/aider calls. Three
+# pieces of THIS file's own control flow ARE covered offline against a
+# mocked `gh` (never touches the network): gh_or_block/block_issue's
+# failure handling (tests/test_gh_or_block.sh), set_issue_body's
+# verify-after-write check (tests/test_state_verification.sh), and
+# guard_run_rate's threshold logic (tests/test_guard_run_rate.sh) - see
+# each file's own header for exactly what it does and does not prove.
 #
 # Deliberately NOT here (step 3b): any LLM planning, checklist authoring,
 # or research. The checklist is hand-written in the issue body; aider
@@ -151,9 +153,46 @@ gh_or_block() {
   exit 1
 }
 
+# Writes the issue body, then reads it back and verifies the turn we
+# just wrote is actually there. Every caller passes a body that already
+# went through set_turn, so get_turn(body) is exactly the value this
+# write is supposed to make durable.
+#
+# Why this exists: on issue #73's validation chain, every single run's
+# RESOLVED STATE showed turn=1, and the issue's final closed body had no
+# <!-- agent-state --> block at all, despite the checklist itself
+# persisting correctly across all 8 runs and despite tick_item/set_turn
+# composing correctly against local fixtures (including CRLF bodies).
+# The bug is somewhere in the real gh issue edit / gh issue view round
+# trip, not in lib.sh's parsing - and it's not reproducible in an
+# environment with no gh CLI, so it isn't root-caused here. What matters
+# operationally: MAX_TURNS and the per-item 3-strikes cap both read
+# get_turn/get_item_attempts from a freshly re-fetched body every run,
+# so if that write silently doesn't take, BOTH brakes read 0 forever and
+# neither can ever fire - and gh_or_block's error handling does not
+# catch this class of failure, because nothing about the write itself
+# returns an error. Silent state loss is exactly the condition under
+# which a self-triggering loop is unbounded, so it has to be loud: catch
+# it here, immediately after every write, and stop hard rather than
+# franchise the same unverified assumption through 80 more turns.
 set_issue_body() {
   local issue="$1" body="$2"
-  gh_or_block issue edit "$issue" --repo "$REPO" --body "$body"
+  local expected_turn
+  expected_turn="$(get_turn "$body")"
+
+  gh_or_block issue edit "$issue" --repo "$REPO" --body "$body" >/dev/null
+
+  local roundtrip actual_turn
+  roundtrip="$(issue_body "$issue")"
+  actual_turn="$(get_turn "$roundtrip")"
+
+  if [ "$actual_turn" != "$expected_turn" ]; then
+    echo "State verification failed on #$issue: wrote turn=$expected_turn but reading the issue back shows turn=$actual_turn (or no <!-- agent-state --> block at all). MAX_TURNS and the 3-strikes cap both depend on this write surviving, so this is a hard stop, not a retry." >&2
+    block_issue "$issue" "state verification failed after writing the issue body: wrote turn=$expected_turn but reading the issue back shows turn=$actual_turn. The write may not be persisting - do not re-add agent:go until this is understood; re-adding it now would resume with brakes that cannot fire."
+    ACTION="state_verification_failed"
+    RETRIGGER="false"
+    exit 1
+  fi
 }
 
 post_comment() {
@@ -251,9 +290,36 @@ worktree_has_changes() {
   [ -n "$(git status --porcelain)" ]
 }
 
+# Independent of every other brake on purpose: MAX_TURNS and the
+# 3-strikes cap both read state this loop wrote to the issue body on a
+# previous run, and issue #73's validation chain showed that write can
+# silently not persist - which means every brake built on top of it can
+# fail at once, without an error anywhere. This one reads GitHub Actions'
+# own run history instead, which the loop cannot corrupt by writing bad
+# state, so it still catches a runaway chain even if state persistence
+# is broken again in some new way this PR didn't anticipate. Deliberately
+# crude (a flat count in a time window, no issue awareness, no nuance)
+# and deliberately not routed through gh_or_block/block_issue - sharing
+# no machinery with the other brakes is the whole point.
+guard_run_rate() {
+  local window_minutes=60 max_runs=30
+  local cutoff count
+  cutoff="$(date -u -d "-${window_minutes} minutes" +%Y-%m-%dT%H:%M:%SZ)"
+  count="$(gh run list --repo "$REPO" --workflow "$WORKFLOW_FILE" --limit 100 --json createdAt \
+    -q "[.[] | select(.createdAt >= \"$cutoff\")] | length")"
+  if [ "$count" -ge "$max_runs" ]; then
+    echo "$WORKFLOW_FILE has run $count times in the last $window_minutes minutes (threshold: $max_runs). Refusing to proceed. This check does not depend on issue state, so it still works even if turn/attempt persistence is broken - see set_issue_body's comment for why that matters. If this is legitimate (a long chain making real progress), raise max_runs; if it's a runaway, the affected issue's agent:go label needs to come off by hand." >&2
+    ACTION="run_rate_exceeded"
+    RETRIGGER="false"
+    exit 0
+  fi
+}
+
 # --- main -----------------------------------------------------------------
 
 main() {
+  guard_run_rate
+
   # Concurrency: the workflow's own `concurrency: group: agent-loop` is
   # the primary guarantee (only one run of this workflow executes at a
   # time; a second trigger queues rather than overlapping). This is a
@@ -443,7 +509,8 @@ retrigger_self() {
 }
 
 # Guarded so this file can be `source`d by a test harness (see
-# tests/test_gh_or_block.sh) to reach gh_or_block/block_issue without
+# tests/test_gh_or_block.sh, tests/test_state_verification.sh,
+# tests/test_guard_run_rate.sh) to reach individual functions without
 # running the whole loop.
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   main "$@"
