@@ -196,14 +196,14 @@ func DeleteRule(ctx context.Context, pool *pgxpool.Pool, ruleID uuid.UUID) error
 	return nil
 }
 
-// ListRecentEvents returns the most recent alert_events (joined with
-// their own rule's name, so a caller never needs a second round trip
-// just to label an event), most-recent-first, capped at limit.
 type EventWithRuleName struct {
 	AlertEvent
 	RuleName string
 }
 
+// ListRecentEvents returns the most recent alert_events (joined with
+// their own rule's name, so a caller never needs a second round trip
+// just to label an event), most-recent-first, capped at limit.
 func ListRecentEvents(ctx context.Context, pool *pgxpool.Pool, limit int) ([]EventWithRuleName, error) {
 	rows, err := pool.Query(ctx, `
 		SELECT e.id, e.rule_id, e.triggered_at, e.metric_value::float8, e.resolved_at, r.name
