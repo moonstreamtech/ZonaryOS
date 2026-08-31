@@ -151,6 +151,8 @@ func newEffect(kind string, payload any) TransitionEffect {
 // append to TransitionSpec.Effects - see stock_to_sale.go's record_sale
 // for the concrete multi-effect example.
 func JournalEffect(jt JournalTemplate) TransitionEffect { return newEffect(EffectKindJournal, jt) }
+// StockEffect wraps a StockAdjustmentTemplate into a TransitionEffect ready to
+// append to TransitionSpec.Effects.
 func StockEffect(sat StockAdjustmentTemplate) TransitionEffect {
 	return newEffect(EffectKindStock, sat)
 }
