@@ -407,6 +407,67 @@ worktree_has_changes() {
   [ -n "$(git status --porcelain)" ]
 }
 
+# True (and prints nothing) only if git status shows EXACTLY ONE changed
+# path and it is $1 - used by run_plan_phase to reject a plan-generation
+# attempt that touched anything beyond the one plan file it was asked to
+# write. Always prints a human-readable summary of everything that
+# actually changed (space-joined, "(none)" if nothing did), whether or
+# not the check passes, so callers can log it either way.
+#
+# This replaced (issue #80's own first live run, turns 2 and 3) a
+# `git status --porcelain | awk '{print $NF}'` version with three
+# distinct bugs, confirmed against a real git repo before writing this:
+#   1. A brand-new untracked directory collapses to ONE porcelain entry
+#      for the directory itself, not the files inside it - `?? docs/`
+#      or `?? docs/plans/`, never `?? docs/plans/0001-foo.md`. This is
+#      exactly what discarded two genuinely well-formed plans on #80:
+#      docs/plans/ didn't exist yet, so the very first plan this loop
+#      ever wrote for real tripped it. `--untracked-files=all` is what
+#      makes git list the file itself instead of collapsing to the
+#      directory (verified: `git status --porcelain -uall` on a fresh
+#      untracked docs/plans/0001-foo.md prints `?? docs/plans/0001-foo.md`,
+#      not `?? docs/`).
+#   2. `awk '{print $NF}'` (last whitespace-separated field) breaks on
+#      any path containing a space - it silently returns only the last
+#      word of the path, not the path.
+#   3. A rename shows as `R  old -> new` in the default (non -z) porcelain
+#      format - `awk '{print $NF}'` happens to grab "new" there, but any
+#      OTHER path with a space anywhere on that same status line (staged
+#      alongside it, in the same git-status output) would misparse the
+#      same way as (2), and the "old -> new" text itself is fragile to
+#      parse generally.
+#
+# Fixed by parsing `git status --porcelain=v1 --untracked-files=all -z`
+# properly instead: -z NUL-delimits entries (and, for a rename/copy, the
+# destination and original paths within one entry) with no quoting or
+# escaping, so a path containing a space or any other special character
+# round-trips exactly - confirmed against a real repo: a rename entry is
+# literally `R  docs/plans/new-name.md\0docs/plans/old-name.md\0` (new
+# path first, then the original), and a plain untracked entry is
+# `?? docs/plans/my plan.md\0` with the space preserved verbatim. The -z
+# byte stream is consumed directly via `read -d ''` in the loop below,
+# never captured into a single bash variable - bash cannot hold an
+# embedded NUL byte in a string at all, which is the whole reason this
+# reads record-by-record instead of doing `paths="$(git status ...)"`.
+only_path_changed() {
+  local expected="$1"
+  local paths=() xy path
+  while IFS= read -r -d '' entry; do
+    xy="${entry:0:2}"
+    path="${entry:3}"
+    if [[ "$xy" == *R* || "$xy" == *C* ]]; then
+      # Rename/copy: a second NUL-delimited field carries the ORIGINAL
+      # path. We only track the current (destination) path already
+      # captured above - read and discard the original.
+      IFS= read -r -d '' _
+    fi
+    paths+=("$path")
+  done < <(git status --porcelain=v1 --untracked-files=all -z)
+
+  printf '%s' "${paths[*]:-(none)}"
+  [ "${#paths[@]}" -eq 1 ] && [ "${paths[0]}" = "$expected" ]
+}
+
 # Independent of every other brake on purpose: MAX_TURNS and the
 # per-item/per-phase attempt caps all read state this loop wrote to the
 # issue body on a previous run, and issue #73's validation chain showed
@@ -580,11 +641,9 @@ $discovery"
     fi
     echo "aider produced no changes for the plan and no quota error was logged - treating as a failed attempt."
   else
-    local changed_files
-    changed_files="$(git status --porcelain | awk '{print $NF}')"
-    local plan_content
-    if [ "$changed_files" != "$plan_file" ] || [ ! -f "$plan_file" ] || ! plan_content="$(cat "$plan_file")" || ! plan_steps "$plan_content" >/dev/null 2>&1; then
-      echo "aider either touched something other than $plan_file, or $plan_file has no valid ## Steps section - discarding and treating as a failed attempt. Changed: $changed_files"
+    local changed_summary plan_content
+    if ! changed_summary="$(only_path_changed "$plan_file")" || [ ! -f "$plan_file" ] || ! plan_content="$(cat "$plan_file")" || ! plan_steps "$plan_content" >/dev/null 2>&1; then
+      echo "aider either touched something other than $plan_file, or $plan_file has no valid ## Steps section - discarding and treating as a failed attempt. Changed: $changed_summary"
       git checkout -- .
       git clean -fd
     else
