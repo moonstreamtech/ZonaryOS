@@ -194,6 +194,135 @@ assert_status "after all 5 items ticked: is_finished is true" 0 is_finished "$bo
 assert_eq "after all 5 items ticked: turn is 5" \
   5 "$(get_turn "$body")"
 
+# --- phase (step 3b-1) ------------------------------------------------
+
+assert_eq "get_phase defaults to discovery when absent and no checklist exists yet (fresh 3b issue)" \
+  "discovery" "$(get_phase "Add expiry-date tracking to inventory items.")"
+assert_eq "get_phase defaults to implement when absent but a checklist already exists (pre-existing 3a issue, back-compat)" \
+  "implement" "$(get_phase "$(f fresh.md)")"
+assert_eq "get_phase reads an explicit phase= over either default" \
+  "plan" "$(get_phase "$(set_phase "$(f fresh.md)" plan)")"
+
+phased="$(set_phase "Add expiry-date tracking to inventory items." discovery)"
+assert_eq "set_phase writes phase= into a fresh state block" \
+  "discovery" "$(get_phase "$phased")"
+phased2="$(set_phase "$phased" plan)"
+assert_eq "set_phase replaces an existing phase= rather than duplicating it" \
+  1 "$(grep -c '^phase=' <<<"$phased2")"
+assert_eq "set_phase transition reads back correctly" \
+  "plan" "$(get_phase "$phased2")"
+
+assert_eq "get_phase_attempts defaults to 0" \
+  0 "$(get_phase_attempts "$phased" discovery)"
+bumped_phase_attempts="$(set_phase_attempts "$phased" discovery 1)"
+assert_eq "set_phase_attempts/get_phase_attempts round-trip" \
+  1 "$(get_phase_attempts "$bumped_phase_attempts" discovery)"
+assert_eq "phase attempt counters are independent per phase name" \
+  0 "$(get_phase_attempts "$bumped_phase_attempts" plan)"
+assert_eq "bumping the discovery attempt counter doesn't touch turn" \
+  0 "$(get_turn "$bumped_phase_attempts")"
+
+# --- plan_steps (step 3b-1) --------------------------------------------
+
+assert_eq "plan_steps extracts exactly the checkbox lines under ## Steps, in order" \
+  "- [ ] Add \`expiry_date\` (nullable date) to the \`inventory_items\` table via migrations/0047_item_expiry.up.sql and the matching .down.sql. The table already carries an RLS policy scoped to firm_id (see migrations/0012_inventory_items.up.sql) - no new policy needed, this is an added column only.
+- [ ] Add \`ExpiryDate *time.Time\` to the \`Item\` struct in internal/inventory/items.go and update \`scanItem\`/the INSERT and UPDATE column lists to include it. Follow the existing nullable-column pattern already used for \`Notes\` in that same file.
+- [ ] Add \`ExpiryDate\` to the JSON response shape in internal/inventory/handlers.go's item-serialization helper, following the existing field naming convention (camelCase) already used for the other fields there." \
+  "$(plan_steps "$(f plan_wellformed.md)")"
+assert_eq "plan_steps ignores non-Steps sections (Packages/Migration/CI Checks aren't checklist items)" \
+  3 "$(plan_steps "$(f plan_wellformed.md)" | grep -c '^- \[')"
+
+assert_status "plan_steps fails on a plan with no ## Steps heading at all" \
+  1 plan_steps "$(f plan_malformed_no_steps.md)"
+assert_status "plan_steps fails on a ## Steps section with zero checkbox lines" \
+  1 plan_steps "$(f plan_malformed_empty_steps.md)"
+
+assert_eq "plan_steps on a human-edited plan preserves the pre-checked step's checked state" \
+  1 "$(plan_steps "$(f plan_human_edited.md)" | grep -c '^- \[x\]')"
+assert_eq "plan_steps on a human-edited plan reflects Kaan's reworded text verbatim, not the original" \
+  1 "$(plan_steps "$(f plan_human_edited.md)" | grep -c 'repository test fixtures need updating')"
+
+# --- set_checklist_from_lines (step 3b-1) -------------------------------
+
+feature_body="Add expiry-date tracking to inventory items.
+
+<!-- agent-state
+phase=awaiting-plan
+turn=2
+-->"
+steps="$(plan_steps "$(f plan_wellformed.md)")"
+populated="$(set_checklist_from_lines "$feature_body" "$steps")"
+assert_eq "set_checklist_from_lines creates the ## Checklist heading when absent" \
+  3 "$(checklist_total "$populated")"
+assert_eq "set_checklist_from_lines preserves the existing state block untouched" \
+  "awaiting-plan" "$(get_phase "$populated")"
+assert_eq "set_checklist_from_lines preserves turn" \
+  2 "$(get_turn "$populated")"
+assert_status "the populated checklist is not yet finished (nothing ticked)" \
+  1 is_finished "$populated"
+
+with_stale="## Checklist
+- [ ] stale item that should be replaced
+
+<!-- agent-state
+turn=1
+-->"
+replaced="$(set_checklist_from_lines "$with_stale" "$steps")"
+assert_eq "set_checklist_from_lines replaces an already-present (defensive-path) checklist wholesale" \
+  3 "$(checklist_total "$replaced")"
+assert_eq "... and the stale item is gone" \
+  0 "$(grep -c 'stale item' <<<"$replaced")"
+
+# --- extract_last_reply (step 3b-1) -------------------------------------
+
+chat_history=$'\n# aider chat started at 2026-09-01 10:00:00\n\n#### For the feature described in this issue:\n  \n#### Add expiry-date tracking to inventory items.\n  \n#### Answer: which packages, which patterns, which tables/migrations, next migration number, which CLAUDE.md rules apply.\n\nPackages involved: internal/inventory (Item struct, handlers.go).\n\nNext migration number: 0047 (last is migrations/0046_*).\n\nCLAUDE.md rule 3 (RLS) applies since inventory_items is firm-scoped.\n\n'
+reply="$(extract_last_reply "$chat_history")"
+assert_eq "extract_last_reply gets the assistant's answer, not the echoed prompt" \
+  "Packages involved: internal/inventory (Item struct, handlers.go).
+
+Next migration number: 0047 (last is migrations/0046_*).
+
+CLAUDE.md rule 3 (RLS) applies since inventory_items is firm-scoped." \
+  "$reply"
+assert_eq "extract_last_reply's output does not contain any of the prompt's #### lines" \
+  0 "$(grep -c '^#### ' <<<"$reply")"
+
+empty_history=$'\n# aider chat started at 2026-09-01 10:00:00\n\n#### A prompt with no reply yet (e.g. the call failed before any response).\n'
+assert_eq "extract_last_reply on a prompt with no assistant reply returns empty" \
+  "" "$(extract_last_reply "$empty_history")"
+
+# --- slugify / plan_filename / plan_file state (step 3b-1) -------------
+
+assert_eq "slugify lowercases and hyphenates" \
+  "add-expiry-date-tracking-to-inventory-items" \
+  "$(slugify "Add expiry-date tracking to inventory items")"
+assert_eq "slugify collapses punctuation runs into single hyphens and trims ends" \
+  "fix-n-1-query-urgent-do-it-now" \
+  "$(slugify "Fix N+1 query!! (urgent) — do it NOW")"
+assert_eq "slugify caps length at 60 chars and doesn't leave a trailing hyphen at the cut" \
+  60 "$(slugify "$(printf 'word %.0s' {1..30})" | wc -c | tr -d ' ')"
+
+assert_eq "plan_filename composes docs/plans/<number>-<slug>.md" \
+  "docs/plans/0001-add-expiry-date-tracking-to-inventory-items.md" \
+  "$(plan_filename "0001" "Add expiry-date tracking to inventory items")"
+
+state_body="Feature description.
+
+<!-- agent-state
+phase=plan
+turn=1
+-->"
+assert_eq "get_plan_file is empty before one is claimed" \
+  "" "$(get_plan_file "$state_body")"
+claimed="$(set_plan_file "$state_body" "docs/plans/0001-add-expiry-date-tracking.md")"
+assert_eq "set_plan_file/get_plan_file round-trip" \
+  "docs/plans/0001-add-expiry-date-tracking.md" "$(get_plan_file "$claimed")"
+assert_eq "set_plan_file leaves phase alone" \
+  "plan" "$(get_phase "$claimed")"
+reclaimed="$(set_plan_file "$claimed" "docs/plans/0002-different.md")"
+assert_eq "set_plan_file replaces rather than duplicating the key" \
+  1 "$(grep -c '^plan_file=' <<<"$reclaimed")"
+
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
