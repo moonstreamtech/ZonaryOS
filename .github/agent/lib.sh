@@ -36,6 +36,7 @@ set -euo pipefail
 CHECKLIST_HEADING='## Checklist'
 STATE_START='<!-- agent-state'
 STATE_END='-->'
+PLAN_DIR='docs/plans'
 
 # --- checklist -----------------------------------------------------------
 
@@ -187,4 +188,173 @@ get_item_attempts() {
 
 set_item_attempts() {
   _set_state_key "$1" "attempts_item_$2" "$3"
+}
+
+# --- phase (step 3b-1) ------------------------------------------------------
+#
+# phase= lives in the same state block as turn=, values: discovery, plan,
+# awaiting-plan, implement. Back-compat default when the key is absent
+# (an issue created before phases existed, or a fresh 3b issue on its
+# very first read before any phase has ever been written): "implement"
+# if the body already has checklist items (a pre-existing 3a issue - keep
+# it running exactly as it always has, untouched), otherwise "discovery"
+# (a new 3b issue with nothing but a feature description yet).
+get_phase() {
+  local v
+  v="$(_get_state_key "$1" phase)"
+  if [ -n "$v" ]; then
+    echo "$v"
+    return
+  fi
+  if [ "$(checklist_total "$1")" -gt 0 ]; then
+    echo "implement"
+  else
+    echo "discovery"
+  fi
+}
+
+set_phase() {
+  _set_state_key "$1" phase "$2"
+}
+
+get_phase_attempts() {
+  local v
+  v="$(_get_state_key "$1" "attempts_phase_$2")"
+  echo "${v:-0}"
+}
+
+set_phase_attempts() {
+  _set_state_key "$1" "attempts_phase_$2" "$3"
+}
+
+# The plan file path claimed for this issue, once the plan phase has
+# chosen one (see plan_filename's comment on why it's persisted rather
+# than recomputed). Empty if none has been claimed yet.
+get_plan_file() {
+  _get_state_key "$1" plan_file
+}
+
+set_plan_file() {
+  _set_state_key "$1" plan_file "$2"
+}
+
+# --- plan file parsing (step 3b-1) ------------------------------------------
+
+# Extracts the "## Steps" section's checkbox lines ("- [ ] ..." /
+# "- [x] ...") from a plan markdown file's content, verbatim and in
+# order, preserving whatever checked state each line already carries -
+# so if a human hand-edits the plan before merging it (e.g. pre-checking
+# a step they already did by hand, rewording a step, deleting one),
+# whatever lands on main is exactly what gets parsed, not what the agent
+# originally wrote. Same section-boundary convention as the issue body's
+# own "## Checklist" section (_item_lines above): opens on a line that is
+# exactly "## Steps", closes on the next line starting with "#".
+#
+# Fails (empty output, exit 1) on a malformed plan: no "## Steps" heading
+# at all, or a "## Steps" section with zero checkbox lines in it. Callers
+# must treat that as a hard stop, not an empty-but-valid checklist - see
+# loop.sh's awaiting-plan phase.
+plan_steps() {
+  local lines
+  lines="$(awk '
+    $0 == "## Steps" { insec=1; next }
+    insec && /^#/ { insec=0 }
+    insec && /^- \[[ xX]\] / { print }
+  ' <<<"$1")"
+  [ -n "$lines" ] || return 1
+  printf '%s\n' "$lines"
+}
+
+# Populates the issue body's "## Checklist" section with $2 (a
+# newline-separated block of raw "- [ ] ..."/"- [x] ..." lines, e.g. from
+# plan_steps), creating the heading if the body doesn't have one yet.
+# Only ever called once, on the awaiting-plan -> implement transition,
+# against a body whose checklist section is empty or absent - if a
+# "## Checklist" heading somehow already has items under it, they are
+# replaced wholesale, not merged, since re-running this transition against
+# an already-populated checklist should not happen by construction (the
+# phase moves to "implement" in the same write that populates the
+# checklist - see set_issue_body's atomicity in loop.sh).
+set_checklist_from_lines() {
+  local body="$1" new_lines="$2"
+  if grep -qx -- "$CHECKLIST_HEADING" <<<"$body"; then
+    awk -v heading="$CHECKLIST_HEADING" -v state_start="$STATE_START" -v newlines="$new_lines" '
+      BEGIN { n = split(newlines, arr, "\n") }
+      $0 == heading {
+        print
+        for (i = 1; i <= n; i++) print arr[i]
+        insec = 1
+        next
+      }
+      insec && /^#/ { insec = 0 }
+      insec && index($0, state_start) == 1 { insec = 0 }
+      insec && /^- \[[ xX]\] / { next }
+      { print }
+    ' <<<"$body"
+  else
+    awk -v heading="$CHECKLIST_HEADING" -v state_start="$STATE_START" -v newlines="$new_lines" '
+      BEGIN { n = split(newlines, arr, "\n"); added = 0 }
+      index($0, state_start) == 1 {
+        if (!added) {
+          print heading
+          for (i = 1; i <= n; i++) print arr[i]
+          print ""
+          added = 1
+        }
+        print
+        next
+      }
+      { print }
+      END {
+        if (!added) {
+          print heading
+          for (i = 1; i <= n; i++) print arr[i]
+        }
+      }
+    ' <<<"$body"
+  fi
+}
+
+# Lowercases, replaces every run of non-alphanumeric characters with a
+# single hyphen, and trims leading/trailing hyphens - the standard
+# filename-slug transform. Capped at 60 characters (after trimming any
+# hyphen the cap itself introduced) so a long issue title can't produce
+# an unreasonable filename.
+slugify() {
+  local s
+  s="$(tr '[:upper:]' '[:lower:]' <<<"$1")"
+  s="$(sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' <<<"$s")"
+  s="${s:0:60}"
+  sed -E 's/-+$//' <<<"$s"
+}
+
+# The plan file path for a given (already zero-padded, e.g. "0001")
+# number and issue title - docs/plans/<number>-<slug>.md. Pure string
+# formatting; the number itself comes from scanning the real docs/plans/
+# directory (loop.sh's next_plan_number, not offline-testable since it
+# touches the filesystem) and is persisted in the state block's
+# plan_file= key the moment it's chosen, precisely so a crashed-and-
+# retried plan turn reuses the same reserved filename instead of
+# computing a new one against a directory that may have changed.
+plan_filename() {
+  printf '%s/%s-%s.md' "$PLAN_DIR" "$1" "$(slugify "$2")"
+}
+
+# --- aider chat-history parsing (step 3b-1) ---------------------------------
+
+# Extracts the assistant's reply to the LAST user message from an aider
+# chat-history-file's content (see aider/io.py: user_input() writes each
+# line of the prompt prefixed "#### ", ai_output() writes the reply raw,
+# directly after, with no prefix - confirmed against aider 0.86.2's own
+# source, not guessed). Used to post aider's discovery/plan answer as an
+# issue comment without scraping --verbose/LITELLM_LOG debug noise out of
+# the job log. Each loop.sh turn writes to a fresh history file, so there
+# is exactly one prompt/reply pair to extract - this takes the text after
+# the LAST "#### "-prefixed line for robustness if that ever changes.
+extract_last_reply() {
+  awk '
+    /^#### / { last = NR; next }
+    { lines[NR] = $0 }
+    END { for (i = last + 1; i <= NR; i++) print lines[i] }
+  ' <<<"$1" | sed -e '/./,$!d' -e ':a;/^$/{$d;N;ba}'
 }

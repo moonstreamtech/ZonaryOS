@@ -1,20 +1,28 @@
-# Agent pipeline - step 3a: the self-triggering agent loop (plumbing only).
+# Agent pipeline - step 3b-1: phase machine, discovery, and plan generation.
 #
-# Builds on step 1 (.github/workflows/agent-smoke.yml, run 33324419346:
-# green, one Gemini request, one applied edit) by wiring aider into a loop
-# that drives one GitHub issue's hand-written checklist to completion, one
-# item per run, with no LLM planning in this step - the checklist is
-# authored by a human, aider only ever executes one already-specified
-# item per turn. Research, discovery, and checklist authoring are step 3b;
-# deliberately not built here so a break in this step is unambiguously a
-# plumbing bug, not an intelligence one.
+# Builds on step 3a (.github/workflows/agent-loop.yml's prior version: the
+# self-triggering loop that drives a hand-written checklist to completion,
+# one item per turn, brakes proven live on issue #76's verify-after-write).
+# 3a still runs unchanged for an issue that already has a checklist - see
+# lib.sh's get_phase() back-compat default. What's new: an issue that
+# starts as three sentences of feature description now goes through
+# discovery (read-only recon) and plan (a reviewable docs/plans/NNNN-*.md
+# PR) before ever reaching the 3a implement loop, cutting the number of
+# times Kaan has to touch this down to two merges: the plan, then the
+# implementation.
 #
-# One issue = one feature = one branch = one draft PR. The agent commits,
-# pushes, and marks the PR ready for review - it never merges. All state
-# and checklist handling lives in .github/agent/lib.sh (unit-tested
-# offline, see .github/agent/tests/); this workflow and .github/agent/
-# loop.sh are the thin, only-testable-via-a-real-run parts: checkout,
-# language setup, aider install, then one call into the script.
+# Deliberately NOT here (step 3b-2): web research and a multi-model pool.
+# Same reasoning as every step before this one - one new variable per
+# build, so a break is attributable to a single thing that changed.
+#
+# One issue = one feature = one branch = one draft PR (for the
+# implementation; the plan gets its own separate branch/PR - see loop.sh's
+# plan phase comment for why they must never share one). The agent
+# commits, pushes, and marks PRs ready for review - it never merges. All
+# state/checklist/plan-parsing logic lives in .github/agent/lib.sh
+# (unit-tested offline, see .github/agent/tests/); this workflow and
+# .github/agent/loop.sh are the thin, only-testable-via-a-real-run parts:
+# checkout, language setup, aider install, then one call into the script.
 
 name: Agent Loop
 
@@ -25,6 +33,12 @@ on:
         description: "Issue number to work on (optional - omit to let the loop find the single open issue labelled agent:go)"
         required: false
         default: ""
+  # Starts the chain the moment agent:go is applied, with no manual
+  # dispatch. The job-level `if` below filters this down to exactly that
+  # label - `issues: types: [labeled]` fires for every label added to
+  # every issue, not just this one.
+  issues:
+    types: [labeled]
   # Safety net only: if a turn chain dies mid-way (runner crash, quota
   # exhaustion that stopped a re-trigger, a cancelled run), this cron
   # picks the same active issue back up on its next tick. It runs the
@@ -33,6 +47,17 @@ on:
   # take - not a second implementation of the loop.
   schedule:
     - cron: "*/30 * * * *"
+  # Resumes the awaiting-plan phase the moment Kaan merges a plan PR,
+  # rather than up to 30 minutes later via the cron. A human's merge
+  # generates a real push event even though it lands via a PR merge
+  # button - unlike anything driven by the default GITHUB_TOKEN (which
+  # this workflow's own commits and PRs are), so this is not the "runs
+  # started by GITHUB_TOKEN don't trigger runs" problem workflow_dispatch/
+  # repository_dispatch exist to solve elsewhere in this file.
+  push:
+    branches: [main]
+    paths:
+      - "docs/plans/**"
 
 env:
   GO_VERSION: "1.25"
@@ -66,9 +91,14 @@ permissions:
 
 jobs:
   agent-loop:
-    name: Agent Loop (one checklist item)
+    name: Agent Loop (one turn)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # issues:labeled fires for every label on every issue; only run for
+    # agent:go specifically. Every other trigger (workflow_dispatch,
+    # schedule, push) has no github.event.label at all, so they must
+    # short-circuit past the label check rather than be evaluated by it.
+    if: github.event_name != 'issues' || github.event.label.name == 'agent:go'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -91,5 +121,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          INPUT_ISSUE: ${{ inputs.issue }}
+          # The issues:labeled event names its own issue directly - use
+          # that when present (also pins the run to the issue that was
+          # JUST labelled, rather than re-deriving "the" active issue via
+          # a search that could, in principle, race a second label
+          # addition). Falls back to workflow_dispatch's optional input,
+          # which itself may be empty (schedule/push have neither) - an
+          # empty INPUT_ISSUE is what makes loop.sh fall back to its own
+          # single-active-issue search.
+          INPUT_ISSUE: ${{ github.event.issue.number || inputs.issue }}
         run: .github/agent/loop.sh
