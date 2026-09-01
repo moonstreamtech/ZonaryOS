@@ -35,32 +35,28 @@ func PartitionName(month time.Time) string {
 
 // EnsureFuturePartitions creates any missing request_metrics partition
 // for the current month through monthsAheadToMaintain-1 months ahead,
-// via CREATE TABLE IF NOT EXISTS ... PARTITION OF ... FOR VALUES FROM
-// ... TO ... - idempotent by construction (IF NOT EXISTS), so calling
-// this on every scheduler tick (see RunSelfHealingScheduler) rather than
-// only once a month is simply a cheap no-op on every tick that finds
-// nothing missing.
+// via create_request_metrics_partition($1) - the SECURITY DEFINER
+// function migrations/0046_fix_request_metrics_partition_grant.up.sql
+// adds specifically so zonaryos_app (the role this pool connects as at
+// runtime) can create a request_metrics partition without owning the
+// table. See that migration and docs/DEVELOPMENT.md for why: zonaryos_app
+// briefly had schema-level CREATE for this instead
+// (migrations/0041_performance_monitoring.up.sql), which does not
+// actually grant the ability to attach a partition to a table it
+// doesn't own - every call silently failed with "must be owner of
+// table request_metrics" until this function replaced it.
+//
+// Idempotent by construction (the function's own CREATE TABLE IF NOT
+// EXISTS), so calling this on every scheduler tick (see
+// RunSelfHealingScheduler) rather than only once a month is simply a
+// cheap no-op on every tick that finds nothing missing.
 func EnsureFuturePartitions(ctx context.Context, pool *pgxpool.Pool) error {
 	now := time.Now().UTC()
 	for i := 0; i < monthsAheadToMaintain; i++ {
 		monthStart := time.Date(now.Year(), now.Month()+time.Month(i), 1, 0, 0, 0, 0, time.UTC)
-		monthEnd := monthStart.AddDate(0, 1, 0)
 		name := PartitionName(monthStart)
 
-		// #nosec G201 -- name/the two date bounds are never caller-
-		// supplied: name comes from PartitionName (a fixed
-		// "request_metrics_YYYY_MM" format derived only from
-		// time.Now()), and monthStart/monthEnd are formatted from that
-		// same computed time.Time - there is no code path from an HTTP
-		// request or any other external input into this string. Postgres
-		// DDL (CREATE TABLE ... PARTITION OF) has no parameterized-
-		// identifier form the way a DML WHERE clause does, so a
-		// server-side-only computed name is the only way to express this
-		// at all.
-		if _, err := pool.Exec(ctx, fmt.Sprintf(`
-			CREATE TABLE IF NOT EXISTS %s PARTITION OF request_metrics
-			FOR VALUES FROM ('%s') TO ('%s')
-		`, name, monthStart.Format("2006-01-02"), monthEnd.Format("2006-01-02"))); err != nil {
+		if _, err := pool.Exec(ctx, `SELECT create_request_metrics_partition($1)`, monthStart); err != nil {
 			return fmt.Errorf("ensure partition %q: %w", name, err)
 		}
 	}
