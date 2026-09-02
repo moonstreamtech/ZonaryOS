@@ -242,6 +242,15 @@ assert_eq "plan_steps on a human-edited plan preserves the pre-checked step's ch
 assert_eq "plan_steps on a human-edited plan reflects Kaan's reworded text verbatim, not the original" \
   1 "$(plan_steps "$(f plan_human_edited.md)" | grep -c 'repository test fixtures need updating')"
 
+# --- plan_migration_section (step 3b-1 follow-up: issue #80's migration- --
+# --- number collision) --------------------------------------------------
+
+assert_eq "plan_migration_section extracts the ## Migration section's text verbatim" \
+  "migrations/0047_item_expiry.up.sql / .down.sql" \
+  "$(plan_migration_section "$(f plan_wellformed.md)")"
+assert_eq "plan_migration_section returns nothing for a plan with no ## Migration heading" \
+  "" "$(plan_migration_section "$(f plan_malformed_no_steps.md)")"
+
 # --- set_checklist_from_lines (step 3b-1) -------------------------------
 
 feature_body="Add expiry-date tracking to inventory items.

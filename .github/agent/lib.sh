@@ -265,6 +265,24 @@ plan_steps() {
   printf '%s\n' "$lines"
 }
 
+# Extracts the "## Migration" section's raw text verbatim (every line,
+# not just checkbox lines - unlike plan_steps, this section is free-form
+# prose/bullets, e.g. "None" or a bullet list of migration file names),
+# using the same open-on-exact-heading / close-on-next-# convention as
+# plan_steps and _item_lines. Empty output (not a failure - "no
+# ## Migration section" and "a ## Migration section with no content" are
+# both just "nothing to validate", not malformed-plan conditions the way
+# a missing ## Steps section is) if the heading is absent or the section
+# has no lines under it. loop.sh's validate_plan_migration_numbers is
+# the caller that actually does something with this text.
+plan_migration_section() {
+  awk '
+    $0 == "## Migration" { insec=1; next }
+    insec && /^#/ { insec=0 }
+    insec { print }
+  ' <<<"$1"
+}
+
 # Populates the issue body's "## Checklist" section with $2 (a
 # newline-separated block of raw "- [ ] ..."/"- [x] ..." lines, e.g. from
 # plan_steps), creating the heading if the body doesn't have one yet.
