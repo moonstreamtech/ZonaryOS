@@ -51,6 +51,7 @@ EDIT_FORMAT="diff-fenced"
 MAP_TOKENS=4096
 AIDER_LOG="/tmp/agent-loop-aider.log"
 CHAT_HISTORY_FILE="/tmp/agent-loop-chat-history.md"
+MIGRATIONS_DIR="migrations"
 
 LABEL_GO="agent:go"
 LABEL_BLOCKED="agent:blocked"
@@ -301,6 +302,65 @@ next_plan_number() {
     done < <(find "$PLAN_DIR" -maxdepth 1 -type f -name '*.md')
   fi
   printf '%04d' $((max + 1))
+}
+
+# Same shape as next_plan_number, over migrations/ instead of
+# docs/plans/ (both .up.sql and .down.sql share one number, so scanning
+# *.sql catches either). Exists so the plan-phase prompt can STATE this
+# number as a fact rather than asking the model to derive it from a
+# directory listing it can only see secondhand (aider's own repo-map,
+# not a live `ls`) - see run_plan_phase's own comment on why. The
+# corresponding shell-side check is validate_plan_migration_numbers
+# below: this function supplies the fact the prompt states; that one
+# is what actually enforces it against whatever the model wrote.
+next_migration_number() {
+  local max=0 n
+  if [ -d "$MIGRATIONS_DIR" ]; then
+    while IFS= read -r f; do
+      n="$(basename "$f" | grep -oE '^[0-9]+' || true)"
+      if [ -n "$n" ] && [ "$((10#$n))" -gt "$max" ]; then
+        max=$((10#$n))
+      fi
+    done < <(find "$MIGRATIONS_DIR" -maxdepth 1 -type f -name '*.sql')
+  fi
+  printf '%04d' $((max + 1))
+}
+
+# Checks every migrations/NNNN_... reference the plan's own ## Migration
+# section names against the REAL migrations/ directory, and fails (a
+# human-readable reason on stdout, non-zero exit) if any of them already
+# exists. This is the enforcement half of the "hand the model a fact
+# instead of asking it to derive one" fix: the plan prompt STATES the
+# next available number (next_migration_number, computed here in shell,
+# not asked of the model), but a stated fact in a prompt is not a
+# guarantee the model actually used it - issue #80's own two plans both
+# independently invented 0007, a number that had been taken since this
+# repo's very early migrations (0007_firm_invites.{up,down}.sql,
+# pre-dating this whole 3b-1 batch), despite discovery's own answer for
+# the SAME question feeding into this exact prompt as "Discovery
+# findings" text. Read that as: even a stated fact in prose is not
+# self-enforcing - this function is the actual guarantee, meant to catch
+# every future case of the model reusing/misreading a number, not just
+# the one #80 hit.
+#
+# Deliberately checks every number the section mentions, not just
+# "does it match what we told it to use" - a plan is free to need
+# more than one migration (or a different but still-safe number, if
+# the model has some reason to prefer one), as long as none of them
+# collides with something that already exists on disk.
+validate_plan_migration_numbers() {
+  local migration_section="$1"
+  local n path
+  while IFS= read -r n; do
+    [ -z "$n" ] && continue
+    for path in "$MIGRATIONS_DIR/${n}"_*.sql; do
+      if [ -e "$path" ]; then
+        echo "migration number $n is already taken ($path exists) - the plan's ## Migration section must use a number that does not already exist under $MIGRATIONS_DIR/."
+        return 1
+      fi
+    done
+  done < <(printf '%s' "$migration_section" | grep -oE "$MIGRATIONS_DIR/[0-9]+" | grep -oE '[0-9]+' | sort -u)
+  return 0
 }
 
 # --- aider --------------------------------------------------------------
@@ -604,6 +664,9 @@ run_plan_phase() {
     exit 0
   fi
 
+  local next_migration
+  next_migration="$(next_migration_number)"
+
   local prompt
   prompt="Write $plan_file - a plan for the feature described below, using the discovery findings that follow it.
 
@@ -613,7 +676,7 @@ The file MUST have this structure, in this order:
 (bullet list of every existing package this change touches)
 
 ## Migration
-(the migration file name(s) this change needs, or \"None\" if no schema change is needed)
+(the migration file name(s) this change needs, or \"None\" if no schema change is needed. The next available migration number, already computed from the real migrations/ directory, is $next_migration - do NOT scan migrations/ yourself or guess a different number, including whatever a prior discovery pass may have said (that answer can be stale by the time this prompt runs). If this change needs a migration, its file name(s) MUST start with exactly $next_migration: migrations/${next_migration}_<slug>.up.sql and migrations/${next_migration}_<slug>.down.sql.)
 
 ## CI Checks
 (bullet list of which checks from CLAUDE.md's \"How to Verify a Change\" section this change will have to pass - go build, go vet, go test, the RLS/permission audit, i18n check, license header check, etc: whichever actually apply, not all of them by default)
@@ -647,30 +710,37 @@ $discovery"
       git checkout -- .
       git clean -fd
     else
-      local n_steps
-      n_steps="$(plan_steps "$plan_content" | grep -c '^- \[')"
-      if [ "$n_steps" -gt "$MAX_ITEMS" ]; then
+      local migration_check
+      if ! migration_check="$(validate_plan_migration_numbers "$(plan_migration_section "$plan_content")")"; then
+        echo "$migration_check - discarding and treating as a failed attempt."
         git checkout -- .
         git clean -fd
-        block_issue "$ISSUE_NUMBER" "the plan has $n_steps steps, over the $MAX_ITEMS-item cap. Split the feature into smaller issues, then re-add $LABEL_GO on each."
+      else
+        local n_steps
+        n_steps="$(plan_steps "$plan_content" | grep -c '^- \[')"
+        if [ "$n_steps" -gt "$MAX_ITEMS" ]; then
+          git checkout -- .
+          git clean -fd
+          block_issue "$ISSUE_NUMBER" "the plan has $n_steps steps, over the $MAX_ITEMS-item cap. Split the feature into smaller issues, then re-add $LABEL_GO on each."
+          exit 0
+        fi
+
+        git add "$plan_file"
+        git commit -m "agent: plan for #$ISSUE_NUMBER"
+        git push -u origin "$plan_branch"
+        ensure_plan_pr "$ISSUE_NUMBER" "$plan_branch" "$plan_file"
+
+        local plan_pr_num
+        plan_pr_num="$(pr_number_for_branch "$plan_branch")"
+
+        body="$(set_phase "$body" awaiting-plan)"
+        body="$(set_turn "$body" "$TURN")"
+        set_issue_body "$ISSUE_NUMBER" "$body"
+        post_comment "$ISSUE_NUMBER" "📋 Plan ready for review: PR #$plan_pr_num (\`$plan_file\`, $n_steps step(s)). Merge it to start implementation - the agent stops here until you do."
+        ACTION="plan_complete"
+        RETRIGGER="false"
         exit 0
       fi
-
-      git add "$plan_file"
-      git commit -m "agent: plan for #$ISSUE_NUMBER"
-      git push -u origin "$plan_branch"
-      ensure_plan_pr "$ISSUE_NUMBER" "$plan_branch" "$plan_file"
-
-      local plan_pr_num
-      plan_pr_num="$(pr_number_for_branch "$plan_branch")"
-
-      body="$(set_phase "$body" awaiting-plan)"
-      body="$(set_turn "$body" "$TURN")"
-      set_issue_body "$ISSUE_NUMBER" "$body"
-      post_comment "$ISSUE_NUMBER" "📋 Plan ready for review: PR #$plan_pr_num (\`$plan_file\`, $n_steps step(s)). Merge it to start implementation - the agent stops here until you do."
-      ACTION="plan_complete"
-      RETRIGGER="false"
-      exit 0
     fi
   fi
 
