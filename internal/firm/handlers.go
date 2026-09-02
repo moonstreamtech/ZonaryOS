@@ -59,6 +59,10 @@ func RegisterRoutes(mux *http.ServeMux, verifier *identity.Verifier, pool *pgxpo
 	mux.Handle("PATCH /api/firms/{firmID}", auth(http.HandlerFunc(handleUpdate(pool))))
 }
 
+var (
+	ErrInvalidTimezone = errors.New("invalid IANA timezone")
+)
+
 // writeError maps this package's sentinel errors to the HTTP status that
 // reflects why the caller isn't getting what they asked for - same
 // convention as internal/workflow's writeEngineError.
@@ -88,6 +92,7 @@ type updateRequest struct {
 	DefaultLocale   *string `json:"defaultLocale,omitempty"`
 	DefaultCurrency *string `json:"defaultCurrency,omitempty"`
 	LogoURL         *string `json:"logoUrl,omitempty"`
+	Timezone        *string `json:"timezone,omitempty"`
 }
 
 type firmResponse struct {
@@ -98,6 +103,7 @@ type firmResponse struct {
 	DefaultLocale   *string `json:"defaultLocale"`
 	DefaultCurrency *string `json:"defaultCurrency"`
 	LogoURL         *string `json:"logoUrl"`
+	Timezone        *string `json:"timezone"`
 	// VATNumberLabel/TaxIDWarning/FiscalYearStartMonth (multi-language
 	// UI/localization depth/fiscal compliance batch, Part 3/4) are soft
 	// fiscal hints derived from localeToCountryCode's own provisional
@@ -194,6 +200,7 @@ func buildFirmResponse(ctx context.Context, pool *pgxpool.Pool, m Metadata) firm
 		DefaultLocale:   m.DefaultLocale,
 		DefaultCurrency: m.DefaultCurrency,
 		LogoURL:         m.LogoURL,
+		Timezone:        m.Timezone,
 	}
 	applyFiscalHints(ctx, pool, m, &resp)
 	return resp
@@ -235,6 +242,7 @@ func handleUpdate(pool *pgxpool.Pool) http.HandlerFunc {
 			DefaultLocale:   req.DefaultLocale,
 			DefaultCurrency: req.DefaultCurrency,
 			LogoURL:         req.LogoURL,
+			Timezone:        req.Timezone,
 		}
 		if err := Update(r.Context(), pool, firmID, userID, req.Name, fields); err != nil {
 			writeError(w, err)
