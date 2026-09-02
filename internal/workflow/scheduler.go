@@ -124,6 +124,21 @@ type dueScheduledRun struct {
 	ruleID uuid.UUID
 }
 
+// getFirmTimezone resolves the firm's configured timezone from the firms table,
+// falling back to UTC if unset or invalid.
+func getFirmTimezone(ctx context.Context, tx pgx.Tx, firmID uuid.UUID) *time.Location {
+	var tz string
+	err := tx.QueryRow(ctx, `SELECT timezone FROM firms WHERE id = $1`, firmID).Scan(&tz)
+	if err != nil || tz == "" {
+		return time.UTC
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		return time.UTC
+	}
+	return loc
+}
+
 // processDueRunsForFirm lists firmID's own due runs (one short, firm-
 // scoped transaction), then runs each one - deliberately NOT inside that
 // same listing transaction: runScheduledRule below opens its own
@@ -234,10 +249,12 @@ func runScheduledRule(ctx context.Context, pool *pgxpool.Pool, firmID, runID, ru
 			if parseErr != nil {
 				return fmt.Errorf("parse schedule interval %q: %w", *rule.ScheduleInterval, parseErr)
 			}
+			loc := getFirmTimezone(ctx, tx, firmID)
+			scheduledFor := time.Now().In(loc).Add(interval)
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO scheduled_rule_runs (firm_id, rule_id, scheduled_for)
-				VALUES ($1, $2, now() + $3::interval)
-			`, firmID, rule.ID, interval.String()); err != nil {
+				VALUES ($1, $2, $3)
+			`, firmID, rule.ID, scheduledFor); err != nil {
 				return fmt.Errorf("schedule next run: %w", err)
 			}
 		}

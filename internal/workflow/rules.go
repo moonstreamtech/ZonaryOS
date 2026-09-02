@@ -786,10 +786,12 @@ func createRuleTx(ctx context.Context, tx pgx.Tx, rule Rule) (uuid.UUID, time.Ti
 		if err != nil {
 			return uuid.UUID{}, time.Time{}, fmt.Errorf("parse schedule interval: %w", err)
 		}
+		loc := getFirmTimezone(ctx, tx, rule.FirmID)
+		scheduledFor := time.Now().In(loc).Add(interval)
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO scheduled_rule_runs (firm_id, rule_id, scheduled_for)
-			VALUES ($1, $2, now() + $3::interval)
-		`, rule.FirmID, id, interval.String()); err != nil {
+			VALUES ($1, $2, $3)
+		`, rule.FirmID, id, scheduledFor); err != nil {
 			return uuid.UUID{}, time.Time{}, fmt.Errorf("schedule initial run: %w", err)
 		}
 	}
