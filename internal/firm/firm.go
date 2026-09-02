@@ -18,6 +18,7 @@ package firm
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -64,6 +65,7 @@ type UpdateFields struct {
 	DefaultLocale   *string
 	DefaultCurrency *string
 	LogoURL         *string
+	Timezone        *string
 }
 
 // normalizeOptionalField trims s and enforces maxLen, returning the value
@@ -107,8 +109,19 @@ func Update(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.UUID, n
 		return ErrInvalidName
 	}
 
-	var address, taxID, defaultLocale, defaultCurrency, logoURL *string
+	var address, taxID, defaultLocale, defaultCurrency, logoURL, timezone *string
 	var err error
+	if fields.Timezone != nil {
+		tz := strings.TrimSpace(*fields.Timezone)
+		if tz != "" {
+			if _, err := time.LoadLocation(tz); err != nil {
+				return ErrInvalidTimezone
+			}
+			timezone = &tz
+		} else {
+			timezone = nil
+		}
+	}
 	if fields.Address != nil {
 		if address, err = normalizeOptionalField(*fields.Address, maxAddressLen); err != nil {
 			return err
@@ -170,8 +183,9 @@ func Update(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.UUID, n
 				tax_id = CASE WHEN $4 THEN $5 ELSE tax_id END,
 				default_locale = CASE WHEN $6 THEN $7 ELSE default_locale END,
 				default_currency = CASE WHEN $8 THEN $9 ELSE default_currency END,
-				logo_url = CASE WHEN $10 THEN $11 ELSE logo_url END
-			WHERE id = $12
+				logo_url = CASE WHEN $10 THEN $11 ELSE logo_url END,
+				timezone = CASE WHEN $12 THEN $13 ELSE timezone END
+			WHERE id = $14
 		`,
 			name,
 			fields.Address != nil, address,
@@ -179,6 +193,7 @@ func Update(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.UUID, n
 			fields.DefaultLocale != nil, defaultLocale,
 			fields.DefaultCurrency != nil, defaultCurrency,
 			fields.LogoURL != nil, logoURL,
+			fields.Timezone != nil, timezone,
 			firmID,
 		); err != nil {
 			return err
@@ -198,6 +213,9 @@ func Update(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.UUID, n
 		}
 		if fields.LogoURL != nil {
 			changes["logoUrl"] = derefOrNull(logoURL)
+		}
+		if fields.Timezone != nil {
+			changes["timezone"] = derefOrNull(timezone)
 		}
 
 		return auditlog.Write(ctx, tx, firmID, userID, firmID, "firm", renameAuditAction, changes)
@@ -226,6 +244,7 @@ type Metadata struct {
 	DefaultLocale   *string
 	DefaultCurrency *string
 	LogoURL         *string
+	Timezone        *string
 }
 
 // Get reads firmID's current name and broader metadata, gated by plain
@@ -250,9 +269,9 @@ func Get(ctx context.Context, pool *pgxpool.Pool, firmID, userID uuid.UUID) (Met
 		}
 
 		return tx.QueryRow(ctx, `
-			SELECT name, address, tax_id, default_locale, default_currency, logo_url
+			SELECT name, address, tax_id, default_locale, default_currency, logo_url, timezone
 			FROM firms WHERE id = $1
-		`, firmID).Scan(&m.Name, &m.Address, &m.TaxID, &m.DefaultLocale, &m.DefaultCurrency, &m.LogoURL)
+		`, firmID).Scan(&m.Name, &m.Address, &m.TaxID, &m.DefaultLocale, &m.DefaultCurrency, &m.LogoURL, &m.Timezone)
 	})
 	if err != nil {
 		return Metadata{}, err
