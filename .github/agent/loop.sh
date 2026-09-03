@@ -400,6 +400,39 @@ _run_aider_readonly_or_editing() {
   set -e
   echo "--- rate-limit/quota lines surfaced by this call, if any ---"
   grep -iE 'ratelimit|rate-limit|retry-after|quota|RESOURCE_EXHAUSTED' "$AIDER_LOG" || echo "(none)"
+  log_token_usage
+}
+
+# Follow-up to issue #81: Kaan's AI Studio quota page showed
+# gemini-3.7-flash peaking at 453.53K/250K TPM - the free-tier per-minute
+# TOKEN ceiling, which every model on the free tier shares regardless of
+# RPM/RPD. Traced into aider 0.86.2's own source (not guessed, confirmed
+# against real job logs matching this exactly): aider scans every reply
+# for filenames that exist in the repo (base_coder.py's check_for_file_
+# mentions) and asks "Add file to the chat?" for each new one it finds -
+# and io.py's confirm_ask(), when self.yes is unset (true only under
+# --yes-always) and stdin is closed (this workflow never attaches one),
+# hits EOFError on input() and falls back to its own default answer,
+# which is "yes" - so in this environment EVERY such prompt is silently
+# accepted, with or without --yes-always. Each accepted file triggers a
+# full "reflection": a brand new completion call that resends the ENTIRE
+# conversation so far (previous messages, replies, and now the new
+# file's content), up to aider's own hard cap of 3 reflections (so 4
+# completion calls total per turn: 1 initial + 3 reflections). Turn 8's
+# own discovery log shows exactly this shape: 15k -> 36k -> 90k -> 113k
+# tokens sent, each call larger because it carries everything the last
+# one did. This is independent of model choice, repo-map size, and
+# --chat-mode ask vs edit mode - it is driven purely by which filenames
+# the MODEL'S OWN reply happens to mention. log_token_usage makes this
+# visible on every run (call count, tokens sent per call, and how many
+# file-add prompts fired) instead of needing to be reconstructed after
+# the fact from a raw job log, as this comment's own numbers were.
+log_token_usage() {
+  local n_calls file_adds
+  n_calls="$(grep -cE '^Tokens: ' "$AIDER_LOG" 2>/dev/null || true)"
+  file_adds="$(grep -cE 'Add file to the chat\?' "$AIDER_LOG" 2>/dev/null || true)"
+  echo "--- token usage this call: $n_calls completion(s), $file_adds file-add prompt(s) (each one auto-answers yes here - no stdin - and triggers a reflection that resends the whole conversation so far) ---"
+  grep -E '^Tokens: ' "$AIDER_LOG" 2>/dev/null || echo "(no 'Tokens:' summary line found in $AIDER_LOG - e.g. every completion failed before finishing)"
 }
 
 run_aider_on_item() {
@@ -426,6 +459,7 @@ run_aider_on_item() {
   set -e
   echo "--- rate-limit/quota lines surfaced by this call, if any ---"
   grep -iE 'ratelimit|rate-limit|retry-after|quota|RESOURCE_EXHAUSTED' "$AIDER_LOG" || echo "(none)"
+  log_token_usage
 }
 
 run_aider_discovery() {
