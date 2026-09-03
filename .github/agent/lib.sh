@@ -227,6 +227,39 @@ set_phase_attempts() {
   _set_state_key "$1" "attempts_phase_$2" "$3"
 }
 
+# --- quota backoff (issue #81 fix) ------------------------------------------
+#
+# Separate from attempts_phase_*/attempts_item_* on purpose: those count
+# genuine failed attempts (aider ran and produced nothing usable for a
+# reason unrelated to quota), and budget_exhausted turns are deliberately
+# NOT counted against them (see loop.sh's run_discovery_phase/run_plan_
+# phase/run_implement_phase comments on why - a quota wall is not the
+# issue's fault). Left uncapped, that exemption is exactly what let issue
+# #81 retry every 30 minutes forever against a quota that resets once a
+# day: nothing ever told the loop to slow down or give up. These two keys
+# are that: quota_streak counts CONSECUTIVE turns that ended in confirmed
+# quota exhaustion (reset to 0 the moment any turn - success or an
+# ordinary failure - gets a real answer out of Gemini; see loop.sh's
+# set_turn_clearing_quota), and quota_backoff_until is the UTC timestamp
+# before which loop.sh should not even attempt a Gemini call at all.
+get_quota_streak() {
+  local v
+  v="$(_get_state_key "$1" quota_streak)"
+  echo "${v:-0}"
+}
+
+set_quota_streak() {
+  _set_state_key "$1" quota_streak "$2"
+}
+
+get_quota_backoff_until() {
+  _get_state_key "$1" quota_backoff_until
+}
+
+set_quota_backoff_until() {
+  _set_state_key "$1" quota_backoff_until "$2"
+}
+
 # The plan file path claimed for this issue, once the plan phase has
 # chosen one (see plan_filename's comment on why it's persisted rather
 # than recomputed). Empty if none has been claimed yet.

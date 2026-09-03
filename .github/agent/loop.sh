@@ -40,13 +40,32 @@ MAX_ITEMS=60
 MAX_ITEM_ATTEMPTS=3
 MAX_PHASE_ATTEMPTS=2
 MODEL="gemini/gemini-3.5-flash-lite"
-# Discovery and plan use the strongest model on this account's free tier
-# (5 RPM / 20 RPD - the ceiling this note exists to explain: a couple of
-# plans a day, no more, until step 3b-2's model pool raises it). The
-# implement phase stays on Flash Lite (15 RPM / 500 RPD) since it runs
-# once per checklist item, far more often than discovery/plan run per
-# issue.
-DISCOVERY_PLAN_MODEL="gemini/gemini-3.7-flash"
+# Issue #81: discovery used to share DISCOVERY_PLAN_MODEL with plan
+# generation - the strongest (and scarcest) model on this account's free
+# tier, gemini-3.7-flash at 5 RPM / 20 RPD. Discovery is read-only
+# reconnaissance (--chat-mode ask, summarizing what's already in the
+# repo), not judgment-heavy the way turning that recon into a plan is, so
+# it doesn't need that budget - and burning it there is what let the
+# first hour of every day's cron ticks exhaust the whole day's 20-request
+# quota on nothing but discovery, before a single plan could even be
+# attempted. Discovery now runs on the same Flash Lite tier as the
+# implement phase (15 RPM / 500 RPD), which is what actually needs to run
+# once per checklist item; gemini-3.7-flash is reserved for PLAN_MODEL,
+# where judgment (picking the right files/migration/CI checks) actually
+# matters.
+DISCOVERY_MODEL="$MODEL"
+PLAN_MODEL="gemini/gemini-3.7-flash"
+# Backoff after a CONFIRMED quota exhaustion (aider retried and still
+# never got a usable reply/diff out of Gemini) - see record_quota_
+# exhaustion and lib.sh's quota_streak/quota_backoff_until comment. 24h
+# because the free-tier RPD quota this guards against resets once a day;
+# waiting any less just re-spends a day that's already spent. Three in a
+# row (i.e. three separate days with zero successful Gemini calls) is
+# past "unlucky timing" - that's the point where this stops retrying
+# silently and asks a human to look (revoked/changed key, billing, a
+# quota cut).
+QUOTA_BACKOFF_SECONDS=$((24 * 60 * 60))
+MAX_QUOTA_STREAK=3
 EDIT_FORMAT="diff-fenced"
 MAP_TOKENS=4096
 AIDER_LOG="/tmp/agent-loop-aider.log"
@@ -413,7 +432,7 @@ run_aider_discovery() {
   local prompt="$1"
   printf '%s' "$prompt" >/tmp/agent-loop-task.txt
   _run_aider_readonly_or_editing aider \
-    --model "$DISCOVERY_PLAN_MODEL" \
+    --model "$DISCOVERY_MODEL" \
     --chat-mode ask \
     --read CLAUDE.md \
     --chat-history-file "$CHAT_HISTORY_FILE" \
@@ -430,7 +449,7 @@ run_aider_plan() {
   local prompt="$1" plan_file="$2"
   printf '%s' "$prompt" >/tmp/agent-loop-task.txt
   _run_aider_readonly_or_editing aider \
-    --model "$DISCOVERY_PLAN_MODEL" \
+    --model "$PLAN_MODEL" \
     --edit-format "$EDIT_FORMAT" \
     --model-settings-file .github/aider-model-settings.yml \
     --chat-history-file "$CHAT_HISTORY_FILE" \
@@ -448,6 +467,64 @@ run_aider_plan() {
 
 aider_hit_quota_wall() {
   grep -qiE 'RESOURCE_EXHAUSTED|"code": *429' "$AIDER_LOG" 2>/dev/null
+}
+
+# Every set_issue_body call that is NOT a confirmed quota exhaustion
+# (record_quota_exhaustion below) should go through this instead of a
+# bare `body="$(set_turn ...)"` - it also clears quota_streak, because
+# reaching any of those call sites means this turn got a real answer out
+# of Gemini (success) or failed for a reason unrelated to quota, either
+# way breaking whatever consecutive-exhaustion streak was building.
+set_turn_clearing_quota() {
+  body="$(set_turn "$body" "$TURN")"
+  body="$(set_quota_streak "$body" 0)"
+}
+
+# Issue #81: called on a CONFIRMED quota exhaustion only - i.e. after the
+# caller has already checked (in whatever order that phase needs - see
+# run_discovery_phase's comment on why discovery checks this last, not
+# first) that aider never produced a usable result this turn. Records the
+# streak and a backoff deadline in issue state, then either posts the
+# usual "will retry automatically" comment or, once MAX_QUOTA_STREAK
+# consecutive exhaustions have piled up with zero successful calls
+# between them, blocks the issue instead of retrying forever - see
+# QUOTA_BACKOFF_SECONDS/MAX_QUOTA_STREAK above for why those specific
+# numbers. Always exits (never returns), matching every other terminal
+# branch in the phase functions that call it.
+record_quota_exhaustion() {
+  local phase="$1"
+  local streak
+  streak="$(get_quota_streak "$body")"
+  streak=$((streak + 1))
+  body="$(set_quota_streak "$body" "$streak")"
+  body="$(set_quota_backoff_until "$body" "$(date -u -d "+${QUOTA_BACKOFF_SECONDS} seconds" +%Y-%m-%dT%H:%M:%SZ)")"
+  body="$(set_turn "$body" "$TURN")"
+  set_issue_body "$ISSUE_NUMBER" "$body"
+
+  if [ "$streak" -ge "$MAX_QUOTA_STREAK" ]; then
+    block_issue "$ISSUE_NUMBER" "Gemini's quota has been exhausted $streak times in a row during $phase, with no successful call in between (roughly one attempt per day, backing off after each) - that looks like a persistent problem (billing, a revoked/changed key, or a lowered quota), not ordinary rate-limiting the loop can wait out. Not retrying automatically; once it's fixed, remove and re-add $LABEL_GO to resume."
+    ACTION="quota_exhaustion_blocked"
+    RETRIGGER="false"
+    exit 0
+  fi
+
+  post_comment "$ISSUE_NUMBER" "⏸️ Turn $TURN: Gemini's free-tier quota is exhausted during $phase (attempt $streak/$MAX_QUOTA_STREAK in a row with no successful call in between). Not counted as a failed attempt. Backing off for 24h before trying again - the scheduled run will skip this issue silently until then."
+  ACTION="budget_exhausted"
+  RETRIGGER="false"
+  exit 0
+}
+
+# True (and prints nothing) if a prior turn recorded a backoff deadline
+# that hasn't passed yet. Checked once, at the very top of main(), before
+# TURN is even incremented or any aider call is made - the whole point is
+# to make a backoff-covered cron tick as close to free as possible: no
+# turn burned, no Gemini request attempted, just a same-second exit.
+quota_backoff_active() {
+  local until now
+  until="$(get_quota_backoff_until "$body")"
+  [ -n "$until" ] || return 1
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  [[ "$now" < "$until" ]]
 }
 
 run_fast_gate() {
@@ -588,25 +665,36 @@ $body"
     exit 1
   fi
 
-  if aider_hit_quota_wall; then
-    echo "Gemini returned a persistent quota error during discovery. Stopping without retrigger; the schedule trigger will pick this issue back up."
-    body="$(set_turn "$body" "$TURN")"
-    set_issue_body "$ISSUE_NUMBER" "$body"
-    post_comment "$ISSUE_NUMBER" "⏸️ Turn $TURN: Gemini's free-tier quota is exhausted during discovery. Not counted as a failed attempt. The scheduled run will retry automatically."
-    ACTION="budget_exhausted"
-    RETRIGGER="false"
-    exit 0
-  fi
-
+  # Issue #81: reply extraction MUST come before the quota-wall check,
+  # not after it. aider's own litellm layer already retries a transient
+  # 429/RESOURCE_EXHAUSTED internally and very often succeeds anyway
+  # (confirmed against run 33784495986's log: several retried 429s
+  # followed by a complete, successful discovery answer in the same
+  # aider invocation) - aider_hit_quota_wall just greps the WHOLE log for
+  # that text, so checking it first treats every one of those recovered
+  # retries as a hard failure and throws the perfectly good reply away,
+  # never advancing past discovery. This is the exact bug behind issue
+  # #81's eight identical "quota exhausted" comments: most of those turns
+  # likely got a real answer that this ordering discarded. Only fall back
+  # to aider_hit_quota_wall when there is no reply at all - that's the
+  # one case (discovery makes no worktree edits, so unlike plan/implement
+  # there's no "did it produce a diff" signal to gate this on) where a
+  # quota error actually explains the failure instead of just being noise
+  # left over from a retry that worked.
   local reply=""
   if [ -f "$CHAT_HISTORY_FILE" ]; then
     reply="$(extract_last_reply "$(cat "$CHAT_HISTORY_FILE")")"
   fi
 
+  if [ -z "$reply" ] && aider_hit_quota_wall; then
+    echo "Discovery produced no answer and aider's log shows a quota error - treating as confirmed quota exhaustion."
+    record_quota_exhaustion discovery
+  fi
+
   if [ -z "$reply" ]; then
     echo "Discovery produced no answer and no quota error was logged - treating as a failed attempt."
     body="$(set_phase_attempts "$body" discovery "$attempts")"
-    body="$(set_turn "$body" "$TURN")"
+    set_turn_clearing_quota
     set_issue_body "$ISSUE_NUMBER" "$body"
     if [ "$attempts" -ge "$MAX_PHASE_ATTEMPTS" ]; then
       block_issue "$ISSUE_NUMBER" "discovery failed $attempts times: no answer was produced. See turn $TURN's job log."
@@ -623,7 +711,7 @@ $body"
 
 $reply"
   body="$(set_phase "$body" plan)"
-  body="$(set_turn "$body" "$TURN")"
+  set_turn_clearing_quota
   set_issue_body "$ISSUE_NUMBER" "$body"
   ACTION="discovery_complete"
   RETRIGGER="true"
@@ -695,12 +783,7 @@ $discovery"
   if ! worktree_has_changes; then
     if aider_hit_quota_wall; then
       echo "Gemini returned a persistent quota error during plan generation. Stopping without retrigger; the schedule trigger will pick this issue back up."
-      body="$(set_turn "$body" "$TURN")"
-      set_issue_body "$ISSUE_NUMBER" "$body"
-      post_comment "$ISSUE_NUMBER" "⏸️ Turn $TURN: Gemini's free-tier quota is exhausted during plan generation. Not counted as a failed attempt. The scheduled run will retry automatically."
-      ACTION="budget_exhausted"
-      RETRIGGER="false"
-      exit 0
+      record_quota_exhaustion plan
     fi
     echo "aider produced no changes for the plan and no quota error was logged - treating as a failed attempt."
   else
@@ -734,7 +817,7 @@ $discovery"
         plan_pr_num="$(pr_number_for_branch "$plan_branch")"
 
         body="$(set_phase "$body" awaiting-plan)"
-        body="$(set_turn "$body" "$TURN")"
+        set_turn_clearing_quota
         set_issue_body "$ISSUE_NUMBER" "$body"
         post_comment "$ISSUE_NUMBER" "📋 Plan ready for review: PR #$plan_pr_num (\`$plan_file\`, $n_steps step(s)). Merge it to start implementation - the agent stops here until you do."
         ACTION="plan_complete"
@@ -746,7 +829,7 @@ $discovery"
 
   # Failed attempt (no diff, wrong file(s) touched, or malformed plan).
   body="$(set_phase_attempts "$body" plan "$attempts")"
-  body="$(set_turn "$body" "$TURN")"
+  set_turn_clearing_quota
   set_issue_body "$ISSUE_NUMBER" "$body"
   if [ "$attempts" -ge "$MAX_PHASE_ATTEMPTS" ]; then
     block_issue "$ISSUE_NUMBER" "plan generation failed $attempts times: no valid $plan_file was produced. See turn $TURN's job log."
@@ -795,7 +878,7 @@ run_awaiting_plan_phase() {
 
   body="$(set_checklist_from_lines "$body" "$steps")"
   body="$(set_phase "$body" implement)"
-  body="$(set_turn "$body" "$TURN")"
+  set_turn_clearing_quota
   set_issue_body "$ISSUE_NUMBER" "$body"
   post_comment "$ISSUE_NUMBER" "▶️ Plan merged. Picked up $n_steps step(s) from \`$plan_file\` into the checklist - implementation starts now, one step per turn."
   ACTION="plan_merged_checklist_populated"
@@ -826,7 +909,7 @@ run_implement_phase() {
     fi
     if run_fast_gate; then
       gh_or_block pr ready "$pr_num" --repo "$REPO"
-      body="$(set_turn "$body" "$TURN")"
+      set_turn_clearing_quota
       set_issue_body "$ISSUE_NUMBER" "$body"
       gh_or_block issue edit "$ISSUE_NUMBER" --repo "$REPO" --remove-label "$LABEL_GO" --add-label "$LABEL_DONE"
       post_comment "$ISSUE_NUMBER" "✅ All checklist items complete after $TURN turns. PR #$pr_num is marked ready for review. The agent stops here - merging is your call."
@@ -858,12 +941,7 @@ run_implement_phase() {
     # aider produced no changes at all this turn.
     if aider_hit_quota_wall; then
       echo "Gemini returned a persistent quota error this turn. Stopping without retrigger; the schedule trigger will pick this issue back up."
-      body="$(set_turn "$body" "$TURN")"
-      set_issue_body "$ISSUE_NUMBER" "$body"
-      post_comment "$ISSUE_NUMBER" "⏸️ Turn $TURN: Gemini's free-tier quota is exhausted for item $ITEM_INDEX/$ITEM_TOTAL ($item_text). Not counted as a failed attempt. The scheduled run will retry automatically; no action needed."
-      ACTION="budget_exhausted"
-      RETRIGGER="false"
-      exit 0
+      record_quota_exhaustion "item $ITEM_INDEX/$ITEM_TOTAL ($item_text)"
     fi
     echo "aider produced no changes and no quota error was logged - treating as a failed attempt."
   elif ! run_fast_gate; then
@@ -876,7 +954,7 @@ run_implement_phase() {
     git commit -m "agent: item $ITEM_INDEX/$ITEM_TOTAL - $item_text"
     git push origin "$branch"
     body="$(tick_item "$body" "$ITEM_INDEX")"
-    body="$(set_turn "$body" "$TURN")"
+    set_turn_clearing_quota
     set_issue_body "$ISSUE_NUMBER" "$body"
     post_comment "$ISSUE_NUMBER" "✅ Turn $TURN: completed item $ITEM_INDEX/$ITEM_TOTAL: $item_text"
     ACTION="completed_item"
@@ -888,7 +966,7 @@ run_implement_phase() {
   # Failed attempt (no diff, or gate red). Record it and decide whether
   # to retry or give up on this item.
   body="$(set_item_attempts "$body" "$ITEM_INDEX" "$ITEM_ATTEMPTS")"
-  body="$(set_turn "$body" "$TURN")"
+  set_turn_clearing_quota
   set_issue_body "$ISSUE_NUMBER" "$body"
 
   if [ "$ITEM_ATTEMPTS" -ge "$MAX_ITEM_ATTEMPTS" ]; then
@@ -959,6 +1037,20 @@ main() {
   if grep -qx "$LABEL_PAUSED" <<<"$labels"; then
     echo "Issue #$ISSUE_NUMBER carries $LABEL_PAUSED. Exiting without retrigger."
     ACTION="kill_switch"
+    RETRIGGER="false"
+    exit 0
+  fi
+
+  # Quota backoff (issue #81). Checked before TURN is even incremented
+  # and before any aider call, so a cron tick landing inside a backoff
+  # window costs nothing - no turn burned, no Gemini request attempted,
+  # just an immediate exit. TURN is still set (from the unincremented
+  # state) purely so print_resolved_state's trap has something
+  # meaningful to log.
+  TURN="$(get_turn "$body")"
+  if quota_backoff_active; then
+    echo "Issue #$ISSUE_NUMBER is backing off until $(get_quota_backoff_until "$body") after $(get_quota_streak "$body") consecutive quota exhaustion(s). Skipping this turn without attempting a Gemini call."
+    ACTION="quota_backoff"
     RETRIGGER="false"
     exit 0
   fi

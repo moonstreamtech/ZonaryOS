@@ -332,6 +332,36 @@ reclaimed="$(set_plan_file "$claimed" "docs/plans/0002-different.md")"
 assert_eq "set_plan_file replaces rather than duplicating the key" \
   1 "$(grep -c '^plan_file=' <<<"$reclaimed")"
 
+
+# --- quota backoff state (issue #81 fix) ------------------------------------
+
+assert_eq "get_quota_streak defaults to 0 when unset" \
+  0 "$(get_quota_streak "$state_body")"
+streaked="$(set_quota_streak "$state_body" 2)"
+assert_eq "set_quota_streak/get_quota_streak round-trip" \
+  2 "$(get_quota_streak "$streaked")"
+assert_eq "set_quota_streak leaves phase alone" \
+  "plan" "$(get_phase "$streaked")"
+restreaked="$(set_quota_streak "$streaked" 3)"
+assert_eq "set_quota_streak replaces rather than duplicating the key" \
+  1 "$(grep -c '^quota_streak=' <<<"$restreaked")"
+assert_eq "set_quota_streak replaces the value in place" \
+  3 "$(get_quota_streak "$restreaked")"
+
+assert_eq "get_quota_backoff_until is empty before one is set" \
+  "" "$(get_quota_backoff_until "$state_body")"
+backed_off="$(set_quota_backoff_until "$state_body" "2026-09-04T17:28:00Z")"
+assert_eq "set_quota_backoff_until/get_quota_backoff_until round-trip" \
+  "2026-09-04T17:28:00Z" "$(get_quota_backoff_until "$backed_off")"
+assert_eq "set_quota_backoff_until leaves turn alone" \
+  1 "$(get_turn "$backed_off")"
+
+both="$(set_quota_backoff_until "$streaked" "2026-09-04T17:28:00Z")"
+assert_eq "quota_streak and quota_backoff_until coexist in the same state block" \
+  2 "$(get_quota_streak "$both")"
+assert_eq "... and quota_backoff_until is readable too" \
+  "2026-09-04T17:28:00Z" "$(get_quota_backoff_until "$both")"
+
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
