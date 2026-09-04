@@ -393,10 +393,20 @@ validate_plan_migration_numbers() {
 # before this workflow ever set LITELLM_LOG=DEBUG - so aider_hit_quota_
 # wall still works, and dropping both keeps the log clean enough to
 # extract a reply from CHAT_HISTORY_FILE without scraping debug noise.
+# $1: "true" to decline aider's own file-mention auto-add prompts (see
+# the DECLINE_FILE_MENTIONS comment on run_aider_discovery's call site
+# below for why that's discovery-only), "false" to leave aider's default
+# behavior alone. $2..: the aider command line to run.
 _run_aider_readonly_or_editing() {
+  local decline_file_mentions="$1"
+  shift
   rm -f "$CHAT_HISTORY_FILE"
   set +e
-  "$@" | tee "$AIDER_LOG"
+  if [ "$decline_file_mentions" = "true" ]; then
+    yes n | "$@" | tee "$AIDER_LOG"
+  else
+    "$@" | tee "$AIDER_LOG"
+  fi
   set -e
   echo "--- rate-limit/quota lines surfaced by this call, if any ---"
   grep -iE 'ratelimit|rate-limit|retry-after|quota|RESOURCE_EXHAUSTED' "$AIDER_LOG" || echo "(none)"
@@ -407,31 +417,32 @@ _run_aider_readonly_or_editing() {
 # gemini-3.7-flash peaking at 453.53K/250K TPM - the free-tier per-minute
 # TOKEN ceiling, which every model on the free tier shares regardless of
 # RPM/RPD. Traced into aider 0.86.2's own source (not guessed, confirmed
-# against real job logs matching this exactly): aider scans every reply
-# for filenames that exist in the repo (base_coder.py's check_for_file_
-# mentions) and asks "Add file to the chat?" for each new one it finds -
-# and io.py's confirm_ask(), when self.yes is unset (true only under
-# --yes-always) and stdin is closed (this workflow never attaches one),
-# hits EOFError on input() and falls back to its own default answer,
-# which is "yes" - so in this environment EVERY such prompt is silently
-# accepted, with or without --yes-always. Each accepted file triggers a
-# full "reflection": a brand new completion call that resends the ENTIRE
-# conversation so far (previous messages, replies, and now the new
-# file's content), up to aider's own hard cap of 3 reflections (so 4
+# against real job logs matching this exactly, and empirically verified
+# against aider's actual InputOutput.confirm_ask - see run_aider_
+# discovery's own comment): aider scans every reply for filenames that
+# exist in the repo (base_coder.py's check_for_file_mentions) and asks
+# "Add file to the chat?" for each new one it finds - and io.py's
+# confirm_ask(), when self.yes is unset (true only under --yes-always)
+# and stdin has nothing left to read, hits EOFError on input() and falls
+# back to its own default answer, which is "yes". Each accepted file
+# triggers a full "reflection": a brand new completion call that resends
+# the ENTIRE conversation so far (previous messages, replies, and now the
+# new file's content), up to aider's own hard cap of 3 reflections (so 4
 # completion calls total per turn: 1 initial + 3 reflections). Turn 8's
-# own discovery log shows exactly this shape: 15k -> 36k -> 90k -> 113k
-# tokens sent, each call larger because it carries everything the last
-# one did. This is independent of model choice, repo-map size, and
-# --chat-mode ask vs edit mode - it is driven purely by which filenames
-# the MODEL'S OWN reply happens to mention. log_token_usage makes this
-# visible on every run (call count, tokens sent per call, and how many
-# file-add prompts fired) instead of needing to be reconstructed after
-# the fact from a raw job log, as this comment's own numbers were.
+# own discovery log showed exactly this shape before the fix below: 15k
+# -> 36k -> 90k -> 113k tokens sent, each call larger because it carries
+# everything the last one did. Discovery now declines these prompts (see
+# run_aider_discovery); plan and implement still auto-accept via
+# --yes-always, deliberately - see that comment for why this isn't fixed
+# the same way everywhere. log_token_usage makes actual usage visible on
+# every run (call count, tokens sent per call, and how many file-add
+# prompts fired) instead of needing to be reconstructed after the fact
+# from a raw job log, as this comment's own numbers originally were.
 log_token_usage() {
   local n_calls file_adds
   n_calls="$(grep -cE '^Tokens: ' "$AIDER_LOG" 2>/dev/null || true)"
   file_adds="$(grep -cE 'Add file to the chat\?' "$AIDER_LOG" 2>/dev/null || true)"
-  echo "--- token usage this call: $n_calls completion(s), $file_adds file-add prompt(s) (each one auto-answers yes here - no stdin - and triggers a reflection that resends the whole conversation so far) ---"
+  echo "--- token usage this call: $n_calls completion(s), $file_adds file-add prompt(s) (an accepted one triggers a reflection that resends the whole conversation so far - see run_aider_discovery/_run_aider_readonly_or_editing for which calls accept vs decline these) ---"
   grep -E '^Tokens: ' "$AIDER_LOG" 2>/dev/null || echo "(no 'Tokens:' summary line found in $AIDER_LOG - e.g. every completion failed before finishing)"
 }
 
@@ -462,10 +473,28 @@ run_aider_on_item() {
   log_token_usage
 }
 
+# DECLINE_FILE_MENTIONS="true" (piping a stream of "n" answers into
+# aider's stdin) is not a style choice - it is what stops the TPM
+# breach documented on _run_aider_readonly_or_editing above. Without it,
+# aider's "Add file to the chat?" prompt hits EOF on this workflow's
+# empty stdin and defaults to "yes" (verified directly against aider
+# 0.86.2's own InputOutput.confirm_ask, not assumed: calling it with
+# stdin closed returns True; calling it with "n" piped in - even though
+# aider still prints "Warning: Input is not a terminal (fd=0)" first -
+# returns False, because prompt_toolkit's PromptSession happily reads a
+# piped, non-tty stdin even though it isn't interactive). `yes n`
+# rather than a fixed number of "n"s because the number of file mentions
+# in any given reply isn't known in advance, and running out mid-call
+# would silently fall back to the exact EOF-default-yes behavior this
+# exists to prevent. Discovery-only: plan/implement pass --yes-always,
+# which short-circuits confirm_ask via `if self.yes is True` BEFORE it
+# ever reads stdin (confirmed in the same source) - piping answers there
+# would be a no-op, and unlike discovery, an auto-added file in those
+# phases is usually the file about to be edited, which we want.
 run_aider_discovery() {
   local prompt="$1"
   printf '%s' "$prompt" >/tmp/agent-loop-task.txt
-  _run_aider_readonly_or_editing aider \
+  _run_aider_readonly_or_editing true aider \
     --model "$DISCOVERY_MODEL" \
     --chat-mode ask \
     --read CLAUDE.md \
@@ -482,7 +511,7 @@ run_aider_discovery() {
 run_aider_plan() {
   local prompt="$1" plan_file="$2"
   printf '%s' "$prompt" >/tmp/agent-loop-task.txt
-  _run_aider_readonly_or_editing aider \
+  _run_aider_readonly_or_editing false aider \
     --model "$PLAN_MODEL" \
     --edit-format "$EDIT_FORMAT" \
     --model-settings-file .github/aider-model-settings.yml \
